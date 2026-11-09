@@ -1,0 +1,26 @@
+{
+	"geode": "5.10.1",
+	"gd": { "win": "2.2081", "android": "2.2081", "mac": "2.2081", "ios": "2.2081" },
+	"id": "juan.click_frames_gd",
+	"name": "Click Frames GD",
+	"version": "v0.0.2",
+	"developer": "Juan",
+	"description": "Record a run, replay it and see/hear the frames between your clicks.",
+	"resources": { "files": ["resources/*.wav"] },
+	"settings": {
+		"mode": {
+			"type": "string",
+			"name": "Mode",
+			"description": "record: play the level normally and finish it to save the recording. replay: replays the saved recording (your own clicks are ignored) and shows/plays the frames between clicks.",
+			"default": "off",
+			"one-of": ["off", "record", "replay"]
+		},
+		"sounds": { "type": "bool", "name": "Sounds", "default": true },
+		"replay-offset": {
+			"type": "int",
+			"name": "Replay offset (frames)",
+			"description": "If the replay dies or clicks a frame late/early, change this by 1 or -1.",
+			"default": 0, "min": -3, "max": 3
+		}
+	}
+}
