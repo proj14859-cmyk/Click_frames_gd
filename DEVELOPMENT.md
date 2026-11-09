@@ -1,4 +1,4 @@
-# Click Frames 0.2.1 — experimental
+# Click Frames 0.2.2 — experimental
 
 ## 0.2.1 completion handoff
 
@@ -45,7 +45,7 @@ instead of crashing. Check bottom-center placement on both narrow and wide scree
 
 Pause > Frames > Record starts a new practice run from zero. Checkpoints keep
 the input prefix, trace prefix and held buttons; a retry discards the failed
-suffix. Finishing starts an automatic baseline replay. A death, a trajectory
+suffix. Finishing saves the run and returns to pause. Analyze starts a baseline replay. A death, a trajectory
 deviation greater than 0.5 game units at a matching sampled tick, or a timeout
 stops verification. Only a verified run can be analyzed.
 

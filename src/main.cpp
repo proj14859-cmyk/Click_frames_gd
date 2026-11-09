@@ -303,7 +303,6 @@ class $modify(CFPlay, PlayLayer) {
     void service(float dt) {
         if (s.owner != this || !hasLiveOwner()) return;
         if (m_isPaused) { hud(); return; }
-        if (m_isPracticeMode) fixPracticeTouchPriority();
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
             else { s.watchdogTick = tick(); s.stalledSeconds = 0; }
@@ -453,49 +452,88 @@ class CFPopup : public Popup {
     }
     bool init() {
         if (!ensureSession()) return false;
-        if (!Popup::init(340, 280)) return false;
-        setTitle("Click Frames");
-        auto status = CCLabelBMFont::create(s.message.c_str(), "chatFont.fnt");
-        status->limitLabelWidth(310, .6f, .2f);
-        m_mainLayer->addChildAtPosition(status, Anchor::Top, {0, -45});
-        size_t measured = 0, perfect = 0;
-        for (size_t i = 0; i < s.recording.windows.size(); ++i) {
-            auto w = s.recording.windows[i];
-            if (w.measured) ++measured;
-            if (w.measured && !w.lowerBound && w.width() == 1) ++perfect;
-        }
-        auto summary = CCLabelBMFont::create(fmt::format("Measured: {} | 1-frame events: {}", measured, perfect).c_str(), "chatFont.fnt");
-        summary->setScale(.55f); m_mainLayer->addChildAtPosition(summary, Anchor::Top, {0, -65});
-        auto add = [this](char const* title, float y, std::function<void()> action) {
-            auto item = CCMenuItemExt::createSpriteExtra(ButtonSprite::create(title), [action](auto) { action(); });
-            item->setScale(.7f); m_buttonMenu->addChildAtPosition(item, Anchor::Center, {0, y});
+        if (!Popup::init(430, 270)) return false;
+        setTitle("CLICK FRAMES");
+        auto label = [this](std::string const& text, CCPoint pos, float scale, ccColor3B color) {
+            auto node = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+            node->setScale(scale); node->setColor(color); node->setPosition(pos);
+            m_mainLayer->addChild(node); return node;
         };
-        add("Record", 50, [this] {
+        label("PRACTICE  >  ANALYZE  >  SHOWCASE", {215, 229}, .55f, {111, 219, 235});
+        auto status = label(s.message, {215, 211}, .5f, {220, 229, 244});
+        status->limitLabelWidth(398, .5f, .25f);
+        bool active = s.state == State::Record || running();
+        auto add = [this](char const* title, char const* hint, CCPoint pos, bool enabled,
+                          std::function<void()> action) {
+            auto card = CCScale9Sprite::create("square02b_001.png");
+            card->setContentSize({128, 48});
+            card->setColor(enabled ? ccColor3B{34, 57, 83} : ccColor3B{35, 39, 49});
+            card->setOpacity(245);
+            auto heading = CCLabelBMFont::create(title, "bigFont.fnt");
+            heading->limitLabelWidth(116, .34f, .2f); heading->setPosition({64, 32});
+            heading->setColor(enabled ? ccColor3B{235, 246, 255} : ccColor3B{115, 124, 139});
+            card->addChild(heading);
+            auto subtitle = CCLabelBMFont::create(hint, "chatFont.fnt");
+            subtitle->limitLabelWidth(118, .43f, .2f); subtitle->setPosition({64, 13});
+            subtitle->setColor({150, 175, 195}); card->addChild(subtitle);
+            auto item = CCMenuItemExt::createSpriteExtra(card, [action](auto) {
+                // Closing a popup may destroy the callback's owning menu.
+                auto invoke = action; invoke();
+            });
+            // Keep touch geometry and resting scale identical; never scale the item.
+            item->setScaleMult(1.f); item->setEnabled(enabled);
+            m_buttonMenu->addChild(item);
+            item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace(pos)));
+        };
+        add("1. RECORD", "New practice run", {79, 171}, !active, [this] {
             if (!ensureSession()) return;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
             s.recordedHeld.fill(false); s.physicalHeld.fill(false); s.injectedHeld.fill(false);
             onClose(nullptr);
-            resumeAndRun([] { resetTrial(); s.state = State::Record; s.message = "REC - practice"; });
+            resumeAndRun([] { resetTrial(); s.state = State::Record; s.message = "REC - finish the level in practice"; });
         });
-        add("Analyze / Resume", 15, [this] {
+        add("2. ANALYZE", "Verify + measure", {215, 171}, !active && s.recording.complete && !s.recording.inputs.empty(), [this] {
             if (!ensureSession()) return;
-            if (!s.recording.complete) { FLAlertLayer::create("Incomplete run", "Finish a practice run first.", "OK")->show(); return; }
+            if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             onClose(nullptr); resumeAndRun([] { beginAnalysis(); });
         });
-        add("Play / Replay", -20, [this] {
-            if (!ensureSession()) return;
-            if (!s.recording.ready()) { FLAlertLayer::create("Not ready", "Complete and verify the analysis first.", "OK")->show(); return; }
-            if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
+        add("3. PLAY", "Circles + sounds", {79, 115}, !active && s.recording.ready(), [this] {
+            if (!ensureSession() || !supported()) {
+                FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return;
+            }
             onClose(nullptr);
             resumeAndRun([] {
                 s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
                 s.message = "Showcase - valid windows at 240 TPS"; resetTrial();
             });
         });
-        add("Stop / Save", -55, [this] { if (!ensureSession()) return; stop("Stopped. Partial work saved"); onClose(nullptr); });
-        add("Settings", -90, [] { openSettingsPopup(Mod::get()); });
+        add("STOP / SAVE", "Keep partial analysis", {215, 115}, active, [this] {
+            if (!ensureSession()) return;
+            stop("Stopped. Partial analysis saved; Analyze to resume");
+            onClose(nullptr);
+            if (auto popup = CFPopup::create()) popup->show();
+        });
+        add("SETTINGS", "Sounds, circles, scan", {79, 59}, true, [] { openSettingsPopup(Mod::get()); });
+        add("HELP", "How to test this mod", {215, 59}, true, [] {
+            FLAlertLayer::create("How to use", "<cg>1. Record</c>: starts a NEW run in practice. Finish the level using checkpoints as needed.\n<cy>2. Analyze</c>: verifies the saved run, then replays many tests to measure each input. This can take a long time. Pause to Stop / Save and resume later.\n<cb>3. Play</c>: replays with circles, sounds and the counter. Use it again to replay.\nGray buttons unlock after the previous step. 240 TPS; disable CBF and ignore damage.", "OK")->show();
+        });
+        auto panel = CCScale9Sprite::create("square02b_001.png");
+        panel->setContentSize({118, 160}); panel->setColor({20, 30, 47});
+        panel->setOpacity(240); panel->setPosition({351, 115}); m_mainLayer->addChild(panel);
+        label("FRAME WINDOWS", {351, 181}, .48f, {111, 219, 235});
+        std::array<int, 5> totals{};
+        size_t measured = 0;
+        for (auto const& window : s.recording.windows) {
+            if (window.measured) { ++measured; ++totals[cf::category(window)]; }
+        }
+        for (int i = 0; i < 5; ++i) {
+            label(fmt::format("{}{}F     {}", i + 1, i == 4 ? "+" : "", totals[i]),
+                  {351, 158.f - i * 18.f}, .55f, WINDOW_COLORS[i]);
+        }
+        label(fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.2.2", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
@@ -508,7 +546,8 @@ class $modify(CFPause, PauseLayer) {
         menu->setID("click-frames-bottom-menu"_spr);
         menu->setPosition({CCDirector::get()->getWinSize().width / 2, 35});
         addChild(menu, 100);
-        auto button = CCMenuItemExt::createSpriteExtra(ButtonSprite::create("Frames"), [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
-        button->setScale(.7f); button->setPosition({0, 0}); menu->addChild(button);
+        auto sprite = ButtonSprite::create("Frames"); sprite->setScale(.7f);
+        auto button = CCMenuItemExt::createSpriteExtra(sprite, [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
+        button->setScaleMult(1.f); button->setPosition({0, 0}); menu->addChild(button);
     }
 };
