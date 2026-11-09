@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <iomanip>
 #include <istream>
 #include <ostream>
@@ -74,14 +75,15 @@ inline bool read(std::istream& in, std::string const& key, Recording& result) {
     for (size_t i = 0; i < count; ++i) {
         Input e; Window w;
         if (!(in >> e.tick >> e.down >> e.button >> e.p1 >> w.early >> w.late >> w.measured >> w.lowerBound)
-            || e.tick < last || e.button < 1 || e.button > 3 || w.early < 0 || w.late < 0
+            || e.tick < 0 || e.tick < last || (r.complete && e.tick > r.endTick) || e.button < 1 || e.button > 3 || w.early < 0 || w.late < 0
             || w.early > r.radius || w.late > r.radius) return false;
         last = e.tick; r.inputs.push_back(e); r.windows.push_back(w);
     }
     last = -1;
     for (size_t i = 0; i < samples; ++i) {
         Sample s;
-        if (!(in >> s.tick >> s.x >> s.y >> s.x2 >> s.y2) || s.tick < last) return false;
+        if (!(in >> s.tick >> s.x >> s.y >> s.x2 >> s.y2) || s.tick < 0 || s.tick < last ||
+            !std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(s.x2) || !std::isfinite(s.y2)) return false;
         last = s.tick; r.trace.push_back(s);
     }
     result = std::move(r); return true;

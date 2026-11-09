@@ -28,6 +28,7 @@ struct Session {
     size_t next = 0, sample = 0, target = 0;
     int offset = 0, tests = 0, lastTick = -1;
     int watchdogTick = -1;
+    size_t comparedSamples = 0;
     float stalledSeconds = 0;
     std::array<int, 5> tally{};
     std::string message = "Record a practice run";
@@ -71,6 +72,7 @@ void resetTrial() {
     s.owner->removeAllCheckpoints(); s.owner->resetLevelFromStart();
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
+    s.comparedSamples = 0;
 }
 void hud() {
     auto pl = s.owner;
@@ -213,6 +215,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     void service(float dt) {
         if (s.owner != this) return;
+        if (m_isPaused) { hud(); return; }
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
             else { s.watchdogTick = tick(); s.stalledSeconds = 0; }
@@ -232,6 +235,7 @@ class $modify(CFPlay, PlayLayer) {
             auto const& trace = s.recording.trace;
             while (s.sample < trace.size() && trace[s.sample].tick < now) ++s.sample;
             if (s.sample < trace.size() && trace[s.sample].tick == now) {
+                ++s.comparedSamples;
                 auto point = trace[s.sample++];
                 if (std::abs(point.x - m_player1->getPositionX()) > .5f || std::abs(point.y - m_player1->getPositionY()) > .5f ||
                     std::abs(point.x2 - m_player2->getPositionX()) > .5f || std::abs(point.y2 - m_player2->getPositionY()) > .5f) {
@@ -288,7 +292,18 @@ class $modify(CFPlay, PlayLayer) {
             s.recording.complete = true; s.recording.endTick = tick();
             s.state = State::Idle; save(); s.pending = Pending::StartAnalysis; return;
         }
-        if (running()) { if (s.pending == Pending::None) s.pending = Pending::Pass; return; }
+        if (running()) {
+            if (s.pending == Pending::None) {
+                auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
+                bool valid = s.next == events.size();
+                if (s.state == State::Verify || s.state == State::Playback)
+                    valid = valid && std::abs(tick() - s.recording.endTick) <= 1 &&
+                        (!s.recording.trace.empty() && s.comparedSamples > 0);
+                s.pending = valid ? Pending::Pass : Pending::Fail;
+                if (!valid) s.message = "Completion did not match recorded run";
+            }
+            return;
+        }
         PlayLayer::levelComplete();
     }
     void onExit() {
