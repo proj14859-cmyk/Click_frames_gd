@@ -20,7 +20,7 @@ struct Session {
     cf::Recording recording;
     State state = State::Idle;
     Pending pending = Pending::None;
-    bool injecting = false, resetting = false, restored = false;
+    bool injecting = false, resetting = false, restored = false, returningToPause = false;
     std::array<bool, 6> recordedHeld{};
     std::array<bool, 6> physicalHeld{};
     std::array<bool, 6> injectedHeld{};
@@ -87,6 +87,24 @@ void releaseInjected() {
     s.injecting = false; s.injectedHeld.fill(false);
 }
 void clearMarkers();
+void queueReturnToPause() {
+    if (!hasLiveOwner() || s.returningToPause) return;
+    s.returningToPause = true;
+    Loader::get()->queueInMainThread([] {
+        if (!hasLiveOwner()) { s.returningToPause = false; return; }
+        s.resetting = true;
+        releaseInjected();
+        clearMarkers();
+        s.owner->removeAllCheckpoints();
+        s.owner->resetLevel();
+        s.resetting = false;
+        fixPracticeTouchPriority();
+        Loader::get()->queueInMainThread([] {
+            if (hasLiveOwner()) s.owner->pauseGame(false);
+            s.returningToPause = false;
+        });
+    });
+}
 void stop(std::string message) {
     s.state = s.recording.ready() ? State::Ready : State::Idle;
     s.pending = Pending::None; releaseInjected(); s.message = std::move(message); save();
@@ -181,7 +199,7 @@ void nextEvent() {
         (s.recording.inputs[s.target].button != 1 || s.recording.windows[s.target].measured)) ++s.target;
     if (s.target == s.recording.inputs.size()) {
         stop("Analysis complete. Pause > Frames > Play");
-        s.owner->pauseGame(false); return;
+        queueReturnToPause(); return;
     }
     s.outcomes.assign(2 * s.recording.radius + 1, false);
     s.outcomes[s.recording.radius] = true; s.offset = -s.recording.radius;
@@ -203,7 +221,7 @@ void startCandidate() {
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
     if (s.state == State::Verify) {
-        if (result == Pending::Fail) { stop(s.message); s.owner->pauseGame(false); return; }
+        if (result == Pending::Fail) { stop(s.message); queueReturnToPause(); return; }
         s.recording.verified = true; s.state = State::Analyze; s.target = 0;
         nextEvent(); startCandidate();
     } else if (s.state == State::Analyze) {
@@ -211,7 +229,7 @@ void consume() {
         ++s.offset; startCandidate();
     } else if (s.state == State::Playback) {
         stop(result == Pending::Pass ? "Showcase complete. Replay available" : s.message);
-        s.owner->pauseGame(false);
+        queueReturnToPause();
     }
 }
 }
@@ -242,7 +260,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - .25f) <= .005f;
             if (dt > 0 && !validStep) {
                 s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail;
-                if (s.state == State::Analyze) { stop(s.message); s.owner->pauseGame(false); }
+                if (s.state == State::Analyze) { stop(s.message); queueReturnToPause(); }
                 return;
             }
             auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
@@ -388,7 +406,7 @@ class $modify(CFPlay, PlayLayer) {
             s.recording.complete = true; s.recording.endTick = tick();
             s.recording.verified = false; s.recording.windows.clear();
             s.state = State::Idle; s.message = "Run saved. Pause > Frames > Analyze"; save();
-            pauseGame(false); return;
+            queueReturnToPause(); return;
         }
         if (running()) {
             if (s.pending == Pending::None) {
