@@ -35,6 +35,10 @@ struct Session {
 };
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
+bool hasLiveOwner() {
+    auto current = PlayLayer::get();
+    return current && s.owner == current && current->m_level && current->m_player1 && current->m_player2;
+}
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
@@ -55,6 +59,7 @@ void save() {
     if (ec) s.message = "Could not finish saving recording";
 }
 void release() {
+    if (!hasLiveOwner()) return;
     s.injecting = true;
     for (int b = 1; b <= 3; ++b) {
         s.owner->handleButton(false, b, true); s.owner->handleButton(false, b, false);
@@ -66,6 +71,7 @@ void stop(std::string message) {
     s.pending = Pending::None; release(); s.message = std::move(message); save();
 }
 void resetTrial() {
+    if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
     s.resetting = true; release();
     // Automated runs stay in practice to avoid awarding progress or currency.
     if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
@@ -108,6 +114,7 @@ void marker(size_t index) {
     }
 }
 bool supported() {
+    if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return false; }
     if (s.owner->m_isPlatformer) { s.message = "Platformer is not supported"; return false; }
     if (s.owner->m_isIgnoreDamageEnabled) { s.message = "Disable ignore damage before recording or analysis"; return false; }
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
@@ -202,19 +209,27 @@ class $modify(CFBase, GJBaseGameLayer) {
 };
 
 class $modify(CFPlay, PlayLayer) {
-    bool init(GJGameLevel* level, bool replay, bool objects) {
-        s = {}; s.owner = this;
-        if (!PlayLayer::init(level, replay, objects)) { s.owner = nullptr; return false; }
+    static void bindSession(PlayLayer* layer) {
+        s = {}; s.owner = layer;
+        auto level = layer->m_level;
         s.recording.key = cf::fingerprint(fmt::format("{}:{}:{}", level->m_levelID.value(), std::string(level->m_levelName), std::string(level->m_levelString)));
         std::ifstream file(path()); cf::Recording loaded;
         if (cf::read(file, s.recording.key, loaded)) {
             s.recording = std::move(loaded); s.state = s.recording.ready() ? State::Ready : State::Idle;
             s.message = s.recording.ready() ? "Saved showcase available" : "Saved run: Analyze to continue";
         }
-        schedule(schedule_selector(CFPlay::service)); return true;
+        layer->unschedule(schedule_selector(CFPlay::service));
+        layer->schedule(schedule_selector(CFPlay::service));
+    }
+    bool init(GJGameLevel* level, bool replay, bool objects) {
+        // Other hooks may create/exit temporary layers during the original init.
+        // Bind only after the actual level has finished initializing.
+        if (!PlayLayer::init(level, replay, objects)) return false;
+        bindSession(this);
+        return true;
     }
     void service(float dt) {
-        if (s.owner != this) return;
+        if (s.owner != this || !hasLiveOwner()) return;
         if (m_isPaused) { hud(); return; }
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
@@ -307,17 +322,29 @@ class $modify(CFPlay, PlayLayer) {
         PlayLayer::levelComplete();
     }
     void onExit() {
-        if (s.owner == this) { save(); s = {}; }
+        // onExit is a scene lifecycle notification, not destruction. Reparenting
+        // and scene overlays must not erase the current recording/session.
+        if (s.owner == this && !s.recording.key.empty()) save();
         PlayLayer::onExit();
     }
 };
 
 class CFPopup : public Popup {
+    static bool ensureSession() {
+        auto layer = PlayLayer::get();
+        if (!layer || !layer->m_level || !layer->m_player1 || !layer->m_player2) {
+            FLAlertLayer::create("Click Frames", "No active level. Close this menu and reopen it from pause.", "OK")->show();
+            return false;
+        }
+        if (s.owner != layer) CFPlay::bindSession(layer);
+        return true;
+    }
     static void resumeGame() {
         if (auto scene = CCDirector::get()->getRunningScene())
             if (auto pause = scene->getChildByType<PauseLayer>(0)) pause->onResume(nullptr);
     }
     bool init() {
+        if (!ensureSession()) return false;
         if (!Popup::init(340, 280)) return false;
         setTitle("Click Frames");
         auto status = CCLabelBMFont::create(s.message.c_str(), "chatFont.fnt");
@@ -336,6 +363,7 @@ class CFPopup : public Popup {
             item->setScale(.7f); m_buttonMenu->addChildAtPosition(item, Anchor::Center, {0, y});
         };
         add("Record", 50, [this] {
+            if (!ensureSession()) return;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
@@ -344,16 +372,18 @@ class CFPopup : public Popup {
             onClose(nullptr); resumeGame();
         });
         add("Analyze / Resume", 15, [this] {
+            if (!ensureSession()) return;
             if (!s.recording.complete) { FLAlertLayer::create("Incomplete run", "Finish a practice run first.", "OK")->show(); return; }
             beginAnalysis(); onClose(nullptr); resumeGame();
         });
         add("Play / Replay", -20, [this] {
+            if (!ensureSession()) return;
             if (!s.recording.ready()) { FLAlertLayer::create("Not ready", "Complete and verify the analysis first.", "OK")->show(); return; }
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             s.state = State::Playback; s.pending = Pending::None; s.tally.fill(0);
             s.message = "Showcase - valid windows at 240 TPS"; resetTrial(); onClose(nullptr); resumeGame();
         });
-        add("Stop / Save", -55, [this] { stop("Stopped. Partial work saved"); onClose(nullptr); });
+        add("Stop / Save", -55, [this] { if (!ensureSession()) return; stop("Stopped. Partial work saved"); onClose(nullptr); });
         add("Settings", -90, [] { openSettingsPopup(Mod::get()); });
         return true;
     }
@@ -363,9 +393,11 @@ public:
 class $modify(CFPause, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
-        auto menu = typeinfo_cast<CCMenu*>(getChildByID("right-button-menu"));
-        if (!menu) { menu = CCMenu::create(); menu->setPosition({CCDirector::get()->getWinSize().width / 2, 35}); addChild(menu, 100); }
+        auto menu = CCMenu::create();
+        menu->setID("click-frames-bottom-menu"_spr);
+        menu->setPosition({CCDirector::get()->getWinSize().width / 2, 35});
+        addChild(menu, 100);
         auto button = CCMenuItemExt::createSpriteExtra(ButtonSprite::create("Frames"), [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
-        button->setScale(.7f); menu->addChild(button); menu->updateLayout();
+        button->setScale(.7f); button->setPosition({0, 0}); menu->addChild(button);
     }
 };

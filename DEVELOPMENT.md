@@ -1,4 +1,18 @@
-# Click Frames 0.1.0 — experimental
+# Click Frames 0.1.1 — experimental
+
+## Record crash fix
+
+The reported Android64 v0.1.0 instruction at offset 0x2fb4c dereferenced the
+session owner plus 0x310e (platformer flag). Its owner was null. Session binding
+now happens after PlayLayer initialization, and onExit only saves: a scene exit
+does not prove destruction. The popup reacquires the active PlayLayer when opened
+and before any session action; absent or stale owners cannot reach field reads.
+The Frames button uses its own bottom-center menu at y=35.
+
+Device regression checks: open pause and Record on a newly opened level; repeat
+after leaving/re-entering a level and after opening/closing pause several times;
+repeat with other UI mods enabled. A missing active level must show a message
+instead of crashing. Check bottom-center placement on both narrow and wide screens.
 
 ## Flow
 
