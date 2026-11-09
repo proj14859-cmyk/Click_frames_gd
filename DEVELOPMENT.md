@@ -1,4 +1,24 @@
-# Click Frames 0.1.1 — experimental
+# Click Frames 0.2.0 — experimental
+
+## Timing markers and dynamic counter
+
+Recording format 2 stores the exact world position of every press and release.
+Format 1 recordings are intentionally rejected because they cannot place markers
+reliably; the popup asks for a new run. Finishing Record saves and pauses. Analysis
+starts only from Frames > Analyze / Resume.
+
+The analyzer measures the contiguous full-route success window around the original
+tick. Showcase markers stay in the object layer until the run ends or restarts and
+display both total width and `-early / +late`. Presses use a filled circle; releases
+use an `R` and a nearly transparent circle. Both play their width sound and both
+increment the counter. Counter rows are preselected from the completed analysis,
+so empty categories—including 1F when there are no frame perfect events—take no
+space and the layout does not jump during playback.
+
+Physical and injected held-button states are separate. Record never synthesizes
+button transitions. Ending or cancelling an automated run only releases buttons
+actually injected by the mod. A manual restart cancels automation and then calls
+the game's normal reset path instead of swallowing it.
 
 ## Record crash fix
 

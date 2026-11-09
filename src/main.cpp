@@ -13,7 +13,7 @@ using namespace geode::prelude;
 
 namespace {
 enum class State { Idle, Record, Verify, Analyze, Ready, Playback };
-enum class Pending { None, StartAnalysis, Pass, Fail };
+enum class Pending { None, Pass, Fail };
 struct Checkpoint { size_t inputs, trace; std::array<bool, 6> held; };
 struct Session {
     PlayLayer* owner = nullptr;
@@ -21,8 +21,8 @@ struct Session {
     State state = State::Idle;
     Pending pending = Pending::None;
     bool injecting = false, resetting = false, restored = false;
-    std::array<bool, 6> held{};
     std::array<bool, 6> physicalHeld{};
+    std::array<bool, 6> injectedHeld{};
     std::map<CheckpointObject*, Checkpoint> checkpoints;
     std::vector<cf::Input> trial;
     std::vector<bool> outcomes;
@@ -32,6 +32,7 @@ struct Session {
     size_t comparedSamples = 0;
     float stalledSeconds = 0;
     std::array<int, 5> tally{};
+    std::array<bool, 5> visibleRows{};
     std::string message = "Record a practice run";
 };
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
@@ -59,40 +60,28 @@ void save() {
     std::filesystem::rename(tmp, path(), ec);
     if (ec) s.message = "Could not finish saving recording";
 }
-void release() {
+void releaseInjected() {
     if (!hasLiveOwner()) return;
-    if (!s.owner) {
-        s.held.fill(false);
-        s.physicalHeld.fill(false);
-        return;
-    }
-    bool twoPlayer = s.owner->m_level && s.owner->m_level->m_twoPlayerMode;
     s.injecting = true;
     for (int b = 1; b <= 3; ++b) {
-        if (s.held[slot(b, true)] || s.physicalHeld[slot(b, true)] || running()) {
-            s.owner->handleButton(false, b, true);
-        }
-        if (twoPlayer && (s.held[slot(b, false)] || s.physicalHeld[slot(b, false)] || running())) {
-            s.owner->handleButton(false, b, false);
+        for (bool p1 : {true, false}) {
+            auto index = slot(b, p1);
+            if (s.injectedHeld[index]) s.owner->handleButton(false, b, p1);
         }
     }
-    s.injecting = false;
-    s.held.fill(false);
-    s.physicalHeld.fill(false);
+    s.injecting = false; s.injectedHeld.fill(false);
 }
+void clearMarkers();
 void stop(std::string message) {
     s.state = s.recording.ready() ? State::Ready : State::Idle;
-    s.pending = Pending::None; release(); s.message = std::move(message); save();
+    s.pending = Pending::None; releaseInjected(); s.message = std::move(message); save();
 }
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
-    s.resetting = true; release();
-    // Automated and recorded runs stay in practice mode.
-    // Use removeAllCheckpoints() + resetLevel() instead of resetLevelFromStart()
-    // so Practice Mode state and UILayer checkpoint buttons remain active.
+    s.resetting = true; releaseInjected(); clearMarkers();
+    // Automated runs stay in practice to avoid awarding progress or currency.
     if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
-    s.owner->removeAllCheckpoints();
-    s.owner->resetLevel();
+    s.owner->removeAllCheckpoints(); s.owner->resetLevelFromStart();
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0;
@@ -108,23 +97,45 @@ void hud() {
     }
     label->setScale(static_cast<float>(Mod::get()->getSettingValue<double>("counter-scale")) * .6f);
     std::string text = s.message;
-    if (s.state == State::Playback)
-        text += fmt::format("\n1: {}\n2: {}\n3: {}\n4: {}\n5+: {}", s.tally[0], s.tally[1], s.tally[2], s.tally[3], s.tally[4]);
+    if (s.state == State::Playback) {
+        for (int i = 0; i < 5; ++i)
+            if (s.visibleRows[i]) text += fmt::format("\n{}{}F: {}", i + 1, i == 4 ? "+" : "", s.tally[i]);
+    }
     label->setString(text.c_str());
+}
+constexpr ccColor3B WINDOW_COLORS[5] = {
+    {255, 75, 75}, {255, 150, 55}, {255, 225, 70}, {245, 245, 245}, {105, 245, 125}
+};
+void clearMarkers() {
+    if (!hasLiveOwner() || !s.owner->m_objectLayer) return;
+    if (auto node = s.owner->m_objectLayer->getChildByID("cf-markers")) node->removeFromParent();
+}
+void prepareShowcase() {
+    s.tally.fill(0); s.visibleRows = cf::visibleCategories(s.recording); clearMarkers();
 }
 void marker(size_t index) {
     auto const e = s.recording.inputs[index];
     if (e.button != 1) return;
     auto w = s.recording.windows[index];
     if (!w.measured) return;
-    if (e.down) ++s.tally[std::min(w.width(), 5) - 1];
-    auto player = e.p1 ? s.owner->m_player1 : s.owner->m_player2;
-    if (!player) return;
-    auto label = CCLabelBMFont::create(fmt::format("{}{}{}", e.down ? "" : "R ", w.width(), w.lowerBound ? "+" : "").c_str(), "bigFont.fnt");
-    label->setScale(static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale")) * .45f);
-    label->setColor(e.down ? ccColor3B{255, 220, 70} : ccColor3B{100, 210, 255});
-    label->setPosition({0, 40}); player->addChild(label, 100);
-    label->runAction(CCSequence::create(CCDelayTime::create(.5f), CCFadeOut::create(.2f), CCRemoveSelf::create(), nullptr));
+    ++s.tally[cf::category(w)];
+    if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
+        auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
+        if (!root) {
+            root = CCNode::create(); root->setID("cf-markers"); s.owner->m_objectLayer->addChild(root, 1000);
+        }
+        auto node = CCNode::create(); node->setPosition({e.x, e.y});
+        float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale"));
+        auto color3 = WINDOW_COLORS[cf::category(w)];
+        ccColor4F border{color3.r / 255.f, color3.g / 255.f, color3.b / 255.f, 1.f};
+        ccColor4F fill{border.r, border.g, border.b, e.down ? .22f : .04f};
+        auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, fill, e.down ? 2.5f : 1.5f, border, 48);
+        node->addChild(circle);
+        auto label = CCLabelBMFont::create(fmt::format("{}{}F{}\n-{} / +{}", e.down ? "" : "R ", w.width(), w.lowerBound ? "+" : "", w.early, w.late).c_str(), "bigFont.fnt");
+        label->setAlignment(kCCTextAlignmentCenter); label->setScale(.28f * scale);
+        label->setColor(color3); label->setPosition({0, 27.f * scale}); node->addChild(label, 1);
+        root->addChild(node);
+    }
     if (Mod::get()->getSettingValue<bool>("sounds")) {
         auto sound = w.width() > 20 ? "frame-wide.wav" : fmt::format("frame-{}.wav", w.width());
         FMODAudioEngine::get()->playEffect(fmt::format("{}/{}", Mod::get()->getID(), sound));
@@ -175,7 +186,6 @@ void startCandidate() {
 }
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
-    if (result == Pending::StartAnalysis) { beginAnalysis(); return; }
     if (s.state == State::Verify) {
         if (result == Pending::Fail) { stop(s.message); s.owner->pauseGame(false); return; }
         s.recording.verified = true; s.state = State::Analyze; s.target = 0;
@@ -193,28 +203,22 @@ void consume() {
 class $modify(CFBase, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool p1) {
         if (static_cast<GJBaseGameLayer*>(s.owner) != this) return GJBaseGameLayer::handleButton(down, button, p1);
-        if (button >= 1 && button <= 3 && !s.injecting && !s.resetting) {
-            if (!m_level || !m_level->m_twoPlayerMode) p1 = true;
-            s.physicalHeld[slot(button, p1)] = down;
-        }
         if (running() && !s.injecting) return;
-        if (s.state == State::Record && !s.resetting && !s.owner->m_isPaused &&
-            !s.owner->m_inResetDelay && !s.owner->m_hasCompletedLevel &&
-            s.owner->m_player1 && !s.owner->m_player1->m_isDead &&
-            button >= 1 && button <= 3) {
-            if (!m_level || !m_level->m_twoPlayerMode) p1 = true;
+        if (s.injecting && button >= 1 && button <= 3) s.injectedHeld[slot(button, p1)] = down;
+        if (s.state == State::Record && !s.resetting && button >= 1 && button <= 3) {
             auto i = slot(button, p1);
-            if (s.held[i] != down) {
-                s.recording.inputs.push_back({tick(), down, button, p1});
-                s.held[i] = down;
+            if (s.physicalHeld[i] != down) {
+                auto player = p1 ? s.owner->m_player1 : s.owner->m_player2;
+                auto position = player ? player->getPosition() : CCPointZero;
+                s.recording.inputs.push_back({tick(), down, button, p1, position.x, position.y});
+                s.physicalHeld[i] = down;
             }
         }
         GJBaseGameLayer::handleButton(down, button, p1);
     }
     void processCommands(float dt, bool half, bool last) {
         if (static_cast<GJBaseGameLayer*>(s.owner) == this && running() && s.pending == Pending::None) {
-            bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - 60.f / 240.f) <= .005f;
-            if (dt > 0 && !validStep) {
+            if (dt > 0 && std::abs(dt - 1.f / 240.f) > .00002f) {
                 s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail;
                 if (s.state == State::Analyze) { stop(s.message); s.owner->pauseGame(false); }
                 return;
@@ -240,11 +244,12 @@ class $modify(CFPlay, PlayLayer) {
         s = {}; s.owner = layer;
         auto level = layer->m_level;
         s.recording.key = cf::fingerprint(fmt::format("{}:{}:{}", level->m_levelID.value(), std::string(level->m_levelName), std::string(level->m_levelString)));
-        std::ifstream file(path()); cf::Recording loaded;
+        auto recordingPath = path();
+        std::ifstream file(recordingPath); cf::Recording loaded;
         if (cf::read(file, s.recording.key, loaded)) {
             s.recording = std::move(loaded); s.state = s.recording.ready() ? State::Ready : State::Idle;
             s.message = s.recording.ready() ? "Saved showcase available" : "Saved run: Analyze to continue";
-        }
+        } else if (std::filesystem::exists(recordingPath)) s.message = "Recording format changed. Record a new run.";
         layer->unschedule(schedule_selector(CFPlay::service));
         layer->schedule(schedule_selector(CFPlay::service));
     }
@@ -266,20 +271,12 @@ class $modify(CFPlay, PlayLayer) {
         if (s.pending != Pending::None) consume();
         hud();
     }
-    void pauseGame(bool unfocused) {
-        if (s.owner == this) s.physicalHeld.fill(false);
-        PlayLayer::pauseGame(unfocused);
-    }
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
         if (s.owner != this || s.resetting || s.pending != Pending::None || !m_player1 || !m_player2) return;
         int now = tick();
         if (s.state == State::Record && now != s.lastTick) {
-            if (!s.recording.trace.empty() && s.recording.trace.back().tick == now) {
-                s.recording.trace.back() = {now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()};
-            } else {
-                s.recording.trace.push_back({now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()});
-            }
+            s.recording.trace.push_back({now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()});
             s.lastTick = now;
         } else if (s.state == State::Verify || s.state == State::Playback) {
             auto const& trace = s.recording.trace;
@@ -294,20 +291,9 @@ class $modify(CFPlay, PlayLayer) {
             }
         }
     }
-    CheckpointObject* createCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::createCheckpoint();
-    }
-    CheckpointObject* markCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::markCheckpoint();
-    }
     void storeCheckpoint(CheckpointObject* cp) {
-        if (s.owner == this && running()) return;
         PlayLayer::storeCheckpoint(cp);
-        if (s.owner == this && s.state == State::Record && cp) {
-            s.checkpoints[cp] = {s.recording.inputs.size(), s.recording.trace.size(), s.held};
-        }
+        if (s.state == State::Record) s.checkpoints[cp] = {s.recording.inputs.size(), s.recording.trace.size(), s.physicalHeld};
     }
     void removeCheckpoint(bool first) {
         if (m_checkpointArray && m_checkpointArray->count()) {
@@ -321,68 +307,39 @@ class $modify(CFPlay, PlayLayer) {
     }
     void loadFromCheckpoint(CheckpointObject* cp) {
         PlayLayer::loadFromCheckpoint(cp);
-        if (s.owner != this || s.state != State::Record) return;
+        if (s.state != State::Record) return;
         auto it = s.checkpoints.find(cp);
-        int now = tick();
-        if (it == s.checkpoints.end()) {
-            while (!s.recording.inputs.empty() && s.recording.inputs.back().tick > now) s.recording.inputs.pop_back();
-            while (!s.recording.trace.empty() && s.recording.trace.back().tick > now) s.recording.trace.pop_back();
-            s.held.fill(false);
-            for (auto const& inp : s.recording.inputs) s.held[slot(inp.button, inp.p1)] = inp.down;
-            s.restored = true;
-            s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
-            return;
-        }
+        if (it == s.checkpoints.end()) { stop("Unknown checkpoint. Start a new recording"); return; }
         auto saved = it->second;
         if (saved.inputs > s.recording.inputs.size() || saved.trace > s.recording.trace.size()) {
             stop("Checkpoint no longer belongs to this run"); return;
         }
         s.recording.inputs.resize(saved.inputs); s.recording.trace.resize(saved.trace);
-        while (!s.recording.inputs.empty() && s.recording.inputs.back().tick > now) s.recording.inputs.pop_back();
-        while (!s.recording.trace.empty() && s.recording.trace.back().tick > now) s.recording.trace.pop_back();
-        s.held = saved.held; s.restored = true;
-        s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
+        s.physicalHeld = saved.held; s.restored = true; s.lastTick = -1;
     }
     void resetLevel() {
-        if (s.owner == this && running() && !s.resetting) {
-            s.message = "Unexpected reset during replay"; s.pending = Pending::Fail; return;
-        }
+        if (running() && !s.resetting) stop("Automated run cancelled by manual restart");
         s.restored = false; PlayLayer::resetLevel();
-        if (s.owner == this && s.state == State::Record && !s.resetting) {
+        if (s.state == State::Record && !s.resetting) {
             if (!s.restored) {
-                s.recording.inputs.clear(); s.recording.trace.clear(); s.checkpoints.clear(); s.held.fill(false);
+                s.recording.inputs.clear(); s.recording.trace.clear(); s.checkpoints.clear();
+                s.physicalHeld.fill(false);
             }
-            int now = tick();
-            bool twoPlayer = m_level && m_level->m_twoPlayerMode;
-            s.resetting = true;
-            for (int b = 1; b <= 3; ++b) {
-                for (int p = 0; p < (twoPlayer ? 2 : 1); ++p) {
-                    bool p1 = (p == 0);
-                    auto i = slot(b, p1);
-                    bool phys = s.physicalHeld[i];
-                    if (s.held[i] != phys) {
-                        s.recording.inputs.push_back({now, phys, b, p1});
-                        s.held[i] = phys;
-                    }
-                    if (phys) {
-                        handleButton(true, b, p1);
-                    }
-                }
-            }
-            s.resetting = false;
-            s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
+            s.lastTick = -1;
         }
     }
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if (s.owner == this && running()) { s.message = fmt::format("Replay died at tick {}", tick()); s.pending = Pending::Fail; return; }
+        if (running()) { s.message = fmt::format("Replay died at tick {}", tick()); s.pending = Pending::Fail; return; }
         PlayLayer::destroyPlayer(player, object);
     }
     void levelComplete() {
-        if (s.owner == this && s.state == State::Record) {
+        if (s.state == State::Record) {
             s.recording.complete = true; s.recording.endTick = tick();
-            s.state = State::Idle; save(); s.pending = Pending::StartAnalysis; return;
+            s.recording.verified = false; s.recording.windows.clear();
+            s.state = State::Idle; s.message = "Run saved. Pause > Frames > Analyze"; save();
+            pauseGame(false); return;
         }
-        if (s.owner == this && running()) {
+        if (running()) {
             if (s.pending == Pending::None) {
                 auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
                 bool valid = s.next == events.size();
@@ -429,9 +386,9 @@ class CFPopup : public Popup {
         for (size_t i = 0; i < s.recording.windows.size(); ++i) {
             auto w = s.recording.windows[i];
             if (w.measured) ++measured;
-            if (w.measured && !w.lowerBound && w.width() == 1 && s.recording.inputs[i].down) ++perfect;
+            if (w.measured && !w.lowerBound && w.width() == 1) ++perfect;
         }
-        auto summary = CCLabelBMFont::create(fmt::format("Measured: {} | 1-frame presses: {}", measured, perfect).c_str(), "chatFont.fnt");
+        auto summary = CCLabelBMFont::create(fmt::format("Measured: {} | 1-frame events: {}", measured, perfect).c_str(), "chatFont.fnt");
         summary->setScale(.55f); m_mainLayer->addChildAtPosition(summary, Anchor::Top, {0, -65});
         auto add = [this](char const* title, float y, std::function<void()> action) {
             auto item = CCMenuItemExt::createSpriteExtra(ButtonSprite::create(title), [action](auto) { action(); });
@@ -442,23 +399,21 @@ class CFPopup : public Popup {
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
-            onClose(nullptr); resumeGame();
+            s.resetting = true; s.owner->togglePracticeMode(true); s.resetting = false;
             resetTrial(); s.state = State::Record; s.message = "REC - practice";
+            onClose(nullptr); resumeGame();
         });
         add("Analyze / Resume", 15, [this] {
             if (!ensureSession()) return;
             if (!s.recording.complete) { FLAlertLayer::create("Incomplete run", "Finish a practice run first.", "OK")->show(); return; }
-            if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
-            onClose(nullptr); resumeGame();
-            beginAnalysis();
+            beginAnalysis(); onClose(nullptr); resumeGame();
         });
         add("Play / Replay", -20, [this] {
             if (!ensureSession()) return;
             if (!s.recording.ready()) { FLAlertLayer::create("Not ready", "Complete and verify the analysis first.", "OK")->show(); return; }
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
-            onClose(nullptr); resumeGame();
-            s.state = State::Playback; s.pending = Pending::None; s.tally.fill(0);
-            s.message = "Showcase - valid windows at 240 TPS"; resetTrial();
+            s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
+            s.message = "Showcase - valid windows at 240 TPS"; resetTrial(); onClose(nullptr); resumeGame();
         });
         add("Stop / Save", -55, [this] { if (!ensureSession()) return; stop("Stopped. Partial work saved"); onClose(nullptr); });
         add("Settings", -90, [] { openSettingsPopup(Mod::get()); });
@@ -478,4 +433,3 @@ class $modify(CFPause, PauseLayer) {
         button->setScale(.7f); button->setPosition({0, 0}); menu->addChild(button);
     }
 };
- 
