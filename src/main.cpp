@@ -46,6 +46,20 @@ bool running() { return s.state == State::Verify || s.state == State::Analyze ||
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
 std::filesystem::path path() { return Mod::get()->getSaveDir() / ("run-" + s.recording.key + ".cfr"); }
+void fixPracticeTouchPriority() {
+    if (!hasLiveOwner() || !s.owner->m_uiLayer) return;
+    auto dispatcher = CCDirector::get()->getTouchDispatcher();
+    if (!dispatcher) return;
+    dispatcher->setPriority(0, s.owner->m_uiLayer);
+    if (auto children = s.owner->m_uiLayer->getChildren()) {
+        for (unsigned int i = 0; i < children->count(); ++i) {
+            if (auto menu = typeinfo_cast<CCMenu*>(children->objectAtIndex(i))) {
+                menu->setEnabled(true);
+                dispatcher->setPriority(-128, menu);
+            }
+        }
+    }
+}
 void save() {
     auto tmp = path(); tmp += ".tmp";
     std::ofstream out(tmp); cf::write(out, s.recording); out.close();
@@ -86,6 +100,7 @@ void resetTrial() {
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0;
+    fixPracticeTouchPriority();
 }
 void hud() {
     auto pl = s.owner;
@@ -270,6 +285,7 @@ class $modify(CFPlay, PlayLayer) {
     void service(float dt) {
         if (s.owner != this || !hasLiveOwner()) return;
         if (m_isPaused) { hud(); return; }
+        if (m_isPracticeMode) fixPracticeTouchPriority();
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
             else { s.watchdogTick = tick(); s.stalledSeconds = 0; }
@@ -410,6 +426,13 @@ class CFPopup : public Popup {
         if (auto scene = CCDirector::get()->getRunningScene())
             if (auto pause = scene->getChildByType<PauseLayer>(0)) pause->onResume(nullptr);
     }
+    static void resumeAndRun(std::function<void()> action) {
+        Loader::get()->queueInMainThread([action = std::move(action)] {
+            if (auto scene = CCDirector::get()->getRunningScene())
+                if (auto pause = scene->getChildByType<PauseLayer>(0)) pause->onResume(nullptr);
+            if (hasLiveOwner()) { action(); fixPracticeTouchPriority(); }
+        });
+    }
     bool init() {
         if (!ensureSession()) return false;
         if (!Popup::init(340, 280)) return false;
@@ -435,21 +458,23 @@ class CFPopup : public Popup {
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
             s.recordedHeld.fill(false); s.physicalHeld.fill(false); s.injectedHeld.fill(false);
-            onClose(nullptr); resumeGame(); resetTrial();
-            s.state = State::Record; s.message = "REC - practice";
+            onClose(nullptr);
+            resumeAndRun([] { resetTrial(); s.state = State::Record; s.message = "REC - practice"; });
         });
         add("Analyze / Resume", 15, [this] {
             if (!ensureSession()) return;
             if (!s.recording.complete) { FLAlertLayer::create("Incomplete run", "Finish a practice run first.", "OK")->show(); return; }
-            onClose(nullptr); resumeGame(); beginAnalysis();
+            onClose(nullptr); resumeAndRun([] { beginAnalysis(); });
         });
         add("Play / Replay", -20, [this] {
             if (!ensureSession()) return;
             if (!s.recording.ready()) { FLAlertLayer::create("Not ready", "Complete and verify the analysis first.", "OK")->show(); return; }
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
-            onClose(nullptr); resumeGame();
-            s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
-            s.message = "Showcase - valid windows at 240 TPS"; resetTrial();
+            onClose(nullptr);
+            resumeAndRun([] {
+                s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
+                s.message = "Showcase - valid windows at 240 TPS"; resetTrial();
+            });
         });
         add("Stop / Save", -55, [this] { if (!ensureSession()) return; stop("Stopped. Partial work saved"); onClose(nullptr); });
         add("Settings", -90, [] { openSettingsPopup(Mod::get()); });
