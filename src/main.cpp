@@ -481,7 +481,7 @@ class CFPopup : public Popup {
                 auto invoke = action; invoke();
             });
             // Keep touch geometry and resting scale identical; never scale the item.
-            item->setScaleMult(1.f); item->setEnabled(enabled);
+            item->m_scaleMultiplier = 1.f; item->setEnabled(enabled);
             m_buttonMenu->addChild(item);
             item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace(pos)));
         };
@@ -548,6 +548,6 @@ class $modify(CFPause, PauseLayer) {
         addChild(menu, 100);
         auto sprite = ButtonSprite::create("Frames"); sprite->setScale(.7f);
         auto button = CCMenuItemExt::createSpriteExtra(sprite, [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
-        button->setScaleMult(1.f); button->setPosition({0, 0}); menu->addChild(button);
+        button->m_scaleMultiplier = 1.f; button->setPosition({0, 0}); menu->addChild(button);
     }
 };
