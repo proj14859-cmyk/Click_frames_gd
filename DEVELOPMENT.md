@@ -1,4 +1,11 @@
-# Click Frames 0.2.0 — experimental
+# Click Frames 0.2.1 — experimental
+
+## 0.2.1 completion handoff
+
+Record, Analyze and Playback no longer call `pauseGame` directly from a level
+completion callback. They save their state, queue a clean restart without
+checkpoints, then open pause on the following main-thread cycle. This prevents
+the game from remaining at 100% with gameplay and pause controls unresponsive.
 
 ## Timing markers and dynamic counter
 
