@@ -27,6 +27,8 @@ struct Session {
     std::vector<bool> outcomes;
     size_t next = 0, sample = 0, target = 0;
     int offset = 0, tests = 0, lastTick = -1;
+    int watchdogTick = -1;
+    float stalledSeconds = 0;
     std::array<int, 5> tally{};
     std::string message = "Record a practice run";
 };
@@ -64,8 +66,11 @@ void stop(std::string message) {
 }
 void resetTrial() {
     s.resetting = true; release();
+    // Automated runs stay in practice to avoid awarding progress or currency.
+    if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
     s.owner->removeAllCheckpoints(); s.owner->resetLevelFromStart();
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
+    s.watchdogTick = -1; s.stalledSeconds = 0;
 }
 void hud() {
     auto pl = s.owner;
@@ -102,6 +107,7 @@ void marker(size_t index) {
 }
 bool supported() {
     if (s.owner->m_isPlatformer) { s.message = "Platformer is not supported"; return false; }
+    if (s.owner->m_isIgnoreDamageEnabled) { s.message = "Disable ignore damage before recording or analysis"; return false; }
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         s.message = "Disable Click Between Frames for 240 TPS analysis"; return false;
     }
@@ -205,8 +211,13 @@ class $modify(CFPlay, PlayLayer) {
         }
         schedule(schedule_selector(CFPlay::service)); return true;
     }
-    void service(float) {
+    void service(float dt) {
         if (s.owner != this) return;
+        if (running() && !m_isPaused && s.pending == Pending::None) {
+            if (s.watchdogTick == tick()) s.stalledSeconds += dt;
+            else { s.watchdogTick = tick(); s.stalledSeconds = 0; }
+            if (s.stalledSeconds > 10) { s.message = "Replay stalled for 10 seconds"; s.pending = Pending::Fail; }
+        }
         if (s.pending != Pending::None) consume();
         hud();
     }
@@ -230,8 +241,19 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void storeCheckpoint(CheckpointObject* cp) {
+        if (running()) return;
         PlayLayer::storeCheckpoint(cp);
         if (s.state == State::Record) s.checkpoints[cp] = {s.recording.inputs.size(), s.recording.trace.size(), s.held};
+    }
+    void removeCheckpoint(bool first) {
+        if (m_checkpointArray && m_checkpointArray->count()) {
+            auto cp = static_cast<CheckpointObject*>(m_checkpointArray->objectAtIndex(first ? 0 : m_checkpointArray->count() - 1));
+            s.checkpoints.erase(cp);
+        }
+        PlayLayer::removeCheckpoint(first);
+    }
+    void removeAllCheckpoints() {
+        s.checkpoints.clear(); PlayLayer::removeAllCheckpoints();
     }
     void loadFromCheckpoint(CheckpointObject* cp) {
         PlayLayer::loadFromCheckpoint(cp);
@@ -281,11 +303,19 @@ class CFPopup : public Popup {
             if (auto pause = scene->getChildByType<PauseLayer>(0)) pause->onResume(nullptr);
     }
     bool init() {
-        if (!Popup::init(340, 260)) return false;
+        if (!Popup::init(340, 280)) return false;
         setTitle("Click Frames");
         auto status = CCLabelBMFont::create(s.message.c_str(), "chatFont.fnt");
         status->limitLabelWidth(310, .6f, .2f);
         m_mainLayer->addChildAtPosition(status, Anchor::Top, {0, -45});
+        size_t measured = 0, perfect = 0;
+        for (size_t i = 0; i < s.recording.windows.size(); ++i) {
+            auto w = s.recording.windows[i];
+            if (w.measured) ++measured;
+            if (w.measured && !w.lowerBound && w.width() == 1 && s.recording.inputs[i].down) ++perfect;
+        }
+        auto summary = CCLabelBMFont::create(fmt::format("Measured: {} | 1-frame presses: {}", measured, perfect).c_str(), "chatFont.fnt");
+        summary->setScale(.55f); m_mainLayer->addChildAtPosition(summary, Anchor::Top, {0, -65});
         auto add = [this](char const* title, float y, std::function<void()> action) {
             auto item = CCMenuItemExt::createSpriteExtra(ButtonSprite::create(title), [action](auto) { action(); });
             item->setScale(.7f); m_buttonMenu->addChildAtPosition(item, Anchor::Center, {0, y});
