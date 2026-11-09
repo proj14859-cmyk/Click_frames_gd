@@ -34,17 +34,18 @@ struct Session {
     std::array<int, 5> tally{};
     std::string message = "Record a practice run";
 };
-// Exactly one live PlayLayer owns this session. It is discarded on exit/init.
+// Exactly one live PlayLayer owns this session.
 Session s;
 bool hasLiveOwner() {
     auto current = PlayLayer::get();
     return current && s.owner == current && current->m_level && current->m_player1 && current->m_player2;
 }
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
-int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
+int tick() { return hasLiveOwner() ? static_cast<int>(s.owner->m_gameState.m_currentProgress) : 0; }
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
 std::filesystem::path path() { return Mod::get()->getSaveDir() / ("run-" + s.recording.key + ".cfr"); }
 void save() {
+    if (s.recording.key.empty()) return;
     auto tmp = path(); tmp += ".tmp";
     std::ofstream out(tmp); cf::write(out, s.recording); out.close();
     if (!out) { s.message = "Could not save recording"; return; }
@@ -60,8 +61,7 @@ void save() {
     if (ec) s.message = "Could not finish saving recording";
 }
 void release() {
-    if (!hasLiveOwner()) return;
-    if (!s.owner) {
+    if (!hasLiveOwner()) {
         s.held.fill(false);
         s.physicalHeld.fill(false);
         return;
@@ -98,6 +98,7 @@ void resetTrial() {
     s.comparedSamples = 0;
 }
 void hud() {
+    if (!hasLiveOwner()) return;
     auto pl = s.owner;
     auto label = typeinfo_cast<CCLabelBMFont*>(pl->getChildByID("cf-hud"));
     if (!label) {
@@ -113,6 +114,7 @@ void hud() {
     label->setString(text.c_str());
 }
 void marker(size_t index) {
+    if (!hasLiveOwner() || index >= s.recording.inputs.size() || index >= s.recording.windows.size()) return;
     auto const e = s.recording.inputs[index];
     if (e.button != 1) return;
     auto w = s.recording.windows[index];
@@ -154,7 +156,8 @@ void nextEvent() {
         (s.recording.inputs[s.target].button != 1 || s.recording.windows[s.target].measured)) ++s.target;
     if (s.target == s.recording.inputs.size()) {
         stop("Analysis complete. Pause > Frames > Play");
-        s.owner->pauseGame(false); return;
+        if (hasLiveOwner()) s.owner->pauseGame(false);
+        return;
     }
     s.outcomes.assign(2 * s.recording.radius + 1, false);
     s.outcomes[s.recording.radius] = true; s.offset = -s.recording.radius;
@@ -174,6 +177,7 @@ void startCandidate() {
     resetTrial();
 }
 void consume() {
+    if (!hasLiveOwner()) return;
     auto result = s.pending; s.pending = Pending::None;
     if (result == Pending::StartAnalysis) { beginAnalysis(); return; }
     if (s.state == State::Verify) {
@@ -192,7 +196,8 @@ void consume() {
 
 class $modify(CFBase, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool p1) {
-        if (static_cast<GJBaseGameLayer*>(s.owner) != this) return GJBaseGameLayer::handleButton(down, button, p1);
+        if (static_cast<GJBaseGameLayer*>(s.owner) != this || !hasLiveOwner())
+            return GJBaseGameLayer::handleButton(down, button, p1);
         if (button >= 1 && button <= 3 && !s.injecting && !s.resetting) {
             if (!m_level || !m_level->m_twoPlayerMode) p1 = true;
             s.physicalHeld[slot(button, p1)] = down;
@@ -212,7 +217,7 @@ class $modify(CFBase, GJBaseGameLayer) {
         GJBaseGameLayer::handleButton(down, button, p1);
     }
     void processCommands(float dt, bool half, bool last) {
-        if (static_cast<GJBaseGameLayer*>(s.owner) == this && running() && s.pending == Pending::None) {
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this && hasLiveOwner() && running() && s.pending == Pending::None) {
             bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - 60.f / 240.f) <= .005f;
             if (dt > 0 && !validStep) {
                 s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail;
@@ -237,6 +242,7 @@ class $modify(CFBase, GJBaseGameLayer) {
 
 class $modify(CFPlay, PlayLayer) {
     static void bindSession(PlayLayer* layer) {
+        if (!layer || !layer->m_level) return;
         s = {}; s.owner = layer;
         auto level = layer->m_level;
         s.recording.key = cf::fingerprint(fmt::format("{}:{}:{}", level->m_levelID.value(), std::string(level->m_levelName), std::string(level->m_levelString)));
@@ -272,7 +278,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-        if (s.owner != this || s.resetting || s.pending != Pending::None || !m_player1 || !m_player2) return;
+        if (s.owner != this || !hasLiveOwner() || s.resetting || s.pending != Pending::None) return;
         int now = tick();
         if (s.state == State::Record && now != s.lastTick) {
             if (!s.recording.trace.empty() && s.recording.trace.back().tick == now) {
@@ -429,7 +435,7 @@ class CFPopup : public Popup {
         for (size_t i = 0; i < s.recording.windows.size(); ++i) {
             auto w = s.recording.windows[i];
             if (w.measured) ++measured;
-            if (w.measured && !w.lowerBound && w.width() == 1 && s.recording.inputs[i].down) ++perfect;
+            if (w.measured && !w.lowerBound && w.width() == 1 && i < s.recording.inputs.size() && s.recording.inputs[i].down) ++perfect;
         }
         auto summary = CCLabelBMFont::create(fmt::format("Measured: {} | 1-frame presses: {}", measured, perfect).c_str(), "chatFont.fnt");
         summary->setScale(.55f); m_mainLayer->addChildAtPosition(summary, Anchor::Top, {0, -65});
@@ -438,6 +444,7 @@ class CFPopup : public Popup {
             item->setScale(.7f); m_buttonMenu->addChildAtPosition(item, Anchor::Center, {0, y});
         };
         add("Record", 50, [this] {
+            Ref<CFPopup> self = this;
             if (!ensureSession()) return;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
@@ -446,6 +453,7 @@ class CFPopup : public Popup {
             resetTrial(); s.state = State::Record; s.message = "REC - practice";
         });
         add("Analyze / Resume", 15, [this] {
+            Ref<CFPopup> self = this;
             if (!ensureSession()) return;
             if (!s.recording.complete) { FLAlertLayer::create("Incomplete run", "Finish a practice run first.", "OK")->show(); return; }
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
@@ -453,6 +461,7 @@ class CFPopup : public Popup {
             beginAnalysis();
         });
         add("Play / Replay", -20, [this] {
+            Ref<CFPopup> self = this;
             if (!ensureSession()) return;
             if (!s.recording.ready()) { FLAlertLayer::create("Not ready", "Complete and verify the analysis first.", "OK")->show(); return; }
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
@@ -460,7 +469,12 @@ class CFPopup : public Popup {
             s.state = State::Playback; s.pending = Pending::None; s.tally.fill(0);
             s.message = "Showcase - valid windows at 240 TPS"; resetTrial();
         });
-        add("Stop / Save", -55, [this] { if (!ensureSession()) return; stop("Stopped. Partial work saved"); onClose(nullptr); });
+        add("Stop / Save", -55, [this] {
+            Ref<CFPopup> self = this;
+            if (!ensureSession()) return;
+            stop("Stopped. Partial work saved");
+            onClose(nullptr);
+        });
         add("Settings", -90, [] { openSettingsPopup(Mod::get()); });
         return true;
     }
@@ -478,4 +492,4 @@ class $modify(CFPause, PauseLayer) {
         button->setScale(.7f); button->setPosition({0, 0}); menu->addChild(button);
     }
 };
- 
+```
