@@ -1,4 +1,38 @@
-# Click Frames 0.1.0 — experimental
+# Click Frames 0.2.0 — experimental
+
+## Timing markers and dynamic counter
+
+Recording format 2 stores the exact world position of every press and release.
+Format 1 recordings are intentionally rejected because they cannot place markers
+reliably; the popup asks for a new run. Finishing Record saves and pauses. Analysis
+starts only from Frames > Analyze / Resume.
+
+The analyzer measures the contiguous full-route success window around the original
+tick. Showcase markers stay in the object layer until the run ends or restarts and
+display both total width and `-early / +late`. Presses use a filled circle; releases
+use an `R` and a nearly transparent circle. Both play their width sound and both
+increment the counter. Counter rows are preselected from the completed analysis,
+so empty categories—including 1F when there are no frame perfect events—take no
+space and the layout does not jump during playback.
+
+Physical and injected held-button states are separate. Record never synthesizes
+button transitions. Ending or cancelling an automated run only releases buttons
+actually injected by the mod. A manual restart cancels automation and then calls
+the game's normal reset path instead of swallowing it.
+
+## Record crash fix
+
+The reported Android64 v0.1.0 instruction at offset 0x2fb4c dereferenced the
+session owner plus 0x310e (platformer flag). Its owner was null. Session binding
+now happens after PlayLayer initialization, and onExit only saves: a scene exit
+does not prove destruction. The popup reacquires the active PlayLayer when opened
+and before any session action; absent or stale owners cannot reach field reads.
+The Frames button uses its own bottom-center menu at y=35.
+
+Device regression checks: open pause and Record on a newly opened level; repeat
+after leaving/re-entering a level and after opening/closing pause several times;
+repeat with other UI mods enabled. A missing active level must show a message
+instead of crashing. Check bottom-center placement on both narrow and wide screens.
 
 ## Flow
 
