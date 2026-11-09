@@ -5,6 +5,7 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include "Timing.hpp"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -44,6 +45,21 @@ bool running() { return s.state == State::Verify || s.state == State::Analyze ||
 int tick() { return hasLiveOwner() ? static_cast<int>(s.owner->m_gameState.m_currentProgress) : 0; }
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
 std::filesystem::path path() { return Mod::get()->getSaveDir() / ("run-" + s.recording.key + ".cfr"); }
+void fixPracticeTouchPriority() {
+    if (!hasLiveOwner() || !s.owner->m_uiLayer) return;
+    auto td = CCDirector::get()->getTouchDispatcher();
+    if (!td) return;
+    auto ui = s.owner->m_uiLayer;
+    td->setPriority(0, ui);
+    if (auto children = ui->getChildren()) {
+        for (unsigned int i = 0; i < children->count(); ++i) {
+            if (auto menu = typeinfo_cast<CCMenu*>(children->objectAtIndex(i))) {
+                menu->setEnabled(true);
+                td->setPriority(-128, menu);
+            }
+        }
+    }
+}
 void save() {
     if (s.recording.key.empty()) return;
     auto tmp = path(); tmp += ".tmp";
@@ -96,6 +112,7 @@ void resetTrial() {
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0;
+    fixPracticeTouchPriority();
 }
 void hud() {
     if (!hasLiveOwner()) return;
@@ -109,8 +126,21 @@ void hud() {
     }
     label->setScale(static_cast<float>(Mod::get()->getSettingValue<double>("counter-scale")) * .6f);
     std::string text = s.message;
-    if (s.state == State::Playback)
-        text += fmt::format("\n1: {}\n2: {}\n3: {}\n4: {}\n5+: {}", s.tally[0], s.tally[1], s.tally[2], s.tally[3], s.tally[4]);
+    if (s.state == State::Playback) {
+        std::array<bool, 5> activeBuckets{};
+        for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i) {
+            if (s.recording.inputs[i].button == 1 && s.recording.inputs[i].down && s.recording.windows[i].measured) {
+                int b = std::clamp(s.recording.windows[i].width(), 1, 5) - 1;
+                activeBuckets[b] = true;
+            }
+        }
+        constexpr std::array<char const*, 5> labels{"1", "2", "3", "4", "5+"};
+        for (size_t b = 0; b < 5; ++b) {
+            if (activeBuckets[b] || s.tally[b] > 0) {
+                text += fmt::format("\n{}: {}", labels[b], s.tally[b]);
+            }
+        }
+    }
     label->setString(text.c_str());
 }
 void marker(size_t index) {
@@ -118,8 +148,13 @@ void marker(size_t index) {
     auto const e = s.recording.inputs[index];
     if (e.button != 1) return;
     auto w = s.recording.windows[index];
-    if (!w.measured) return;
-    if (e.down) ++s.tally[std::min(w.width(), 5) - 1];
+    if (!w.measured) {
+        if (Mod::get()->getSettingValue<bool>("sounds")) {
+            FMODAudioEngine::get()->playEffect(fmt::format("{}/frame-unknown.wav", Mod::get()->getID()));
+        }
+        return;
+    }
+    if (e.down) ++s.tally[std::clamp(w.width(), 1, 5) - 1];
     auto player = e.p1 ? s.owner->m_player1 : s.owner->m_player2;
     if (!player) return;
     auto label = CCLabelBMFont::create(fmt::format("{}{}{}", e.down ? "" : "R ", w.width(), w.lowerBound ? "+" : "").c_str(), "bigFont.fnt");
@@ -128,7 +163,14 @@ void marker(size_t index) {
     label->setPosition({0, 40}); player->addChild(label, 100);
     label->runAction(CCSequence::create(CCDelayTime::create(.5f), CCFadeOut::create(.2f), CCRemoveSelf::create(), nullptr));
     if (Mod::get()->getSettingValue<bool>("sounds")) {
-        auto sound = w.width() > 20 ? "frame-wide.wav" : fmt::format("frame-{}.wav", w.width());
+        std::string sound;
+        if (!e.down) {
+            sound = "frame-release.wav";
+        } else if (w.width() > 9) {
+            sound = "frame-wide.wav";
+        } else {
+            sound = fmt::format("frame-{}.wav", std::max(1, w.width()));
+        }
         FMODAudioEngine::get()->playEffect(fmt::format("{}/{}", Mod::get()->getID(), sound));
     }
 }
@@ -218,9 +260,8 @@ class $modify(CFBase, GJBaseGameLayer) {
     }
     void processCommands(float dt, bool half, bool last) {
         if (static_cast<GJBaseGameLayer*>(s.owner) == this && hasLiveOwner() && running() && s.pending == Pending::None) {
-            bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - 60.f / 240.f) <= .005f;
-            if (dt > 0 && !validStep) {
-                s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail;
+            if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
+                s.message = "Disable Click Between Frames for 240 TPS analysis"; s.pending = Pending::Fail;
                 if (s.state == State::Analyze) { stop(s.message); s.owner->pauseGame(false); }
                 return;
             }
@@ -264,6 +305,7 @@ class $modify(CFPlay, PlayLayer) {
     void service(float dt) {
         if (s.owner != this || !hasLiveOwner()) return;
         if (m_isPaused) { hud(); return; }
+        if (m_isPracticeMode) fixPracticeTouchPriority();
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
             else { s.watchdogTick = tick(); s.stalledSeconds = 0; }
@@ -300,16 +342,13 @@ class $modify(CFPlay, PlayLayer) {
             }
         }
     }
-    CheckpointObject* createCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::createCheckpoint();
-    }
-    CheckpointObject* markCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::markCheckpoint();
-    }
     void storeCheckpoint(CheckpointObject* cp) {
-        if (s.owner == this && running()) return;
+        if (s.owner == this && running()) {
+            if (cp && cp->m_physicalCheckpointObject) {
+                cp->m_physicalCheckpointObject->removeFromParentAndCleanup(true);
+            }
+            return;
+        }
         PlayLayer::storeCheckpoint(cp);
         if (s.owner == this && s.state == State::Record && cp) {
             s.checkpoints[cp] = {s.recording.inputs.size(), s.recording.trace.size(), s.held};
@@ -328,25 +367,25 @@ class $modify(CFPlay, PlayLayer) {
     void loadFromCheckpoint(CheckpointObject* cp) {
         PlayLayer::loadFromCheckpoint(cp);
         if (s.owner != this || s.state != State::Record) return;
-        auto it = s.checkpoints.find(cp);
         int now = tick();
-        if (it == s.checkpoints.end()) {
+        auto it = s.checkpoints.find(cp);
+        if (it != s.checkpoints.end()) {
+            auto& saved = it->second;
+            if (saved.inputs < s.recording.inputs.size()) s.recording.inputs.resize(saved.inputs);
+            if (saved.trace < s.recording.trace.size()) s.recording.trace.resize(saved.trace);
+            while (!s.recording.inputs.empty() && s.recording.inputs.back().tick > now) s.recording.inputs.pop_back();
+            while (!s.recording.trace.empty() && s.recording.trace.back().tick > now) s.recording.trace.pop_back();
+            saved.inputs = s.recording.inputs.size();
+            saved.trace = s.recording.trace.size();
+            s.held = saved.held;
+        } else {
             while (!s.recording.inputs.empty() && s.recording.inputs.back().tick > now) s.recording.inputs.pop_back();
             while (!s.recording.trace.empty() && s.recording.trace.back().tick > now) s.recording.trace.pop_back();
             s.held.fill(false);
             for (auto const& inp : s.recording.inputs) s.held[slot(inp.button, inp.p1)] = inp.down;
-            s.restored = true;
-            s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
-            return;
+            if (cp) s.checkpoints[cp] = {s.recording.inputs.size(), s.recording.trace.size(), s.held};
         }
-        auto saved = it->second;
-        if (saved.inputs > s.recording.inputs.size() || saved.trace > s.recording.trace.size()) {
-            stop("Checkpoint no longer belongs to this run"); return;
-        }
-        s.recording.inputs.resize(saved.inputs); s.recording.trace.resize(saved.trace);
-        while (!s.recording.inputs.empty() && s.recording.inputs.back().tick > now) s.recording.inputs.pop_back();
-        while (!s.recording.trace.empty() && s.recording.trace.back().tick > now) s.recording.trace.pop_back();
-        s.held = saved.held; s.restored = true;
+        s.restored = true;
         s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
     }
     void resetLevel() {
@@ -420,9 +459,18 @@ class CFPopup : public Popup {
         if (s.owner != layer) CFPlay::bindSession(layer);
         return true;
     }
-    static void resumeGame() {
-        if (auto scene = CCDirector::get()->getRunningScene())
-            if (auto pause = scene->getChildByType<PauseLayer>(0)) pause->onResume(nullptr);
+    static void resumeAndRun(std::function<void()> action) {
+        Loader::get()->queueInMainThread([action = std::move(action)] {
+            if (auto scene = CCDirector::get()->getRunningScene()) {
+                if (auto pause = scene->getChildByType<PauseLayer>(0)) {
+                    pause->onResume(nullptr);
+                }
+            }
+            if (hasLiveOwner()) {
+                action();
+                fixPracticeTouchPriority();
+            }
+        });
     }
     bool init() {
         if (!ensureSession()) return false;
@@ -440,37 +488,41 @@ class CFPopup : public Popup {
         auto summary = CCLabelBMFont::create(fmt::format("Measured: {} | 1-frame presses: {}", measured, perfect).c_str(), "chatFont.fnt");
         summary->setScale(.55f); m_mainLayer->addChildAtPosition(summary, Anchor::Top, {0, -65});
         auto add = [this](char const* title, float y, std::function<void()> action) {
-            auto item = CCMenuItemExt::createSpriteExtra(ButtonSprite::create(title), [action](auto) { action(); });
-            item->setScale(.7f); m_buttonMenu->addChildAtPosition(item, Anchor::Center, {0, y});
+            auto spr = ButtonSprite::create(title);
+            spr->setScale(.7f);
+            auto item = CCMenuItemExt::createSpriteExtra(spr, [action](auto) { action(); });
+            m_buttonMenu->addChildAtPosition(item, Anchor::Center, {0, y});
         };
         add("Record", 50, [this] {
-            Ref<CFPopup> self = this;
             if (!ensureSession()) return;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
-            auto key = s.recording.key; s.recording = {}; s.recording.key = key;
-            s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
-            onClose(nullptr); resumeGame();
-            resetTrial(); s.state = State::Record; s.message = "REC - practice";
+            onClose(nullptr);
+            resumeAndRun([] {
+                auto key = s.recording.key; s.recording = {}; s.recording.key = key;
+                s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
+                resetTrial();
+                s.state = State::Record; s.message = "REC - practice";
+            });
         });
         add("Analyze / Resume", 15, [this] {
-            Ref<CFPopup> self = this;
             if (!ensureSession()) return;
             if (!s.recording.complete) { FLAlertLayer::create("Incomplete run", "Finish a practice run first.", "OK")->show(); return; }
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
-            onClose(nullptr); resumeGame();
-            beginAnalysis();
+            onClose(nullptr);
+            resumeAndRun([] { beginAnalysis(); });
         });
         add("Play / Replay", -20, [this] {
-            Ref<CFPopup> self = this;
             if (!ensureSession()) return;
             if (!s.recording.ready()) { FLAlertLayer::create("Not ready", "Complete and verify the analysis first.", "OK")->show(); return; }
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
-            onClose(nullptr); resumeGame();
-            s.state = State::Playback; s.pending = Pending::None; s.tally.fill(0);
-            s.message = "Showcase - valid windows at 240 TPS"; resetTrial();
+            onClose(nullptr);
+            resumeAndRun([] {
+                s.state = State::Playback; s.pending = Pending::None; s.tally.fill(0);
+                s.message = "Showcase - valid windows at 240 TPS";
+                resetTrial();
+            });
         });
         add("Stop / Save", -55, [this] {
-            Ref<CFPopup> self = this;
             if (!ensureSession()) return;
             stop("Stopped. Partial work saved");
             onClose(nullptr);
@@ -488,8 +540,9 @@ class $modify(CFPause, PauseLayer) {
         menu->setID("click-frames-bottom-menu"_spr);
         menu->setPosition({CCDirector::get()->getWinSize().width / 2, 35});
         addChild(menu, 100);
-        auto button = CCMenuItemExt::createSpriteExtra(ButtonSprite::create("Frames"), [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
-        button->setScale(.7f); button->setPosition({0, 0}); menu->addChild(button);
+        auto spr = ButtonSprite::create("Frames");
+        spr->setScale(.7f);
+        auto button = CCMenuItemExt::createSpriteExtra(spr, [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
+        button->setPosition({0, 0}); menu->addChild(button);
     }
 };
- 
