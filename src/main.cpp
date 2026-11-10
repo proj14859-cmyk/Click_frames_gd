@@ -747,7 +747,9 @@ class $modify(CFBase, GJBaseGameLayer) {
 class $modify(CFPlay, PlayLayer) {
     static void bindSession(PlayLayer* layer) {
         applyBackground(false);
-        s = {}; s.owner = layer;
+        // Android's gd::vector has an explicit default constructor; use value
+        // initialization rather than aggregate copy-list initialization.
+        s = Session(); s.owner = layer;
         auto level = layer->m_level;
         s.folder = fmt::format("{}-{}", cf::slug(std::string(level->m_levelName)), level->m_levelID.value());
         s.recording.key = cf::fingerprint(fmt::format("{}:{}:{}", level->m_levelID.value(), std::string(level->m_levelName), std::string(level->m_levelString)));

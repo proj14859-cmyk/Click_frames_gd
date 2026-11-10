@@ -6,6 +6,7 @@
 - El editor no altera los inputs ni las ventanas medidas. La presentacion visual se vincula al fingerprint del nivel y al hash de la trayectoria: un archivo de otra captura no se aplica.
 - Los saltos espaciales de mas de 256 unidades no generan puntos intermedios ficticios en el editor ni cadenas a traves del teletransporte.
 - Se evita copiar toda la trayectoria al construir los contadores del menu y del showcase.
+- Inicializacion explicita de la sesion para admitir los contenedores de colas de GD en Android.
 
 -Mejoras:
 - Editor con trayectoria esquematica, barra de tiempo, pasos de 1/24 ticks, zoom, seleccion cronologica, pincel, cadenas, deshacer/rehacer y guardado.
