@@ -1,4 +1,19 @@
-# Click Frames 0.6.0 — experimental
+# Click Frames 0.7.0 — experimental
+
+## Showcase event policy and units
+
+CFR 3 adds an integer mode after each input position. Readers accept CFR 2
+with unknown mode (-1). All inputs remain in injection and timing-order checks;
+counted() selects jump presses and releases in ship/wave/robot/swing for analysis
+and presentation. Cube/ball/UFO/spider and unknown-mode releases are excluded.
+Old measured releases remain on disk but no longer affect rows or readiness.
+Newly relevant events must be measured before a capture is ready.
+
+Markers use transparent fill and a width-only label. The + lower-bound signal
+is retained. The ms HUD shows the tick interval between jump presses, updates
+each press after the first, and pulses for 60 simulation ticks. Coordinates are
+percentages of usable screen area, recomputed each playback service update.
+Width includes zero: -5 through 0 means six 240 Hz ticks, not six display frames.
 
 ## Per-level storage
 

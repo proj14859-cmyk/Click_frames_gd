@@ -5,9 +5,9 @@
 namespace cf {
 inline std::string inputsCsv(Recording const& r) {
     std::ostringstream out;
-    out << "tick,down,button,player,x,y\n" << std::setprecision(9);
+    out << "tick,down,button,player,x,y,mode\n" << std::setprecision(9);
     for (auto const& e : r.inputs)
-        out << e.tick << ',' << e.down << ',' << e.button << ',' << (e.p1 ? 1 : 2) << ',' << e.x << ',' << e.y << '\n';
+        out << e.tick << ',' << e.down << ',' << e.button << ',' << (e.p1 ? 1 : 2) << ',' << e.x << ',' << e.y << ',' << e.mode << '\n';
     return out.str();
 }
 inline std::string traceCsv(Recording const& r) {
@@ -33,7 +33,7 @@ inline std::string windowsCsv(Recording const& r) {
 inline std::string scanReport(Recording const& r, std::string const& status) {
     size_t measured = 0, total = 0;
     for (size_t i = 0; i < r.inputs.size(); ++i) {
-        if (r.inputs[i].button != 1) continue;
+        if (!counted(r.inputs[i])) continue;
         ++total;
         if (i < r.windows.size() && r.windows[i].measured) ++measured;
     }

@@ -29,6 +29,19 @@ int main() {
     assert(cf::read(stream,"test",loaded) && loaded.ready() && loaded.inputs.size() == 3);
     assert(loaded.inputs[0].x == 100.f && loaded.inputs[2].y == 220.f);
     assert(loaded.trace[0].x == 1.5f);
+    r.inputs[2].mode = 5;
+    r.windows[2].measured = false;
+    assert(!r.ready()); // robot release must be measured
+    r.inputs[2].mode = 0;
+    assert(r.ready()); // cube release is still recorded, but not analyzed/counted
+    std::stringstream modes; r.inputs[2].mode = 4; cf::write(modes, r);
+    assert(cf::read(modes, "test", loaded) && loaded.inputs[2].mode == 4);
+    std::stringstream legacy("CLICKFRAMES 2 \"old\" 1 1 20 12 1 0\n10 1 1 1 0 0 0 0 1 0\n");
+    assert(cf::read(legacy, "old", loaded) && loaded.ready() && loaded.inputs[0].mode == -1);
+    for (int mode = -1; mode <= 7; ++mode) {
+        cf::Input release{10, false, 1, true, 0, 0, mode};
+        assert(cf::counted(release) == (mode == 1 || mode == 4 || mode == 5 || mode == 7));
+    }
     std::stringstream wrong; cf::write(wrong,r); assert(!cf::read(wrong,"other",loaded));
     std::stringstream old("CLICKFRAMES 1"); assert(!cf::read(old,"test",loaded));
     std::stringstream truncated("CLICKFRAMES 2"); assert(!cf::read(truncated,"test",loaded));
@@ -49,7 +62,7 @@ int main() {
     auto previous = moved;
     assert(!cf::shiftAll(run, 2, moved) && moved[0].tick == previous[0].tick);
     // Include empty widths between the observed endpoints; lower-bound only on top.
-    cf::Recording gaps; gaps.inputs.resize(2);
+    cf::Recording gaps; gaps.inputs.resize(2); for (auto& e : gaps.inputs) e.down = true;
     gaps.windows = {{2, 0, true, true}, {4, 0, true, false}};
     auto gr = cf::makeRows(gaps, 8);
     assert(gr.size() == 3 && gr[0].from == 3 && gr[1].from == 4 && gr[2].from == 5);

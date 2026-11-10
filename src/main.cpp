@@ -43,6 +43,7 @@ struct Session {
     std::string folder; // levels/<name>-<id>/ holds this level's runs
     std::string alert, firstFail; // why a run stopped, shown once pause is back
     int shiftIndex = 0, lastPressTick = -1, divergences = 0;
+    float lastIntervalMs = -1.f;
     bool noRetry = false;
     bool background = false, objectsWereVisible = true;
     float previousTimeScale = 1.f;
@@ -254,7 +255,7 @@ void resetTrial() {
     if (s.musicMutedByCf) FMODAudioEngine::get()->setBackgroundMusicVolume(0.f);
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
-    s.comparedSamples = 0; s.lastPressTick = -1; s.divergences = 0;
+    s.comparedSamples = 0; s.lastPressTick = -1; s.lastIntervalMs = -1.f; s.divergences = 0;
     fixPracticeTouchPriority();
 }
 // Verify/Analyze run the level behind a cover: objects hidden (nothing to draw) and the
@@ -312,7 +313,7 @@ void hud() {
         pl->addChild(label, 1000);
     }
     label->setScale(static_cast<float>(Mod::get()->getSettingValue<double>("counter-scale")) * .6f);
-    label->setString(s.message.c_str());
+    label->setString(s.state == State::Playback ? "" : s.message.c_str());
     // One colored line per row of this run, like "4: 3", "5: 1", "8+: 12"
     auto rowsNode = pl->getChildByID("cf-rows");
     if (s.state != State::Playback) { if (rowsNode) rowsNode->removeFromParent(); }
@@ -326,7 +327,7 @@ void hud() {
                 auto line = CCLabelBMFont::create("", "bigFont.fnt");
                 auto c = cf::colorFor(s.rows[i].from);
                 line->setTag(static_cast<int>(i)); line->setColor({c.r, c.g, c.b}); line->setScale(.4f * scale);
-                line->setAnchorPoint({0, 1}); line->setPosition({10, win.height - 34 - static_cast<float>(i) * 17.f * scale});
+                line->setAnchorPoint({0, 1}); line->setPosition({10, win.height - 10 - static_cast<float>(i) * 17.f * scale});
                 rowsNode->addChild(line);
             }
         }
@@ -342,12 +343,17 @@ void showMs(float ms) {
     auto label = typeinfo_cast<CCLabelBMFont*>(s.owner->getChildByID("cf-ms"));
     if (!label) {
         label = CCLabelBMFont::create("", "bigFont.fnt"); label->setID("cf-ms");
-        auto win = CCDirector::get()->getWinSize();
-        label->setAnchorPoint({1, 0}); label->setPosition({win.width - 10, 8});
+        label->setAnchorPoint({0, 0});
         s.owner->addChild(label, 1000);
     }
     label->setScale(.5f * static_cast<float>(Mod::get()->getSettingValue<double>("counter-scale")));
-    label->setString(fmt::format("{:.1f} MS", ms).c_str());
+    auto win = CCDirector::get()->getWinSize();
+    float x = static_cast<float>(Mod::get()->getSettingValue<double>("ms-x")) / 100.f;
+    float y = static_cast<float>(Mod::get()->getSettingValue<double>("ms-y")) / 100.f;
+    label->setString(fmt::format("{:.2f} ms", ms).c_str());
+    auto size = label->getScaledContentSize();
+    label->setPosition({x * std::max(0.f, win.width - size.width), y * std::max(0.f, win.height - size.height)});
+    label->setColor(tick() - s.lastPressTick < 60 ? ccColor3B{130, 245, 225} : ccColor3B{255, 255, 255});
 }
 void clearMarkers() {
     if (!hasLiveOwner()) return;
@@ -361,14 +367,14 @@ void prepareShowcase() {
 }
 void marker(size_t index) {
     auto const e = s.recording.inputs[index];
-    if (e.button != 1) return;
+    if (e.button == 1 && e.down) {
+        if (s.lastPressTick >= 0) s.lastIntervalMs = (e.tick - s.lastPressTick) * 1000.f / 240.f;
+        s.lastPressTick = e.tick;
+    }
+    if (!cf::counted(e)) return;
     auto w = s.recording.windows[index];
     if (!w.measured) return;
     if (auto row = cf::rowOf(s.rows, w); row >= 0 && static_cast<size_t>(row) < s.tally.size()) ++s.tally[row];
-    if (e.down) { // time since the previous press, like the ms readout of other frame counters
-        if (s.lastPressTick >= 0) showMs((e.tick - s.lastPressTick) * 1000.f / 240.f);
-        s.lastPressTick = e.tick;
-    }
     if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
         auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
         if (!root) {
@@ -378,10 +384,10 @@ void marker(size_t index) {
         float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale"));
         auto rgb = cf::colorFor(w.width()); ccColor3B color3{rgb.r, rgb.g, rgb.b};
         ccColor4F border{color3.r / 255.f, color3.g / 255.f, color3.b / 255.f, 1.f};
-        ccColor4F fill{border.r, border.g, border.b, e.down ? .22f : .04f};
-        auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, fill, e.down ? 2.5f : 1.5f, border, 48);
+        ccColor4F fill{0, 0, 0, 0};
+        auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, fill, 2.f, border, 48);
         node->addChild(circle);
-        auto label = CCLabelBMFont::create(fmt::format("{}{}F{}\n-{} / +{}\n{:.1f}ms", e.down ? "" : "R ", w.width(), w.lowerBound ? "+" : "", w.early, w.late, w.width() * 1000.f / 240.f).c_str(), "bigFont.fnt");
+        auto label = CCLabelBMFont::create(fmt::format("{}{} F", w.width(), w.lowerBound ? "+" : "").c_str(), "bigFont.fnt");
         label->setAlignment(kCCTextAlignmentCenter); label->setScale(.28f * scale);
         label->setColor(color3); label->setPosition({0, 27.f * scale}); node->addChild(label, 1);
         root->addChild(node);
@@ -413,7 +419,7 @@ void beginAnalysis() {
 }
 void nextEvent() {
     while (s.target < s.recording.inputs.size() &&
-        (s.recording.inputs[s.target].button != 1 || s.recording.windows[s.target].measured)) ++s.target;
+        (!cf::counted(s.recording.inputs[s.target]) || s.recording.windows[s.target].measured)) ++s.target;
     if (s.target == s.recording.inputs.size()) {
         stop("Analysis complete. Pause > Frames > Play");
         queueReturnToPause(); return;
@@ -517,7 +523,9 @@ class $modify(CFBase, GJBaseGameLayer) {
             if (s.recordedHeld[i] != down) {
                 auto player = p1 ? s.owner->m_player1 : s.owner->m_player2;
                 auto position = player ? player->getPosition() : CCPointZero;
-                s.recording.inputs.push_back({tick(), down, button, p1, position.x, position.y});
+                int mode = !player ? -1 : player->m_isShip ? 1 : player->m_isBall ? 2 : player->m_isBird ? 3 :
+                    player->m_isDart ? 4 : player->m_isRobot ? 5 : player->m_isSpider ? 6 : player->m_isSwing ? 7 : 0;
+                s.recording.inputs.push_back({tick(), down, button, p1, position.x, position.y, mode});
                 s.recordedHeld[i] = down;
             }
         }
@@ -583,6 +591,7 @@ class $modify(CFPlay, PlayLayer) {
         }
         if (s.pending != Pending::None) consume();
         hud();
+        if (s.state == State::Playback && s.lastIntervalMs >= 0) showMs(s.lastIntervalMs);
     }
     void pauseGame(bool unfocused) {
         if (s.owner == this) { s.physicalHeld.fill(false); applyBackground(false); }
@@ -820,7 +829,9 @@ class CFPopup : public Popup {
         auto panelRows = cf::makeRows(s.recording, static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-rows")));
         std::vector<int> totals(panelRows.size(), 0);
         size_t measured = 0;
-        for (auto const& window : s.recording.windows) {
+        for (size_t i = 0; i < s.recording.windows.size() && i < s.recording.inputs.size(); ++i) {
+            if (!cf::counted(s.recording.inputs[i])) continue;
+            auto const& window = s.recording.windows[i];
             if (!window.measured) continue;
             ++measured;
             if (auto row = cf::rowOf(panelRows, window); row >= 0) ++totals[row];
@@ -833,7 +844,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.6.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.7.0", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

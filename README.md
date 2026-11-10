@@ -1,5 +1,26 @@
 # Click Frames GD
 
+## v0.7.0 / 2026-11-10 / 02:07 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Las liberaciones de cubo, ball, UFO y spider ya no se analizan ni generan círculos, sonidos o conteo. Todos los inputs siguen grabándose y reproduciéndose.
+- Ship, wave, robot y swing conservan la medición de liberaciones; el modo de cada input se guarda en nuevas capturas.
+
+-Mejoras:
+- Círculos huecos con etiqueta única, por ejemplo `6 F` o `25+ F`. Se retira el desglose temprano/tardío y los ms del círculo, manteniéndolos en los archivos.
+- Showcase sin mensaje superior; conserva filas y círculos.
+
+-Cambios:
+- Milisegundos entre pulsaciones del showcase abajo a la izquierda. Se actualizan en cada pulsación desde la segunda, con un destello de color durante 60 ticks. No mide latencia de red ni retraso del dispositivo.
+- Los ms usan tiempo del juego: diferencia de ticks / 240. El speedhack cambia la duración real, no esta unidad.
+- Capturas nuevas en CFR 3 con modo por input. Se leen las antiguas CFR 2; en ellas se cuentan solo pulsaciones porque se desconoce el modo. Los lectores antiguos pueden no admitir CFR 3. Los backups conservan la captura anterior al reemplazo.
+
+-Implementaciones:
+- Settings: Milliseconds horizontal/vertical position (%) para mover el indicador por pantalla, con límites ajustados a su tamaño.
+- Filtro compartido de eventos para el análisis, estado Ready, filas, sonidos, marcadores y resumen.
+
+`6F -5/+0` significaba seis ticks válidos: -5, -4, -3, -2, -1 y 0. A 240 TPS son 25 ms, aproximadamente tres fotogramas a 120 FPS. Contar fotogramas visibles a otra tasa no es contar ticks físicos. El margen se prueba variando un input y manteniendo los demás fijos; no representa todas las combinaciones posibles. El signo `+` indica un límite de búsqueda, no una ventana totalmente medida. Las liberaciones relevantes requieren una nueva grabación para conocer su modo.
+
 ## v0.6.0 / 2026-11-10 / 01:50 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
