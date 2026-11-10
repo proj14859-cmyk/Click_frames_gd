@@ -99,6 +99,7 @@ struct Session {
     size_t nextVisual = 0;
     std::string captureDigest, traceDigest;
     bool captureDirty = true, viewsDirty = true, storageBlocked = false, reportDirty = false;
+    bool showcaseComplete = false;
     uint64_t physicsCalls = 0, restores = 0, restoreFallbacks = 0;
     double analysisSeconds = 0;
     bool analysisClock = false;
@@ -375,6 +376,7 @@ void stop(std::string message) {
 }
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
+    s.showcaseComplete = false;
     s.resetting = true; releaseInjected(); clearMarkers();
     if (s.state == State::Verify || s.state == State::Analyze) applyBackground(true);
     // Automated runs stay in practice and reset through the normal practice path.
@@ -467,6 +469,11 @@ void applyBackground(bool on) {
 }
 void hud() {
     auto pl = s.owner;
+    if (s.showcaseComplete) {
+        for (char const* id : {"cf-hud", "cf-rows", "cf-ms"})
+            if (auto node = pl->getChildByID(id)) node->removeFromParent();
+        return;
+    }
     auto label = typeinfo_cast<CCLabelBMFont*>(pl->getChildByID("cf-hud"));
     if (!label) {
         label = CCLabelBMFont::create("", "chatFont.fnt"); label->setID("cf-hud");
@@ -785,7 +792,7 @@ void consume() {
     } else if (s.state == State::Playback) {
         if (result == Pending::Fail) s.alert = s.message;
         stop(result == Pending::Pass ? "Showcase complete. Replay available" : s.message);
-        queueReturnToPause();
+        if (result == Pending::Fail) queueReturnToPause();
     }
 }
 }
@@ -1086,6 +1093,7 @@ class $modify(CFPlay, PlayLayer) {
         s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
     }
     void resetLevel() {
+        if (s.owner == this) s.showcaseComplete = false;
         if (running() && !s.resetting) stop("Automated run cancelled by manual restart");
         s.restored = false; PlayLayer::resetLevel();
         if (s.state == State::Record && !s.resetting) {
@@ -1113,6 +1121,17 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void levelComplete() {
+        if (s.owner == this && s.state == State::Playback) {
+            if (s.pending == Pending::Fail) return;
+            if (!cf::allPressesDispatched(s.recording.inputs, s.next)) {
+                s.message = "Level finished before all clicks were replayed"; s.pending = Pending::Fail; return;
+            }
+            // Successful showcases use the native completion path. Analysis and
+            // recording retain their reset/pause handoff. Keep the game's mode.
+            stop("Showcase complete. Native completion screen");
+            s.showcaseComplete = true; clearMarkers(); hud();
+            PlayLayer::levelComplete(); return;
+        }
         if (s.state == State::Record) {
             s.captureDirty = true;
             s.recording.complete = true; s.recording.endTick = tick();
@@ -1471,7 +1490,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.10.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.10.1", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

@@ -3,6 +3,14 @@
 #include <sstream>
 #include <iostream>
 int main() {
+    std::vector<cf::Input> endInputs{{10, true, 1, true}, {15, false, 1, true}};
+    assert(!cf::allPressesDispatched(endInputs, 0));
+    assert(cf::allPressesDispatched(endInputs, 1));
+    assert(cf::allPressesDispatched(endInputs, 2));
+    assert(!cf::allPressesDispatched(endInputs, 3));
+    assert(cf::allPressesDispatched({}, 0));
+    endInputs.push_back({20, true, 1, false});
+    assert(!cf::allPressesDispatched(endInputs, 1));
     for (int radius = 1; radius <= 6; ++radius) {
         for (unsigned mask = 0; mask < (1u << (2 * radius)); ++mask) {
             std::vector<bool> truth(2 * radius + 1, false); truth[radius] = true;

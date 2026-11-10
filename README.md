@@ -1,5 +1,23 @@
 # Click Frames GD
 
+## v0.10.1 / 2026-11-10 / 20:17 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Un showcase completado correctamente usa PlayLayer::levelComplete y la pantalla nativa correspondiente al modo actual, sin reinicio ni pausa forzada.
+- La finalizacion limpia los overlays del mod y libera sus inputs inyectados antes de mostrar el resultado. Reiniciar permite volver a mostrar los contadores en el siguiente Play.
+
+-Mejoras:
+- La misma salida se aplica al showcase medido y al editado.
+
+-Cambios:
+- Record/Analyze mantienen su retorno a pausa; una reproduccion fallida conserva el aviso de error. Se mantiene practica: no se cambia de modo para conceder una finalizacion normal.
+- Esta correccion no cambia el algoritmo de medicion ni promete tiempos de tres segundos.
+
+-Implementaciones:
+- Pruebas de fin de inputs: admite liberaciones finales pendientes, rechaza pulsaciones sin reproducir y cursores invalidos.
+
+Regresion en dispositivo: completar Play medido y editado, verificar que aparece el resultado nativo sin volver al inicio, reiniciar y comprobar el siguiente Play, y confirmar que Verify/Analyze conservan su flujo. La exactitud/reproducibilidad de margenes sigue pendiente de diagnostico con capture.flr, playback.flp y scan-report.txt; coincidir con otro contador en un salto no valida todas las ventanas.
+
 ## v0.10.0 / 2026-11-10 / 18:08 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

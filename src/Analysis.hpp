@@ -3,6 +3,9 @@
 #include <map>
 
 namespace cf {
+inline bool allPressesDispatched(std::vector<Input> const& events, size_t next) {
+    return next <= events.size() && std::none_of(events.begin() + next, events.end(), [](auto const& e) { return e.down; });
+}
 // Baseline offset zero is known to pass. Visit only the connected component.
 struct ContinuousSearch {
     int radius = 1, offset = -1;
