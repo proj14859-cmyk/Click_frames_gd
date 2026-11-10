@@ -1,5 +1,43 @@
 # Click Frames GD
 
+## v0.10.0 / 2026-11-10 / 18:08 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La migracion valida los .cfr de las tres ubicaciones anteriores y conserva los originales. Un bundle corrupto bloquea el guardado automatico para evitar sustituirlo por una captura vacia; Record permite reemplazarlo explicitamente.
+- capture.flr y playback.flp quedan vinculados por hash. Una escritura interrumpida puede recuperar el playback anterior compatible desde .bak; los resultados de otra captura no se aplican.
+- Los aterrizajes se observan en los pasos fisicos, evitando depender de que la pantalla dibuje el instante de contacto.
+- Los informes de rendimiento se conservan al reabrir el nivel, en vez de sustituirlos por contadores a cero.
+
+-Mejoras:
+- Guardado incremental: al medir otro evento solo se actualiza playback.flp y el informe pequeno. No se serializa ni se reescribe la trayectoria completa en cada evento.
+- Fast local segment analysis: termina el candidato al alcanzar un aterrizaje de referencia o la salida de su tramo. No sigue hasta el final del nivel en los casos con referencia utilizable.
+- La cache nativa experimental captura hasta ocho estados durante Verify y los comparte entre eventos. Cada estado se valida una vez contra la ruta completa; su primer fallo de frontera se confirma desde cero. Se rechaza la cache si esa confirmacion discrepa. Sigue desactivada por defecto y no prueba equivalencia universal de todos los estados del motor.
+
+-Cambios:
+- Se mantiene `recordings/<nombre>-<ID>/<fingerprint>/`. Las extensiones son formatos propios de Click Frames, no formatos compatibles con otro mod por compartir nombre.
+- Settings > Fast local segment analysis esta activado por defecto. Al desactivarlo se obtienen margenes de run completa. Cambiar alcance reinicia las medidas al pulsar Analyze; cargar una captura no elimina sus resultados previos.
+- El menu diferencia LOCAL WINDOWS, FULL RUN WINDOWS y VISUAL WINDOWS. El analisis local conserva los demas inputs grabados, pero no certifica consecuencias posteriores al tramo. Sin referencia precisa se usa la ruta completa como fallback.
+- Los paquetes con ediciones usan CFPACK 2. Se siguen importando CFPACK 1 y CFR 2/3/4; el transporte de resultados locales usa CFR 5 y requiere esta version. Los paquetes sin ediciones conservan la version 1 del contenedor.
+
+-Implementaciones:
+- `capture.flr` (CFCAP 1): inputs, modos, perfil de entrada, final y trayectoria originales. Solo cambia al grabar/guardar una captura; los desplazamientos de Verify van a playback.flp.
+- `playback.flp` (CFPLAY 1): tiempos normalizados, ventanas, radio, politica y progreso verificado, ligados al hash de la captura. No duplica la trayectoria.
+- `capture-trace.csv`: vista de la trayectoria, generada cuando cambia la captura o se migra. `capture-rings.tsv` se reserva con cabecera explicita: todavia no hay registro de interacciones con orbes, ni se inventan datos.
+- `edits-<hash-trayectoria>.tsv`: convierte el JSON del editor sin borrarlo, conserva todos sus campos y viaja con el .cfpack nuevo. El editor, sus controles, undo/redo, conteo y Play editado se mantienen. El formato numerico usa 0/1 para booleanos.
+- `metadata.json` y `prediction-trails.txt` siguen siendo auxiliares. Los trazos grandes se guardan al detener/completar/salir, no por cada evento. Las vistas antiguas CSV y el JSON permanecen como archivos heredados y ya no son la fuente activa.
+- saved.json/settings.json siguen gestionados por Geode; solo se actualizan claves de ultima carpeta/captura y esquema, sin sobrescribir preferencias del usuario.
+- scan-report.txt incluye segundos activos, callbacks fisicos, candidatos, restauraciones, fallbacks y estados compartidos. No promete un tiempo restante.
+
+### Probar la migracion y el analisis rapido
+
+1. Abre un nivel con una captura guardada. Se crean los nuevos archivos sin borrar capture.cfr ni showcase-edits.json.
+2. Comprueba Frames > EDITAR y Play. Las ediciones quedan vinculadas al mismo recorrido; exportar/importar tambien las conserva en CFPACK 2.
+3. Para medidas rapidas usa Fast local segment analysis y pulsa Analyze. LOCAL mide el mismo aterrizaje (plataforma y corredor 60x6 unidades) o el estado anterior a la siguiente accion relevante del mismo jugador (corredor 60x30, modo y gravedad). Cambios que solo funcionan en otra ruta pueden rechazarse por ese criterio.
+4. Para acelerar tambien los prefijos, prueba Experimental shared native state cache en un nivel corto y compara resultados. Desactivarlo fuerza reinicios completos. Una cache fallida se descarta; los limites son ocho estados y 25000 registros de objetos por estado, sin contar toda la memoria privada del motor/mods.
+5. Revisa scan-report.txt. Esta primera mejora no incluye un bucle headless de fisica ni garantiza cinco minutos en cualquier nivel. La duracion debe medirse en Android con el nivel y sus mods.
+
+Pruebas host: migracion idempotente, captura inmutable entre ventanas, ajustes de tiempos, recuperacion de escrituras interrumpidas, hashes incompatibles, TSV/JSON del editor, paquetes viejos/nuevos y salidas de tramos. Con las dos grabaciones aportadas se verifico que el .cfr original queda identico y la carga reconstruida conserva sus datos: payload de progreso de 284250 a 4673 bytes y de 86423 a 2106 bytes. Es una medida de bytes, no un benchmark de tiempo del motor.
+
 ## v0.9.0 / 2026-11-10 / 03:15 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

@@ -21,7 +21,10 @@ int main() {
 
     auto bad = [](std::string text) { std::istringstream in(text); cf::Pack r; return cf::packRead(in, r); };
     assert(bad("CFPACK 1 a-1 1\nrun-1.cfr 3\nabc\n"));
-    assert(!bad("CFPACK 2 a-1 1\nrun-1.cfr 3\nabc\n"));          // version
+    assert(!bad("CFPACK 3 a-1 1\nrun-1.cfr 3\nabc\n"));          // version
+    assert(cf::editName("edits-123-456.tsv") && !cf::editName("edits-123-.tsv") && !cf::editName("edits-1-2-3.tsv"));
+    assert(bad("CFPACK 2 a-1 1\nedits-1-2.tsv 3\nabc\n"));
+    assert(!bad("CFPACK 1 a-1 1\nedits-1-2.tsv 3\nabc\n"));
     assert(!bad("CFPACK 1 ../x 1\nrun-1.cfr 3\nabc\n"));         // folder escapes
     assert(!bad("CFPACK 1 a-1 1\n../run-1.cfr 3\nabc\n"));       // file escapes
     assert(!bad("CFPACK 1 a-1 1\nevil.exe 3\nabc\n"));           // not a run

@@ -124,7 +124,7 @@ inline Window measure(std::vector<bool> const& success, int radius) {
     return w;
 }
 inline void write(std::ostream& out, Recording const& r) {
-    out << "CLICKFRAMES 4 " << std::quoted(r.key) << ' ' << r.complete << ' ' << r.verified
+    out << "CLICKFRAMES " << (r.analysisPolicy == 2 ? 5 : 4) << ' ' << std::quoted(r.key) << ' ' << r.complete << ' ' << r.verified
         << ' ' << r.endTick << ' ' << r.radius << ' ' << r.inputs.size() << ' ' << r.trace.size()
         << ' ' << r.analysisPolicy << ' ' << std::quoted(r.backend) << '\n';
     out << std::setprecision(9);
@@ -139,9 +139,9 @@ inline void write(std::ostream& out, Recording const& r) {
 inline bool read(std::istream& in, std::string const& key, Recording& result) {
     Recording r; std::string magic; int version; size_t count, samples;
     if (!(in >> magic >> version >> std::quoted(r.key) >> r.complete >> r.verified >> r.endTick >> r.radius >> count >> samples)
-        || magic != "CLICKFRAMES" || (version != 2 && version != 3 && version != 4) || r.key != key || r.radius < 1 || r.radius > 60
+        || magic != "CLICKFRAMES" || (version < 2 || version > 5) || r.key != key || r.radius < 1 || r.radius > 60
         || count > 1000000 || samples > 2000000 || r.endTick < 0) return false;
-    if (version == 4 && (!(in >> r.analysisPolicy >> std::quoted(r.backend)) || r.analysisPolicy < 0 || r.analysisPolicy > 1 ||
+    if (version >= 4 && (!(in >> r.analysisPolicy >> std::quoted(r.backend)) || r.analysisPolicy < 0 || r.analysisPolicy > (version == 5 ? 2 : 1) ||
         (r.backend != "vanilla240" && r.backend != "cos240"))) return false;
     int last = -1;
     for (size_t i = 0; i < count; ++i) {

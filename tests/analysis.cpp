@@ -36,5 +36,23 @@ int main() {
     cf::Recording recording; recording.key = "profile"; recording.backend = "cos240"; recording.analysisPolicy = 1;
     std::stringstream capture; cf::write(capture, recording); cf::Recording restored;
     assert(cf::read(capture, "profile", restored) && restored.backend == "cos240" && restored.analysisPolicy == 1);
+    cf::Recording local; local.endTick = 40;
+    local.inputs = {{10, true, 1, true}, {12, true, 1, false}, {15, false, 1, true}, {20, true, 1, true}, {30, false, 1, false, 0, 0, 1}};
+    std::map<int, cf::PhysicsReference> frames;
+    frames[20] = {{20, 100, 30, 200, 40}, 0, 1, false, true};
+    frames[30] = {{30, 110, 35, 210, 45}, 0, 1, false, true};
+    frames[40] = {{40, 120, 40, 220, 50}, 0, 1, false, true};
+    auto exits = cf::segmentExits(local, frames);
+    assert(exits[0].tick == 20 && exits[1].tick == 30 && exits[3].tick == 40 && exits[4].tick == 40);
+    assert(cf::atSegmentExit(exits[1], 210, 45, 1, true));
+    assert(!cf::atSegmentExit(exits[1], 210, 45, 0, true));
+    assert(!cf::atSegmentExit(exits[1], 210, 45, 1, false));
+    assert(!cf::atSegmentExit(exits[1], 210, 90, 1, true));
+    frames.erase(20); exits = cf::segmentExits(local, frames); assert(!exits[0].known);
+    struct State { int tick; bool rejected; };
+    std::vector<State> states{{10, false}, {30, false}, {20, false}};
+    assert(cf::snapshotBefore(states, 31) == 1 && cf::snapshotBefore(states, 30) == 2);
+    states[1].rejected = true; assert(cf::snapshotBefore(states, 50) == 2);
+    assert(cf::snapshotBefore(states, 5) == -1);
     std::cout << "Analysis tests passed\n";
 }

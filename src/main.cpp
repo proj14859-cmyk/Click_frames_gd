@@ -11,6 +11,8 @@
 #include "Pack.hpp"
 #include "Analysis.hpp"
 #include "Editor.hpp"
+#include "Bundle.hpp"
+#include <chrono>
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -22,6 +24,17 @@ namespace {
 enum class State { Idle, Record, Verify, Analyze, Ready, Playback };
 enum class Pending { None, Pass, Fail };
 struct Checkpoint { size_t inputs, trace; std::array<bool, 6> held; };
+struct NativeState {
+    Ref<CheckpointObject> checkpoint;
+    int tick = 0; size_t next = 0;
+    std::array<bool, 6> held{};
+    gd::vector<PlayerButtonCommand> buttons;
+    gd::vector<RecordButtonCommand> recorded, replay;
+    uint64_t randomSeed = 0, replaySeed = 0;
+    double extraDelta = 0;
+    int step = 0, recordedSize = 0, resumeTimer = 0;
+    bool checked = false, rejected = false, failureConfirmed = false;
+};
 struct Session {
     PlayLayer* owner = nullptr;
     cf::Recording recording;
@@ -54,11 +67,22 @@ struct Session {
     std::map<std::string, std::string> savedViews;
     cf::ContinuousSearch search;
     std::vector<cf::Landing> referenceLandings;
+    std::map<int, cf::PhysicsReference> referencePhysics;
+    std::vector<cf::SegmentExit> segmentExits;
+    bool targetExecuted = false, segmentMissed = false;
+    size_t localFallbackEvents = 0;
+    size_t localFallbackTrials = 0, localPasses = 0;
+    size_t measurableTotal = 0, measuredDone = 0;
+    std::vector<NativeState> nativePool;
+    std::map<int, cf::Sample> referenceTrace;
+    int activeNative = -1, nextNativeTick = 24;
+    bool nativePoolLimited = false;
+    size_t peakNativeStates = 0;
     std::array<size_t, 2> activeJump{size_t(-1), size_t(-1)};
     std::array<bool, 2> airborne{};
     bool localLandingPassed = false;
     Ref<CheckpointObject> snapshot;
-    bool internalCheckpoint = false, preparingSnapshot = false, validatingSnapshot = false, snapshotChecked = false;
+    bool internalCheckpoint = false, validatingSnapshot = false, snapshotChecked = false;
     bool fullRestartRetry = false;
     int snapshotTick = -1, snapshotEndTick = 0;
     size_t snapshotNext = 0, snapshotCompared = 0;
@@ -68,12 +92,17 @@ struct Session {
     uint64_t snapshotRandomSeed = 0, snapshotReplaySeed = 0;
     double snapshotExtraDelta = 0;
     int snapshotStep = 0, snapshotRecordedSize = 0, snapshotResumeTimer = 0;
-    std::map<int, cf::Sample> snapshotTrace;
     cf::Predictions predictions;
     std::vector<cf::Sample> candidateTrace;
     int drawnPreview = -1;
     cf::VisualEdits visual;
     size_t nextVisual = 0;
+    std::string captureDigest, traceDigest;
+    bool captureDirty = true, viewsDirty = true, storageBlocked = false, reportDirty = false;
+    uint64_t physicsCalls = 0, restores = 0, restoreFallbacks = 0;
+    double analysisSeconds = 0;
+    bool analysisClock = false;
+    std::chrono::steady_clock::time_point analysisStart;
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
@@ -87,27 +116,49 @@ bool hasLiveOwner() {
 }
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
+int playerMode(PlayerObject* p) {
+    return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
+        p->m_isRobot ? 5 : p->m_isSpider ? 6 : p->m_isSwing ? 7 : 0;
+}
+void observeLanding() {
+    for (int p = 0; p < 2; ++p) {
+        auto index = s.activeJump[p]; if (index >= s.referenceLandings.size()) continue;
+        auto player = p == 0 ? s.owner->m_player1 : s.owner->m_player2;
+        if (!player->m_isOnGround) { s.airborne[p] = true; continue; }
+        if (!s.airborne[p]) continue;
+        cf::Landing landing{true, tick(), reinterpret_cast<uintptr_t>(player->m_lastGroundObject), player->getPositionX(), player->getPositionY()};
+        if (s.state == State::Verify) s.referenceLandings[index] = landing;
+        else if (!s.validatingSnapshot && index == s.target && s.recording.analysisPolicy != 0 &&
+                 s.referenceLandings[index].known) {
+            s.localLandingPassed = cf::sameLanding(s.referenceLandings[index], landing, 60.f);
+            if (!s.localLandingPassed) { s.message = "Candidate landed outside the reference platform/corridor"; s.pending = Pending::Fail; }
+            else if (s.recording.analysisPolicy == 2 && s.targetExecuted) {
+                s.message = "Reference landing reached (local window)"; s.pending = Pending::Pass; ++s.localPasses;
+            }
+        }
+        s.activeJump[p] = size_t(-1);
+    }
+}
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
 std::filesystem::path levelDir(std::string const& folder) { return Mod::get()->getSaveDir() / "recordings" / folder; }
-std::filesystem::path path() { return levelDir(s.folder) / s.recording.key / "capture.cfr"; }
+std::filesystem::path path() { return levelDir(s.folder) / s.recording.key / "capture.flr"; }
+int selectedPolicy() {
+    return Mod::get()->getSettingValue<bool>("local-analysis") ? 2 : Mod::get()->getSettingValue<bool>("same-jump") ? 1 : 0;
+}
+std::string workingDigest() { return cf::fingerprint(s.captureDigest + cf::playbackBytes(s.captureDigest, s.recording)); }
+std::filesystem::path visualPath() { return path().parent_path() / ("edits-" + s.traceDigest + ".tsv"); }
+void analysisClock(bool on) {
+    auto now = std::chrono::steady_clock::now();
+    if (s.analysisClock && !on) s.analysisSeconds += std::chrono::duration<double>(now - s.analysisStart).count();
+    if (!s.analysisClock && on) s.analysisStart = now;
+    s.analysisClock = on;
+}
 // Copy and validate legacy captures; never delete the old data during migration.
-void migrateOldRun() {
-    auto file = path();
-    std::error_code ec;
-    if (std::filesystem::exists(file, ec)) return;
+bool migrateOldRun() {
     auto name = "run-" + s.recording.key + ".cfr";
-    for (auto const& old : {Mod::get()->getSaveDir() / "levels" / s.folder / name,
-                           Mod::get()->getSaveDir() / name}) {
-        std::ifstream in(old); cf::Recording checked;
-        if (!cf::read(in, s.recording.key, checked)) continue;
-        std::filesystem::create_directories(file.parent_path(), ec);
-        if (ec) { s.message = "Could not create recording folder"; return; }
-        auto tmp = file; tmp += ".tmp";
-        std::filesystem::copy_file(old, tmp, std::filesystem::copy_options::overwrite_existing, ec);
-        if (!ec) std::filesystem::rename(tmp, file, ec);
-        if (ec) s.message = "Could not migrate recording; original preserved";
-        return;
-    }
+    return cf::migrateLegacy(path().parent_path(), s.recording.key, {
+        path().parent_path() / "capture.cfr", Mod::get()->getSaveDir() / "levels" / s.folder / name,
+        Mod::get()->getSaveDir() / name});
 }
 void fixPracticeTouchPriority() {
     if (!hasLiveOwner() || !s.owner->m_uiLayer) return;
@@ -125,30 +176,15 @@ void fixPracticeTouchPriority() {
 }
 // Stage a temp file, keep the previous version as .bak, then swap in the new one.
 bool writeSafe(std::filesystem::path const& file, std::string const& text) {
-    std::error_code ec;
-    std::filesystem::create_directories(file.parent_path(), ec);
-    auto tmp = file; tmp += ".tmp";
-    std::ofstream out(tmp, std::ios::binary); out << text; out.close();
-    if (!out) return false;
-    if (std::filesystem::exists(file, ec)) {
-        auto backup = file; backup += ".bak";
-        std::filesystem::remove(backup, ec); ec.clear();
-        std::filesystem::rename(file, backup, ec);
-        if (ec) return false;
-    }
-    std::filesystem::rename(tmp, file, ec);
-    if (ec) {
-        // Restore the old run if the final rename failed after backing it up.
-        auto backup = file; backup += ".bak";
-        std::error_code restore;
-        if (std::filesystem::exists(backup, restore)) std::filesystem::rename(backup, file, restore);
-        return false;
-    }
-    return true;
+    return cf::replaceFile(file, text);
 }
-void save() {
-    std::ostringstream text; cf::write(text, s.recording);
-    if (!writeSafe(path(), text.str())) { s.message = "Could not save recording"; return; }
+void save(bool flushPredictions = false) {
+    if (s.storageBlocked) return;
+    bool changedCapture = s.captureDirty;
+    if (!cf::saveBundle(path().parent_path(), s.recording, s.captureDirty, s.captureDigest)) {
+        s.message = "Could not save capture/playback bundle; previous files retained"; return;
+    }
+    s.captureDirty = false;
     auto view = [](std::string const& name, std::string const& data) {
         auto digest = cf::fingerprint(data);
         auto it = s.savedViews.find(name);
@@ -157,23 +193,42 @@ void save() {
         else s.message = "Capture saved; could not update report files";
     };
     view("metadata.json", cf::metadataJson(s.recording));
-    view("inputs.csv", cf::inputsCsv(s.recording));
-    view("trace.csv", cf::traceCsv(s.recording));
-    view("windows.csv", cf::windowsCsv(s.recording));
-    view("scan-report.txt", cf::scanReport(s.recording, s.message));
-    std::ostringstream predictions;
-    cf::writePredictions(predictions, cf::fingerprint(text.str()), s.predictions);
-    view("prediction-trails.txt", predictions.str());
+    if (changedCapture || s.viewsDirty) {
+        auto trace = cf::traceCsv(s.recording); s.traceDigest = cf::fingerprint(trace);
+        view("capture-trace.csv", trace);
+        view("capture-rings.tsv", "CF_RINGS\t1\t" + s.captureDigest + "\n# No ring interaction records are available in this capture.\n");
+        s.viewsDirty = false;
+    }
+    double seconds = s.analysisSeconds;
+    if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
+    auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
+        seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
+    std::error_code reportError;
+    if (changedCapture || s.reportDirty || !std::filesystem::exists(path().parent_path() / "scan-report.txt", reportError)) view("scan-report.txt", report);
+    // Windows are checkpointed per event, but large derived predictions only at
+    // Stop/completion/exit rather than repeatedly rewriting them while scanning.
+    if (flushPredictions || (s.state != State::Analyze && s.state != State::Verify)) {
+        std::ostringstream predictions; cf::writePredictions(predictions, workingDigest(), s.predictions);
+        view("prediction-trails.txt", predictions.str());
+    }
 }
 std::string readAll(std::filesystem::path const& file) {
-    std::error_code ec;
-    auto bytes = std::filesystem::file_size(file, ec);
-    if (ec || bytes > cf::PACK_MAX_BYTES + 16384) return {};
-    std::ifstream in(file, std::ios::binary);
-    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    return cf::readFile(file);
+}
+bool readVisual(std::filesystem::path const& directory, cf::Recording const& r, cf::VisualEdits& result) {
+    if (r.trace.empty()) return false;
+    auto trace = cf::fingerprint(cf::traceCsv(r));
+    auto tsv = directory / ("edits-" + trace + ".tsv"); std::error_code ec;
+    if (std::filesystem::exists(tsv, ec)) {
+        std::istringstream in(readAll(tsv));
+        return cf::readEditsTsv(in, r.key, trace, r.trace.front().tick, r.trace.back().tick, result);
+    }
+    std::istringstream in(readAll(directory / "showcase-edits.json"));
+    return cf::readEdits(in, r.key, trace, r.trace.front().tick, r.trace.back().tick, result);
 }
 // Export: every run of this level into exports/<folder>.cfpack
 std::string exportPack() {
+    save();
     cf::Pack pack; pack.folder = s.folder;
     size_t bytes = 0; std::error_code ec;
     std::map<std::string, std::filesystem::path> captures;
@@ -186,17 +241,35 @@ std::string exportPack() {
     // Keep the existing wire format: pack members still use run-<key>.cfr.
     for (auto const& entry : std::filesystem::directory_iterator(levelDir(s.folder), ec)) {
         auto name = "run-" + entry.path().filename().string() + ".cfr";
-        if (cf::runName(name)) captures[name] = entry.path() / "capture.cfr";
+        if (cf::runName(name)) {
+            auto file = entry.path() / "capture.flr";
+            captures[name] = std::filesystem::exists(file, ec) ? file : entry.path() / "capture.cfr";
+        }
     }
     ec.clear();
     for (auto const& [name, capture] : captures) {
         if (pack.files.size() >= cf::PACK_MAX_FILES) return "Too many recordings for one pack.";
-        auto size = std::filesystem::file_size(capture, ec);
-        if (ec || size > cf::PACK_MAX_BYTES - bytes) return "Runs are too large to export.";
-        auto data = readAll(capture);
-        if (data.empty()) return "Could not read a recording for export.";
+        auto key = name.substr(4, name.size() - 8); cf::Recording recording;
+        if (capture.extension() == ".flr") {
+            cf::LoadedBundle loaded;
+            if (!cf::loadBundle(capture.parent_path(), key, loaded)) return "Could not validate a recording bundle for export.";
+            recording = std::move(loaded.recording);
+        } else {
+            std::ifstream in(capture);
+            if (!cf::read(in, key, recording)) return "Could not validate a legacy recording for export.";
+        }
+        std::ostringstream portable; cf::write(portable, recording); auto data = portable.str();
+        if (data.size() > cf::PACK_MAX_BYTES - bytes) return "Runs are too large to export.";
         bytes += data.size();
         pack.files.push_back({name, std::move(data)});
+        cf::VisualEdits visual;
+        if (readVisual(capture.parent_path(), recording, visual)) {
+            auto trace = cf::fingerprint(cf::traceCsv(recording)); std::ostringstream edits;
+            cf::writeEditsTsv(edits, key, trace, visual); auto content = edits.str();
+            if (pack.files.size() >= cf::PACK_MAX_FILES || content.size() > cf::PACK_MAX_BYTES - bytes) return "Pack with edits is too large.";
+            bytes += content.size(); pack.files.push_back({"edits-" + key + "-" + trace + ".tsv", std::move(content)});
+            pack.version = 2;
+        }
     }
     if (pack.files.empty()) return "Nothing to export: record and analyze this level first.";
     if (bytes > cf::PACK_MAX_BYTES) return "Runs are too large to export.";
@@ -220,16 +293,38 @@ std::string importPacks() {
     for (auto const& file : found) {
         std::istringstream in(readAll(file));
         cf::Pack pack; bool ok = cf::packRead(in, pack);
+        std::map<std::string, cf::Recording> captures;
+        std::map<std::string, cf::VisualEdits> visual;
         for (auto const& f : pack.files) {
+            if (!cf::runName(f.name)) continue;
             std::istringstream data(f.data); cf::Recording r;
-            ok = cf::read(data, f.name.substr(4, f.name.size() - 8), r) && ok;
-        }
-        if (ok) for (auto const& f : pack.files) {
             auto key = f.name.substr(4, f.name.size() - 8);
-            ok = writeSafe(levelDir(pack.folder) / key / "capture.cfr", f.data) && ok;
+            if (!cf::read(data, key, r)) ok = false;
+            else captures[key] = std::move(r);
+        }
+        if (captures.empty()) ok = false;
+        for (auto const& f : pack.files) if (cf::editName(f.name)) {
+            auto dash = f.name.find('-', 6); auto key = f.name.substr(6, dash - 6);
+            auto foundCapture = captures.find(key);
+            if (foundCapture == captures.end() || foundCapture->second.trace.empty()) { ok = false; continue; }
+            auto const& r = foundCapture->second; auto trace = cf::fingerprint(cf::traceCsv(r));
+            if (f.name != "edits-" + key + "-" + trace + ".tsv" || visual.count(key)) { ok = false; continue; }
+            std::istringstream data(f.data); cf::VisualEdits doc;
+            if (!cf::readEditsTsv(data, key, trace, r.trace.front().tick, r.trace.back().tick, doc)) ok = false;
+            else visual[key] = std::move(doc);
+        }
+        if (ok) for (auto const& [key, r] : captures) {
+            std::string digest; auto directory = levelDir(pack.folder) / key;
+            if (!cf::saveBundle(directory, r, true, digest)) { ok = false; break; }
+            auto edits = visual.find(key);
+            if (edits != visual.end()) {
+                auto trace = cf::fingerprint(cf::traceCsv(r)); std::ostringstream content;
+                cf::writeEditsTsv(content, key, trace, edits->second);
+                if (!writeSafe(directory / ("edits-" + trace + ".tsv"), content.str())) { ok = false; break; }
+            }
         }
         if (!ok) { ++failed; continue; }
-        ++files; runs += pack.files.size();
+        ++files; runs += captures.size();
         auto done = file; done += ".done"; std::filesystem::rename(file, done, ec);
     }
     return fmt::format("Imported {} run(s) from {} file(s).{}", runs, files,
@@ -268,11 +363,13 @@ void queueReturnToPause() {
     });
 }
 void stop(std::string message) {
+    analysisClock(false);
     s.state = s.recording.ready() ? State::Ready : State::Idle;
     s.snapshot = nullptr; s.snapshotChecked = false;
-    s.preparingSnapshot = false; s.validatingSnapshot = false;
+    s.validatingSnapshot = false;
     s.fullRestartRetry = false;
-    s.snapshotTrace.clear();
+    s.nativePool.clear(); s.referenceTrace.clear(); s.activeNative = -1;
+    s.referencePhysics.clear(); s.segmentExits.clear(); s.referenceLandings.clear();
     s.pending = Pending::None; releaseInjected(); s.message = std::move(message); save();
     applyBackground(false);
 }
@@ -283,8 +380,10 @@ void resetTrial() {
     // Automated runs stay in practice and reset through the normal practice path.
     if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
     s.owner->removeAllCheckpoints();
-    bool restoring = s.snapshot && (s.validatingSnapshot || s.snapshotChecked) && !s.preparingSnapshot && !s.fullRestartRetry;
+    if (!Mod::get()->getSettingValue<bool>("native-states")) { s.snapshot = nullptr; s.snapshotChecked = false; }
+    bool restoring = s.snapshot && (s.validatingSnapshot || s.snapshotChecked) && !s.fullRestartRetry;
     if (restoring) {
+        ++s.restores;
         s.internalCheckpoint = true;
         s.owner->storeCheckpoint(s.snapshot.data());
         s.internalCheckpoint = false;
@@ -295,6 +394,8 @@ void resetTrial() {
     if (restoring) {
         if (tick() != s.snapshotTick) {
             log::warn("[CF] snapshot restore tick mismatch; disabling native cache");
+            ++s.restoreFallbacks;
+            if (s.activeNative >= 0) s.nativePool[s.activeNative].rejected = true;
             s.snapshot = nullptr; s.snapshotChecked = false;
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
         } else {
@@ -310,7 +411,12 @@ void resetTrial() {
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0; s.lastPressTick = -1; s.lastIntervalMs = -1.f; s.divergences = 0;
     s.activeJump.fill(size_t(-1)); s.airborne.fill(false); s.localLandingPassed = false;
-    if (s.state == State::Verify) s.referenceLandings.assign(s.recording.inputs.size(), {});
+    s.targetExecuted = false; s.segmentMissed = false;
+    if (s.state == State::Verify) {
+        s.referenceLandings.assign(s.recording.inputs.size(), {});
+        s.referencePhysics.clear(); s.referenceTrace.clear(); s.nativePool.clear();
+        s.nextNativeTick = 24; s.nativePoolLimited = false; s.activeNative = -1;
+    }
     s.candidateTrace.clear(); s.snapshotCompared = 0;
     fixPracticeTouchPriority();
 }
@@ -539,7 +645,8 @@ bool supported() {
 void beginAnalysis() {
     if (!s.recording.complete || s.recording.inputs.empty() || !supported()) return;
     int radius = static_cast<int>(Mod::get()->getSettingValue<int64_t>("scan-radius"));
-    int policy = Mod::get()->getSettingValue<bool>("same-jump") ? 1 : 0;
+    int policy = selectedPolicy();
+    if (s.recording.backend != inputBackend()) { s.message = "Input mode changed. Restore the recording's vanilla/CoS mode first."; return; }
     bool havePreview = std::any_of(s.predictions.begin(), s.predictions.end(), [](auto const& pair) {
         return std::any_of(pair.second.begin(), pair.second.end(), [](auto const& b) { return !b.points.empty(); });
     });
@@ -547,14 +654,17 @@ void beginAnalysis() {
     bool changed = s.recording.radius != radius || s.recording.analysisPolicy != policy || regenerate;
     if (changed) { s.recording.windows.clear(); s.predictions.clear(); }
     s.recording.analysisPolicy = policy;
-    if (s.recording.backend != inputBackend()) { s.message = "Input mode changed. Restore the recording's vanilla/CoS mode first."; return; }
     s.snapshot = nullptr; s.snapshotChecked = false;
-    s.preparingSnapshot = false; s.validatingSnapshot = false;
+    s.validatingSnapshot = false;
     s.referenceLandings.assign(s.recording.inputs.size(), {});
     s.recording.radius = radius;
     s.recording.windows.resize(s.recording.inputs.size()); s.recording.verified = false;
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
     s.trial = s.recording.inputs; s.shiftIndex = 0; s.noRetry = false; s.firstFail.clear(); s.alert.clear();
+    s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
+    s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
+    s.reportDirty = true;
+    s.measurableTotal = std::count_if(s.recording.inputs.begin(), s.recording.inputs.end(), cf::counted); analysisClock(true);
     log::info("[CF] verify start: {} inputs, end tick {}", s.recording.inputs.size(), s.recording.endTick);
     s.message = "Verifying original run (240 TPS)"; resetTrial();
 }
@@ -566,27 +676,43 @@ void nextEvent() {
         queueReturnToPause(); return;
     }
     s.search.reset(s.recording.radius); s.offset = s.search.offset;
-    s.snapshot = nullptr; s.snapshotChecked = false; s.snapshotTrace.clear();
+    s.measuredDone = 0;
+    for (size_t i = 0; i < s.recording.inputs.size(); ++i)
+        if (cf::counted(s.recording.inputs[i]) && s.recording.windows[i].measured) ++s.measuredDone;
+    s.snapshot = nullptr; s.snapshotChecked = false;
     s.fullRestartRetry = false;
-    s.preparingSnapshot = Mod::get()->getSettingValue<bool>("native-states") &&
-        s.recording.inputs[s.target].tick > s.recording.radius + 24;
     s.validatingSnapshot = false;
-    if (s.preparingSnapshot) s.offset = 0;
+    s.activeNative = -1;
+    int chosen = Mod::get()->getSettingValue<bool>("native-states") ?
+        cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 2) : -1;
+    if (chosen >= 0) {
+        int i = chosen;
+        auto const& n = s.nativePool[i];
+        s.activeNative = i; s.snapshot = n.checkpoint; s.snapshotTick = n.tick; s.snapshotNext = n.next; s.snapshotHeld = n.held;
+        s.snapshotButtons = n.buttons; s.snapshotRecordedButtons = n.recorded; s.snapshotReplayButtons = n.replay;
+        s.snapshotRandomSeed = n.randomSeed; s.snapshotReplaySeed = n.replaySeed; s.snapshotExtraDelta = n.extraDelta;
+        s.snapshotStep = n.step; s.snapshotRecordedSize = n.recordedSize; s.snapshotResumeTimer = n.resumeTimer;
+        s.snapshotChecked = n.checked; s.snapshotEndTick = s.recording.endTick;
+        if (!n.checked) { s.validatingSnapshot = true; s.offset = 0; }
+    }
+    if (s.recording.analysisPolicy == 2 && !s.referenceLandings[s.target].known &&
+        (s.target >= s.segmentExits.size() || !s.segmentExits[s.target].known)) ++s.localFallbackEvents;
 }
 void startCandidate() {
     if (s.state != State::Analyze) return;
-    if (s.search.done && !s.preparingSnapshot && !s.validatingSnapshot) {
+    if (s.search.done && !s.validatingSnapshot) {
         s.recording.windows[s.target] = s.search.window();
         save(); ++s.target; nextEvent();
         if (s.state != State::Analyze) return;
     }
     s.candidateTrace.clear();
-    if (s.preparingSnapshot || s.validatingSnapshot) {
+    if (s.validatingSnapshot) {
         s.trial = s.recording.inputs;
-        s.message = s.preparingSnapshot ? "Capturing native state (baseline)" : "Validating native-state round trip";
+        s.message = "Validating shared native-state round trip";
         resetTrial(); return;
     }
-    s.message = fmt::format("Analyzing {}% | event {}/{} | offset {:+} | {} tests", 100 * s.target / std::max<size_t>(1, s.recording.inputs.size()), s.target + 1, s.recording.inputs.size(), s.offset, s.tests);
+    s.message = fmt::format("{} {}% | event {}/{} | offset {:+} | {} tests", s.recording.analysisPolicy == 2 ? "Local" : "Full run",
+        100 * s.measuredDone / std::max<size_t>(1, s.measurableTotal), s.measuredDone + 1, s.measurableTotal, s.offset, s.tests);
     if (!cf::trial(s.recording.inputs, s.target, s.offset, s.trial)) {
         s.pending = Pending::Fail; return;
     }
@@ -621,25 +747,29 @@ void consume() {
         s.recording.inputs.resize(s.next);
         s.recording.windows.resize(s.next);
         s.recording.endTick = tick();
+        s.segmentExits = cf::segmentExits(s.recording, s.referencePhysics);
         log::info("[CF] verified (shift {:+}, {} position drifts)", by, s.divergences);
         s.recording.verified = true; s.state = State::Analyze; s.target = 0;
         nextEvent(); startCandidate();
     } else if (s.state == State::Analyze) {
-        if (s.preparingSnapshot) {
-            s.preparingSnapshot = false;
-            if (result == Pending::Fail) { stop("Baseline changed while capturing state; analyze again without native states"); queueReturnToPause(); return; }
-            s.snapshotEndTick = tick();
-            if (s.snapshot) { s.validatingSnapshot = true; startCandidate(); return; }
-        } else if (s.validatingSnapshot) {
+        if (s.validatingSnapshot) {
             s.validatingSnapshot = false;
             s.snapshotChecked = s.snapshot && result == Pending::Pass && tick() == s.snapshotEndTick && s.snapshotCompared > 0;
-            if (!s.snapshotChecked) { s.snapshot = nullptr; log::warn("[CF] native-state validation failed; full restart fallback"); }
+            if (s.activeNative >= 0) {
+                s.nativePool[s.activeNative].checked = s.snapshotChecked;
+                s.nativePool[s.activeNative].rejected = !s.snapshotChecked;
+            }
+            if (!s.snapshotChecked) { ++s.restoreFallbacks; s.snapshot = nullptr; log::warn("[CF] native-state validation failed; full restart fallback"); }
         } else {
             bool pass = result == Pending::Pass;
-            if (!pass && s.snapshotChecked && !s.fullRestartRetry) {
+            bool confirm = s.activeNative >= 0 && !s.nativePool[s.activeNative].failureConfirmed;
+            if (!pass && s.snapshotChecked && !s.fullRestartRetry && confirm) {
                 s.fullRestartRetry = true; startCandidate(); return;
             }
-            if (s.fullRestartRetry && pass) { s.snapshot = nullptr; s.snapshotChecked = false; }
+            if (s.fullRestartRetry && s.activeNative >= 0) {
+                s.nativePool[s.activeNative].failureConfirmed = !pass;
+                if (pass) { s.nativePool[s.activeNative].rejected = true; ++s.restoreFallbacks; s.snapshot = nullptr; s.snapshotChecked = false; }
+            }
             s.fullRestartRetry = false;
             ++s.tests;
             auto& branches = s.predictions[s.target];
@@ -700,9 +830,9 @@ class $modify(CFBase, GJBaseGameLayer) {
             if (s.recordedHeld[i] != down) {
                 auto player = p1 ? s.owner->m_player1 : s.owner->m_player2;
                 auto position = player ? player->getPosition() : CCPointZero;
-                int mode = !player ? -1 : player->m_isShip ? 1 : player->m_isBall ? 2 : player->m_isBird ? 3 :
-                    player->m_isDart ? 4 : player->m_isRobot ? 5 : player->m_isSpider ? 6 : player->m_isSwing ? 7 : 0;
+                int mode = playerMode(player);
                 s.recording.inputs.push_back({tick(), down, button, p1, position.x, position.y, mode});
+                s.captureDirty = true;
                 s.recordedHeld[i] = down;
             }
         }
@@ -710,22 +840,50 @@ class $modify(CFBase, GJBaseGameLayer) {
     }
     void processCommands(float dt, bool half, bool last) {
         if (static_cast<GJBaseGameLayer*>(s.owner) == this && running() && s.pending == Pending::None) {
+            if (s.state != State::Playback) ++s.physicsCalls;
             bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - .25f) <= .005f;
             if (dt > 0 && !validStep) {
                 s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail; s.noRetry = true;
                 if (s.state == State::Analyze) { s.alert = s.message; stop(s.message); queueReturnToPause(); }
                 return;
             }
+            int now = tick();
+            if (s.state == State::Verify || s.state == State::Analyze) {
+                observeLanding();
+                if (s.pending != Pending::None) return;
+            }
+            if (s.state == State::Verify && s.referencePhysics.size() < 250000) {
+                auto p1 = s.owner->m_player1, p2 = s.owner->m_player2;
+                s.referencePhysics.try_emplace(now, cf::PhysicsReference{
+                    {now, p1->getPositionX(), p1->getPositionY(), p2->getPositionX(), p2->getPositionY()},
+                    playerMode(p1), playerMode(p2), p1->m_isUpsideDown, p2->m_isUpsideDown});
+            }
+            if (s.state == State::Analyze && s.recording.analysisPolicy == 2 && !s.validatingSnapshot &&
+                !s.segmentMissed && s.target < s.segmentExits.size() && s.segmentExits[s.target].known) {
+                auto const& exit = s.segmentExits[s.target];
+                if (now > exit.tick) { s.segmentMissed = true; ++s.localFallbackTrials; }
+                else if (now == exit.tick) {
+                    auto player = s.recording.inputs[s.target].p1 ? s.owner->m_player1 : s.owner->m_player2;
+                    bool landingRequired = s.referenceLandings[s.target].known;
+                    bool pass = s.targetExecuted && (landingRequired ? s.localLandingPassed :
+                        cf::atSegmentExit(exit, player->getPositionX(), player->getPositionY(), playerMode(player), player->m_isUpsideDown));
+                    s.pending = pass ? Pending::Pass : Pending::Fail;
+                    if (pass) ++s.localPasses;
+                    s.message = pass ? "Local segment exit reached" : "Candidate did not reach the reference segment exit";
+                    return;
+                }
+            }
             auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
             s.injecting = true;
             while (s.next < events.size() && events[s.next].tick <= tick()) {
                 auto index = s.next++; auto e = events[index];
+                auto identity = e.sourceIndex == size_t(-1) ? index : e.sourceIndex;
+                if (s.state == State::Analyze && identity == s.target) s.targetExecuted = true;
                 if ((s.state == State::Verify || s.state == State::Analyze) && e.button == 1 && e.down) {
                     auto player = e.p1 ? s.owner->m_player1 : s.owner->m_player2;
                     int p = e.p1 ? 0 : 1;
                     bool jumpMode = player && !player->m_isShip && !player->m_isBall && !player->m_isBird &&
                         !player->m_isDart && !player->m_isSpider && !player->m_isSwing;
-                    auto identity = e.sourceIndex == size_t(-1) ? index : e.sourceIndex;
                     s.activeJump[p] = jumpMode ? identity : size_t(-1); s.airborne[p] = false;
                 }
                 handleButton(e.down, e.button, e.p1);
@@ -736,7 +894,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                     visualMarker(s.visual.markers[s.nextVisual++]);
             }
             s.injecting = false;
-            if (tick() > s.recording.endTick + 2400) {
+            if (int64_t(tick()) > int64_t(s.recording.endTick) + 2400) {
                 s.message = "Replay timed out"; s.pending = Pending::Fail;
             }
         }
@@ -753,26 +911,44 @@ class $modify(CFPlay, PlayLayer) {
         auto level = layer->m_level;
         s.folder = fmt::format("{}-{}", cf::slug(std::string(level->m_levelName)), level->m_levelID.value());
         s.recording.key = cf::fingerprint(fmt::format("{}:{}:{}", level->m_levelID.value(), std::string(level->m_levelName), std::string(level->m_levelString)));
-        migrateOldRun();
+        bool migrated = migrateOldRun();
+        s.reportDirty = migrated;
         auto recordingPath = path();
-        std::ifstream file(recordingPath); cf::Recording loaded;
-        if (cf::read(file, s.recording.key, loaded)) {
-            s.recording = std::move(loaded); s.state = s.recording.ready() ? State::Ready : State::Idle;
-            int policy = Mod::get()->getSettingValue<bool>("same-jump") ? 1 : 0;
-            if (s.recording.analysisPolicy != policy) {
-                s.recording.windows.clear(); s.recording.verified = false; s.state = State::Idle;
-            }
+        cf::LoadedBundle loaded;
+        if (cf::loadBundle(recordingPath.parent_path(), s.recording.key, loaded)) {
+            s.recording = std::move(loaded.recording); s.captureDigest = loaded.captureDigest; s.captureDirty = false;
+            s.traceDigest = cf::fingerprint(cf::traceCsv(s.recording));
+            s.state = s.recording.ready() ? State::Ready : State::Idle;
             s.message = s.recording.ready() ? "Saved showcase available" : "Saved run: Analyze to continue";
-            std::ifstream predictions(path().parent_path() / "prediction-trails.txt");
-            cf::readPredictions(predictions, cf::fingerprint(readAll(path())), s.recording.inputs.size(), s.predictions);
+            if (s.recording.analysisPolicy == 2) s.message += " (segment windows)";
+            if (loaded.backupAnalysis) s.message += " (recovered playback backup)";
+            auto predictionData = readAll(path().parent_path() / "prediction-trails.txt");
+            std::istringstream predictions(predictionData);
+            bool havePredictions = cf::readPredictions(predictions, workingDigest(), s.recording.inputs.size(), s.predictions);
+            if (!havePredictions && migrated) {
+                std::istringstream oldPredictions(predictionData);
+                cf::readPredictions(oldPredictions, cf::fingerprint(readAll(path().parent_path() / "capture.cfr")), s.recording.inputs.size(), s.predictions);
+            }
             if (!s.recording.trace.empty()) {
-                std::istringstream edits(readAll(path().parent_path() / "showcase-edits.json"));
-                cf::readEdits(edits, s.recording.key, cf::fingerprint(cf::traceCsv(s.recording)),
-                    s.recording.trace.front().tick, s.recording.trace.back().tick, s.visual);
+                if (readVisual(path().parent_path(), s.recording, s.visual)) {
+                    std::ostringstream edits; cf::writeEditsTsv(edits, s.recording.key, s.traceDigest, s.visual);
+                    cf::replaceChanged(visualPath(), edits.str());
+                }
             }
             if (s.visual.enabled && s.recording.complete) s.message = "Edited showcase available (visual values)";
-            save(); // Regenerate derived files on opening imported or migrated captures.
-        } else if (std::filesystem::exists(recordingPath)) s.message = "Recording format changed. Record a new run.";
+            save();
+            Mod::get()->setSavedValue<std::string>("last-level-folder", s.folder);
+            Mod::get()->setSavedValue<std::string>("last-recording-key", s.recording.key);
+            Mod::get()->setSavedValue<int>("storage-schema", 2);
+        } else {
+            auto legacy = "run-" + s.recording.key + ".cfr";
+            std::error_code ec;
+            s.storageBlocked = std::filesystem::exists(recordingPath, ec) ||
+                std::filesystem::exists(recordingPath.parent_path() / "capture.cfr", ec) ||
+                std::filesystem::exists(Mod::get()->getSaveDir() / "levels" / s.folder / legacy, ec) ||
+                std::filesystem::exists(Mod::get()->getSaveDir() / legacy, ec);
+            if (s.storageBlocked) s.message = "Could not load/migrate capture; original files preserved. Record explicitly to replace.";
+        }
         layer->unschedule(schedule_selector(CFPlay::service));
         layer->schedule(schedule_selector(CFPlay::service));
     }
@@ -785,6 +961,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     void service(float dt) {
         if (s.owner != this || !hasLiveOwner()) return;
+        analysisClock(!m_isPaused && (s.state == State::Verify || s.state == State::Analyze));
         if (m_isPaused) { applyBackground(false); hud(); return; }
         applyBackground(s.state == State::Verify || s.state == State::Analyze);
         if (running() && !m_isPaused && s.pending == Pending::None) {
@@ -801,7 +978,7 @@ class $modify(CFPlay, PlayLayer) {
         if (s.state == State::Playback) predictionPreview();
     }
     void pauseGame(bool unfocused) {
-        if (s.owner == this) { s.physicalHeld.fill(false); applyBackground(false); }
+        if (s.owner == this) { analysisClock(false); s.physicalHeld.fill(false); applyBackground(false); }
         PlayLayer::pauseGame(unfocused);
     }
     void postUpdate(float dt) {
@@ -810,27 +987,33 @@ class $modify(CFPlay, PlayLayer) {
         int now = tick();
         if (s.state == State::Verify || s.state == State::Analyze) {
             auto point = cf::Sample{now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()};
-            if (s.state == State::Analyze) {
-                int eventTick = s.recording.inputs[s.target].tick;
-                if (!s.preparingSnapshot && !s.validatingSnapshot && now >= eventTick - 240 && now <= eventTick + 480 &&
-                    s.candidateTrace.size() < 256 && (s.candidateTrace.empty() || now > s.candidateTrace.back().tick))
-                    s.candidateTrace.push_back(point);
-                int earliest = eventTick - s.recording.radius;
-                if (s.preparingSnapshot && !s.snapshot && now < earliest && now >= earliest - 24) {
-                    auto checkpoint = createCheckpoint();
-                    if (checkpoint) {
-                        s.snapshot = checkpoint; s.snapshotTick = now; s.snapshotNext = s.next; s.snapshotHeld = s.injectedHeld;
-                        s.snapshotButtons = m_queuedButtons;
-                        s.snapshotRecordedButtons = m_queuedRecordedButtons; s.snapshotReplayButtons = m_queuedReplayButtons;
-                        s.snapshotRandomSeed = m_randomSeed; s.snapshotReplaySeed = m_replayRandSeed;
-                        s.snapshotExtraDelta = m_extraDelta; s.snapshotStep = m_currentStep;
-                        s.snapshotRecordedSize = m_queuedRecordedButtonsSize; s.snapshotResumeTimer = m_resumeTimer;
+            if (s.state == State::Verify) {
+                if (s.referenceTrace.size() < 100000) s.referenceTrace[now] = point;
+                if (Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited && s.nativePool.size() < 8 && now >= s.nextNativeTick) {
+                    s.nextNativeTick = now + std::max(24, s.recording.endTick / 8);
+                    auto cp = createCheckpoint();
+                    if (cp) {
+                        size_t states = cp->m_vectorSavedObjectStateRef.size() + cp->m_vectorActiveSaveObjectState.size() + cp->m_vectorSpecialSaveObjectState.size();
+                        if (states > 25000) { s.nativePoolLimited = true; log::warn("[CF] native state cache limited by object-state count"); }
+                        else {
+                            s.nativePool.emplace_back(); auto& n = s.nativePool.back();
+                            n.checkpoint = cp; n.tick = now; n.next = s.next; n.held = s.injectedHeld;
+                            n.buttons = m_queuedButtons; n.recorded = m_queuedRecordedButtons; n.replay = m_queuedReplayButtons;
+                            n.randomSeed = m_randomSeed; n.replaySeed = m_replayRandSeed; n.extraDelta = m_extraDelta;
+                            n.step = m_currentStep; n.recordedSize = m_queuedRecordedButtonsSize; n.resumeTimer = m_resumeTimer;
+                            s.peakNativeStates = std::max(s.peakNativeStates, s.nativePool.size());
+                        }
                     }
                 }
-                if (s.preparingSnapshot && s.snapshot && s.snapshotTrace.size() < 8192) s.snapshotTrace[now] = point;
+            }
+            if (s.state == State::Analyze) {
+                int eventTick = s.recording.inputs[s.target].tick;
+                if (!s.validatingSnapshot && now >= eventTick - 240 && now <= eventTick + 480 &&
+                    s.candidateTrace.size() < 256 && (s.candidateTrace.empty() || now > s.candidateTrace.back().tick))
+                    s.candidateTrace.push_back(point);
                 if (s.validatingSnapshot) {
-                    auto it = s.snapshotTrace.find(now);
-                    if (it != s.snapshotTrace.end()) {
+                    auto it = s.referenceTrace.find(now);
+                    if (it != s.referenceTrace.end()) {
                         ++s.snapshotCompared;
                         auto reference = it->second;
                         if (std::abs(reference.x - point.x) > .5f || std::abs(reference.y - point.y) > .5f ||
@@ -840,23 +1023,9 @@ class $modify(CFPlay, PlayLayer) {
                     }
                 }
             }
-            for (int p = 0; p < 2; ++p) {
-                auto index = s.activeJump[p];
-                if (index >= s.referenceLandings.size()) continue;
-                auto player = p == 0 ? m_player1 : m_player2;
-                if (!player->m_isOnGround) { s.airborne[p] = true; continue; }
-                if (!s.airborne[p]) continue;
-                cf::Landing landing{true, now, reinterpret_cast<uintptr_t>(player->m_lastGroundObject), player->getPositionX(), player->getPositionY()};
-                if (s.state == State::Verify) s.referenceLandings[index] = landing;
-                else if (!s.preparingSnapshot && !s.validatingSnapshot && index == s.target && s.recording.analysisPolicy == 1 &&
-                         s.referenceLandings[index].known) {
-                    s.localLandingPassed = cf::sameLanding(s.referenceLandings[index], landing, 60.f);
-                    if (!s.localLandingPassed) { s.message = "Candidate landed outside the reference platform/corridor"; s.pending = Pending::Fail; }
-                }
-                s.activeJump[p] = size_t(-1);
-            }
         }
         if (s.state == State::Record && now != s.lastTick) {
+            s.captureDirty = true;
             auto point = cf::Sample{now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()};
             if (!s.recording.trace.empty() && s.recording.trace.back().tick == now) s.recording.trace.back() = point;
             else s.recording.trace.push_back(point);
@@ -894,6 +1063,7 @@ class $modify(CFPlay, PlayLayer) {
     void loadFromCheckpoint(CheckpointObject* cp) {
         PlayLayer::loadFromCheckpoint(cp);
         if (s.state != State::Record) return;
+        s.captureDirty = true;
         auto it = s.checkpoints.find(cp);
         int now = tick();
         if (it == s.checkpoints.end()) {
@@ -919,6 +1089,7 @@ class $modify(CFPlay, PlayLayer) {
         if (running() && !s.resetting) stop("Automated run cancelled by manual restart");
         s.restored = false; PlayLayer::resetLevel();
         if (s.state == State::Record && !s.resetting) {
+            s.captureDirty = true;
             if (!s.restored) {
                 s.recording.inputs.clear(); s.recording.trace.clear(); s.checkpoints.clear();
                 s.recordedHeld.fill(false);
@@ -943,6 +1114,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     void levelComplete() {
         if (s.state == State::Record) {
+            s.captureDirty = true;
             s.recording.complete = true; s.recording.endTick = tick();
             s.recording.verified = false; s.recording.windows.clear();
             s.state = State::Idle; s.message = "Run saved. Pause > Frames > Analyze"; save();
@@ -952,7 +1124,7 @@ class $modify(CFPlay, PlayLayer) {
             if (s.pending == Pending::None) {
                 auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
                 bool valid = s.next == events.size();
-                if (s.state == State::Analyze && !s.preparingSnapshot && !s.validatingSnapshot && s.recording.analysisPolicy == 1 &&
+                if (s.state == State::Analyze && !s.validatingSnapshot && s.recording.analysisPolicy != 0 &&
                     s.target < s.referenceLandings.size() && s.referenceLandings[s.target].known)
                     valid = valid && s.localLandingPassed;
                 if (!valid && s.state != State::Analyze) { // only trailing releases may be left over
@@ -970,8 +1142,9 @@ class $modify(CFPlay, PlayLayer) {
         // onExit is a scene lifecycle notification, not destruction. Reparenting
         // and scene overlays must not erase the current recording/session.
         if (s.owner == this) {
+            analysisClock(false);
             applyBackground(false);
-            if (!s.recording.key.empty()) save();
+            if (!s.recording.key.empty()) save(true);
         }
         PlayLayer::onExit();
     }
@@ -1045,13 +1218,16 @@ class CFEditor : public Popup {
         m_selected = int(m_history.current.markers.size()) - 1; m_brush = m_history.current.markers.back(); refresh();
     }
     void saveEdits() {
+        if (s.storageBlocked || s.captureDirty || s.captureDigest.empty()) {
+            FLAlertLayer::create("Captura sin guardar", "No se guardo la captura. Comprueba el almacenamiento antes de guardar la edicion.", "OK")->show(); return;
+        }
         if (cf::fingerprint(cf::traceCsv(s.recording)) != m_traceKey) {
             FLAlertLayer::create("Trayectoria distinta", "La captura cambio. Cierra y vuelve a abrir el editor.", "OK")->show(); return;
         }
         auto doc = m_history.current;
         std::stable_sort(doc.markers.begin(), doc.markers.end(), [](auto const& a, auto const& b) { return a.tick < b.tick; });
-        std::ostringstream text; cf::writeEdits(text, m_key, m_traceKey, doc);
-        if (!writeSafe(path().parent_path() / "showcase-edits.json", text.str())) {
+        std::ostringstream text; cf::writeEditsTsv(text, m_key, m_traceKey, doc);
+        if (!writeSafe(visualPath(), text.str())) {
             FLAlertLayer::create("Error", "No se pudo guardar la presentacion. La captura original no se ha cambiado.", "OK")->show(); return;
         }
         s.visual = std::move(doc); s.message = s.visual.enabled ? "Edited showcase saved. Frames > Play" : "Original measured showcase selected";
@@ -1221,12 +1397,17 @@ class CFPopup : public Popup {
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.recording.backend = inputBackend(); s.predictions.clear(); s.snapshot = nullptr;
             s.visual = {};
+            s.captureDirty = true; s.viewsDirty = true; s.captureDigest.clear(); s.traceDigest.clear(); s.storageBlocked = false;
+            s.reportDirty = true;
+            s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0; s.tests = 0;
+            s.localFallbackEvents = s.localFallbackTrials = s.localPasses = s.peakNativeStates = 0;
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
             s.recordedHeld.fill(false); s.physicalHeld.fill(false); s.injectedHeld.fill(false);
             onClose(nullptr);
             resumeAndRun([] { resetTrial(); s.state = State::Record; s.message = "REC - finish the level in practice"; });
         });
-        add("2. ANALYZE", "Verify + measure", {215, 171}, !active && s.recording.complete && !s.recording.inputs.empty(), [this] {
+        add("2. ANALYZE", selectedPolicy() == 2 ? (s.recording.analysisPolicy == 2 ? "Local / Resume" : "Local: new scan") :
+            (s.recording.analysisPolicy == 2 ? "Full run: new scan" : "Full run / Resume"), {215, 171}, !active && s.recording.complete && !s.recording.inputs.empty(), [this] {
             if (!ensureSession()) return;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             onClose(nullptr); resumeAndRun([] { beginAnalysis(); });
@@ -1268,7 +1449,7 @@ class CFPopup : public Popup {
         auto panel = CCScale9Sprite::create("square02b_001.png");
         panel->setContentSize({118, 160}); panel->setColor({20, 30, 47});
         panel->setOpacity(240); panel->setPosition({351, 115}); m_mainLayer->addChild(panel);
-        label(s.visual.enabled ? "VISUAL WINDOWS" : "FRAME WINDOWS", {351, 181}, .48f, {111, 219, 235});
+        label(s.visual.enabled ? "VISUAL WINDOWS" : s.recording.analysisPolicy == 2 ? "LOCAL WINDOWS" : "FULL RUN WINDOWS", {351, 181}, .48f, {111, 219, 235});
         cf::Recording visual;
         if (s.visual.enabled) visual = cf::visualCounter(s.visual);
         auto const& panelRecording = s.visual.enabled ? visual : s.recording;
@@ -1290,7 +1471,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.9.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.10.0", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

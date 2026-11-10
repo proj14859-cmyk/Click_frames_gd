@@ -80,6 +80,30 @@ inline bool readEdits(std::istream& in, std::string const& key, std::string cons
     std::stable_sort(parsed.markers.begin(), parsed.markers.end(), [](auto const& a, auto const& b) { return a.tick < b.tick; });
     result = std::move(parsed); return true;
 }
+inline void writeEditsTsv(std::ostream& out, std::string const& key, std::string const& trajectory, VisualEdits const& edits) {
+    out << std::noboolalpha << "CFEDITTSV\t1\t" << std::quoted(key) << '\t' << std::quoted(trajectory) << '\t' << edits.enabled << '\t' << edits.markers.size()
+        << "\ntick\twidth\tcolor\tscale\tcount\tsound\tp1\n" << std::setprecision(9);
+    for (auto const& m : edits.markers) out << m.tick << '\t' << m.width << '\t' << m.color << '\t' << m.scale << '\t'
+        << m.count << '\t' << m.sound << '\t' << m.p1 << '\n';
+}
+inline bool readEditsTsv(std::istream& in, std::string const& key, std::string const& trajectory,
+                         int first, int last, VisualEdits& result) {
+    VisualEdits parsed; std::string magic, hash, trace, header; int version; size_t count;
+    in >> std::noboolalpha;
+    if (!(in >> magic >> version >> std::quoted(hash) >> std::quoted(trace) >> parsed.enabled >> count) ||
+        magic != "CFEDITTSV" || version != 1 || hash != key || trace != trajectory || count > MAX_VISUAL_MARKERS) return false;
+    std::getline(in, header); std::getline(in, header);
+    if (!header.empty() && header.back() == '\r') header.pop_back();
+    if (header != "tick\twidth\tcolor\tscale\tcount\tsound\tp1") return false;
+    for (size_t i = 0; i < count; ++i) {
+        VisualMarker m;
+        if (!(in >> m.tick >> m.width >> m.color >> m.scale >> m.count >> m.sound >> m.p1) || !validMarker(m, first, last)) return false;
+        parsed.markers.push_back(m);
+    }
+    in >> std::ws; if (in.peek() != std::char_traits<char>::eof()) return false;
+    std::stable_sort(parsed.markers.begin(), parsed.markers.end(), [](auto const& a, auto const& b) { return a.tick < b.tick; });
+    result = std::move(parsed); return true;
+}
 class EditHistory {
     std::vector<VisualEdits> past, future;
 public:

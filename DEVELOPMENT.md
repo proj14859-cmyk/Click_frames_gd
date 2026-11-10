@@ -1,4 +1,38 @@
-# Click Frames 0.9.0 — experimental
+# Click Frames 0.10.0 — experimental
+
+## Split bundle and scope migration
+
+Bundle.hpp owns CFCAP 1 (capture.flr), CFPLAY 1 (playback.flp), bounded reads,
+safe replacement and legacy migration. Capture stores original inputs and trace;
+playback carries per-index tick overrides, windows, verified status, radius and
+policy, bound to the capture hash. It may drop trailing releases but not presses.
+Both parsers validate before mutating the destination. Commit playback first,
+capture last; loader tries the matching playback.bak if a generation is interrupted.
+Legacy sources are never removed. Capture serialization is skipped entirely when
+captureDirty is false. Derived traces only regenerate on capture change/load;
+predictions flush at stop/completion/exit. Reports survive a fresh session load.
+
+Editor TSV is the new active visual sidecar, named by trace hash. JSON is a legacy
+fallback and retained as an original. CFPACK 2 adds flat edits-<key>-<trace>.tsv
+members alongside portable run-<key>.cfr. Import validates all runs and attached
+edits before writing. Disk failures during a multi-run import may leave a partial
+import with backups and the .cfpack in place for retry; there is no multi-bundle
+transaction. Capture transport uses CFR 5 for policy 2 and CFR 4 otherwise.
+
+Policy 2 measures a local segment, not the full run. Verify captures reference
+physics points BEFORE input dispatch and first landings at physics boundaries.
+An analyzed candidate can pass at the matching first landing, or before the next
+counted same-player action if it matches the reference mode/gravity/position zone.
+Missing reference/physics samples fall back to full-route validation. Policy 0/1
+retains full-route requirements. Scope changes invalidate windows only on explicit
+Analyze, preserving loaded progress and editor behavior.
+
+Native cache pools up to eight checkpoint objects captured in the same Verify
+pass. A chosen state is strictly before target-radius-2, validates its original
+suffix once against post-update reference positions and completion tick, and can
+serve many events. The first cached boundary failure per state is confirmed from
+zero; a disagreement rejects it. Native state remains opt-in, not a universal
+proof. No batched/headless engine update loop is introduced in this release.
 
 ## Visual editor
 

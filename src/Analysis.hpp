@@ -38,6 +38,43 @@ struct Prediction {
     bool pass = false;
     std::vector<Sample> points;
 };
+struct PhysicsReference {
+    Sample point;
+    int mode1 = 0, mode2 = 0;
+    bool flipped1 = false, flipped2 = false;
+};
+struct SegmentExit {
+    bool known = false;
+    int tick = 0;
+    float x = 0, y = 0;
+    int mode = 0;
+    bool flipped = false;
+};
+inline std::vector<SegmentExit> segmentExits(Recording const& r, std::map<int, PhysicsReference> const& reference) {
+    std::vector<SegmentExit> exits(r.inputs.size()); std::array<int, 2> next{r.endTick, r.endTick};
+    for (size_t i = r.inputs.size(); i-- > 0;) {
+        auto const& e = r.inputs[i]; int player = e.p1 ? 0 : 1;
+        auto found = reference.find(next[player]);
+        if (next[player] > e.tick && found != reference.end()) {
+            auto const& p = found->second;
+            exits[i] = {true, next[player], e.p1 ? p.point.x : p.point.x2, e.p1 ? p.point.y : p.point.y2,
+                e.p1 ? p.mode1 : p.mode2, e.p1 ? p.flipped1 : p.flipped2};
+        }
+        if (counted(e)) next[player] = e.tick;
+    }
+    return exits;
+}
+inline bool atSegmentExit(SegmentExit const& exit, float x, float y, int mode, bool flipped) {
+    return exit.known && exit.mode == mode && exit.flipped == flipped &&
+        std::abs(exit.x - x) <= 60.f && std::abs(exit.y - y) <= 30.f;
+}
+template<class State>
+inline int snapshotBefore(std::vector<State> const& states, int earliest) {
+    int best = -1;
+    for (size_t i = 0; i < states.size(); ++i)
+        if (!states[i].rejected && states[i].tick < earliest && (best < 0 || states[i].tick > states[best].tick)) best = int(i);
+    return best;
+}
 using Predictions = std::map<size_t, std::vector<Prediction>>;
 constexpr size_t MAX_PREDICTION_POINTS = 32768;
 inline void writePredictions(std::ostream& out, std::string const& digest, Predictions const& all) {
