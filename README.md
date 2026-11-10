@@ -1,5 +1,43 @@
 # Click Frames GD
 
+## v1.0.2 / 2026-11-10 / 21:48 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Elimina el crash en captureCollisions: CCDictionary::createWithDictionary hace copias profundas virtuales de los valores; los objetos de colision de GD no tienen por que admitir copy(). Una copia nula terminaba en CCObject::retain.
+- La captura y la restauracion ahora copian la pertenencia al diccionario reteniendo las identidades originales, sin clonar objetos del juego. Se conservan claves enteras o texto y se omiten valores nulos.
+
+-Mejoras:
+- Restaurar conserva la direccion del diccionario del jugador, evitando invalidar referencias que otros componentes puedan mantener. La instantanea conserva su propio conjunto de entradas.
+
+-Cambios:
+- Se mantiene la validacion fisica y causal de cada estado. Los valores son referencias retenidas, no una copia independiente de objetos mutables ni un snapshot universal.
+- No se atribuye el fallo a Mega Hack, Versus o FrameLab: la ruta que provoca este crash estaba en nuestro codigo de copia de diccionarios.
+
+-Implementaciones:
+- RetainedDictionary.hpp y una suite de regresion para valores no copiables, retencion, claves enteras/texto, identidad de destino, alias y casos vacios/nulos. Compilacion y pruebas no sustituyen reproducir el caso en Android.
+
+## v1.0.1 / 2026-11-10 / 21:25 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La paridad compara tamano fisico y velocidad del jugador en vez de escala/rotacion visual; ignora P2 cuando dual esta inactivo. Tolera solo 0.0001 unidades en coordenadas y 1e-8 en otros escalares, rechazando valores fisicos no finitos.
+- Los lotes repiten la secuencia de dt de la referencia, conservando la agrupacion de subpasos. Se consumen resultados al terminar una actualizacion antes de iniciar la siguiente.
+- Un aviso de inestabilidad incluye campo, valor original y valor observado; baseline-difference.txt y scan-report.txt conservan el diagnostico. La imagen por si sola no identifica el campo que fallo en 1.0.0.
+
+-Mejoras:
+- Snapshots ampliados con copias tipadas de mapas de fisica/tweens, eventos, efectos de entrada/salida, acciones dinamicas y estados de audio, junto con relojes, semilla RNG global, diccionarios de colision por jugador y cursores de cadencia/traza causal. Se complementa el checkpoint nativo; no se copia GJGameState como bloque de memoria.
+- Tres referencias verifican tambien el orden y tick de las interacciones instrumentadas. Las restauraciones deben reproducir esa traza; una discrepancia rechaza el checkpoint.
+
+-Cambios:
+- Politica CF-ANALYSIS-2: Analyze recalcula ventanas de politicas anteriores.
+- Flight recovery prueba -1/+1 tick sobre el siguiente input del mismo jugador a no mas de 240 ticks. Es evidencia de rutas alternativas; no aumenta el contador de margenes de la macro fija. Puede desactivarse en Settings.
+
+-Implementaciones:
+- Hooks de orbes (ringJump), triggers tocados, pads, teletransportes, toggles de grupos, eventos de juego y pickups. baseline-causes.tsv guarda tick, clase de evento, ID de objeto, jugador y detalle.
+- flight-recoveries.tsv guarda los ensayos alternativos. Los inputs y ediciones originales permanecen separados.
+- Alcance: esta instrumentacion no cubre todos los overrides de triggers ni constituye una prueba universal de todo el motor. Los snapshots ampliados siguen dependiendo del checkpoint nativo. Geometria analitica Wave y adaptador CBF fraccionario siguen pendientes; el CBF publico inspeccionado usa una cola privada sin API de replay publicada. No se habilita soporte fraccionario aproximado.
+
+Validacion en dispositivo necesaria: volver a analizar FRPRUEBA, comprobar si pasa la referencia y comparar dos analisis completos; si diverge, compartir baseline-difference.txt con el capture de ese nivel. Desactivar Batched analysis y Native state cache permite aislar conflictos de mods sin ocultar divergencias reales.
+
 ## v1.0.0 / 2026-11-10 / 20:56 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
