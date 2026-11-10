@@ -1,4 +1,27 @@
-# Click Frames 0.8.0 — experimental
+# Click Frames 0.9.0 — experimental
+
+## Visual editor
+
+Editor.hpp owns pure trajectory interpolation, bounded marker JSON, arc-length
+chains, counter conversion and 32-step undo/redo. CFEditor edits a draft while the
+real level is paused; its canvas shows sampled geometry, never a seeked live
+PlayLayer. Seek changes only the cursor; Move applies it to the selected marker.
+P1/P2 and scalar time define position. Teleport-size segments use nearest endpoint
+instead of interpolation, and chains skip those discontinuities.
+
+Save writes showcase-edits.json through writeSafe and updates Session::visual only
+after disk success. Fingerprint plus trace hash prevent applying edits to another
+capture. capture.cfr stays authoritative for physics; edits never enter cf::read
+or the analyzer. Visual playback has an independent sorted marker cursor, optional
+count/sound and separate row generation. Measured trails are suppressed in edited
+mode to avoid mixing simulated and illustrative outputs. Session Record clears
+the active visual document; old files remain recoverable on disk.
+
+Native state reuse additionally captures/restores GD input queues, RNG/replay RNG,
+currentStep, extraDelta, queued-recorded count and resume timer. These are process-
+local snapshots, still opt-in and checked against the baseline. This is not yet a
+proof of universal GD-state equivalence. Fractional CBF replay and isolated live
+prediction remain unimplemented and must not be advertised as completed.
 
 ## 0.8 analysis engine boundaries
 

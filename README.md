@@ -1,5 +1,43 @@
 # Click Frames GD
 
+## v0.9.0 / 2026-11-10 / 03:15 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- El editor no altera los inputs ni las ventanas medidas. La presentacion visual se vincula al fingerprint del nivel y al hash de la trayectoria: un archivo de otra captura no se aplica.
+- Los saltos espaciales de mas de 256 unidades no generan puntos intermedios ficticios en el editor ni cadenas a traves del teletransporte.
+- Se evita copiar toda la trayectoria al construir los contadores del menu y del showcase.
+- Inicializacion explicita de la sesion para admitir los contenedores de colas de GD en Android.
+
+-Mejoras:
+- Editor con trayectoria esquematica, barra de tiempo, pasos de 1/24 ticks, zoom, seleccion cronologica, pincel, cadenas, deshacer/rehacer y guardado.
+- Circulos anclados exclusivamente a un momento de la trayectoria de P1/P2; sin arrastre libre ni posiciones arbitrarias.
+
+-Cambios:
+- El menu identifica el modo EDITADO. Durante Play se usan los numeros visuales y su contador, conservando los inputs reales y el indicador de intervalo entre clicks. No se superponen las previews medidas a una presentacion editada.
+- Play editado admite una captura completa sin medir todos sus margenes. La reproduccion aun debe ser estable; editar circulos no corrige inputs ni muertes.
+- .cfpack sigue exportando la captura original, sin showcase-edits.json. Para compartir la presentacion hay que copiar tambien el JSON a la carpeta de la misma captura/trayectoria.
+
+-Implementaciones:
+- `showcase-edits.json`: esquema 1, fingerprint, hash de trayectoria, enabled y marcadores con tick, width (1-120), color (0 auto, 1 rojo, 2 amarillo, 3 cian, 4 verde, 5 blanco), scale (0.5-2), count, sound y p1. Los booleanos son JSON true/false. El lector exige el esquema/orden generado por el editor y valida limites antes de cargarlo.
+- Cadenas por distancia sobre el recorrido muestreado; Paso alterna 10/20/40/80 unidades del nivel. No son centimetros de pantalla. Maximo 5000 marcadores y 32 pasos de historial.
+- La cache experimental de GD ahora conserva tambien las colas de entrada, semillas aleatorias, paso actual, acumulador delta y temporizador de reanudacion alrededor del checkpoint nativo, manteniendo su validacion de ida/vuelta y fallback.
+- Pruebas del JSON, identidad de trayectoria, interpolacion, teletransportes, cadenas, conteo visual e historial.
+
+### Usar el editor
+
+1. Guarda una run y abre Pausa > Frames > EDITAR. No es un video ni un editor completo del escenario: muestra la trayectoria grabada.
+2. Elige el punto con la barra o -24/-1/+1/+24 y pulsa Anadir. F-/F+, Color, Tam, Cuenta, Audio y Jugador ajustan el marcador seleccionado o el pincel para el siguiente.
+3. Anterior/Siguiente seleccionan marcadores. Mueve la barra y pulsa Mover para reubicar el seleccionado sobre la trayectoria. Eliminar borra el seleccionado.
+4. Para una cadena: pulsa Inicio, mueve la barra al final, elige Paso y pulsa Cadena. Los circulos usan los valores del pincel.
+5. Guardar aplica y escribe el JSON con backup. X descarta lo no guardado. Reabre Frames > Play para verlo sobre el nivel real.
+6. Para volver a los margenes medidos: cambia Editado a NO y guarda. Deshacer/Rehacer solo afectan el borrador del editor.
+
+### Alcance real de los pendientes de fisica
+
+El objetivo de estados es Geometry Dash, no el estado privado de otros mods. La implementacion sigue siendo la cache nativa experimental, ahora ampliada con estado adicional del motor; no se declara universal sin verificar triggers, objetos dinamicos y transiciones en el dispositivo. Se mantiene desactivada por defecto.
+
+No se ha completado la prediccion en vivo para inputs manuales nuevos ni la entrada fraccionaria de CBF. La preview medida y CoS de 240 TPS de v0.8.0 se conservan. El adaptador sub-tick y la simulacion aislada siguen pendientes; esta version no redondea CBF a ticks para presentarlo como compatible.
+
 ## v0.8.0 / 2026-11-10 / 02:34 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
