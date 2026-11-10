@@ -13,6 +13,7 @@
 #include "Analysis.hpp"
 #include "Editor.hpp"
 #include "Bundle.hpp"
+#include "RetainedDictionary.hpp"
 #include <chrono>
 #include <array>
 #include <cmath>
@@ -70,18 +71,29 @@ struct CollisionState {
     std::array<Ref<CCDictionary>, 4> logs;
     std::array<int, 4> last{};
 };
+struct EnumerateCollisionLog {
+    template<class Callback>
+    void operator()(CCDictionary* dictionary, Callback const& callback) const {
+        CCDictElement* entry = nullptr;
+        CCDICT_FOREACH(dictionary, entry) {
+            if (dictionary->m_eDictType == CCDictionary::kCCDictInt)
+                callback(entry->getIntKey(), entry->getObject());
+            else if (dictionary->m_eDictType == CCDictionary::kCCDictStr)
+                callback(std::string(entry->getStrKey()), entry->getObject());
+        }
+    }
+};
 CollisionState captureCollisions(PlayerObject* p) {
     CollisionState result;
     CCDictionary* logs[] = {p->m_collisionLogTop, p->m_collisionLogBottom, p->m_collisionLogLeft, p->m_collisionLogRight};
-    for (size_t i = 0; i < 4; ++i) result.logs[i] = logs[i] ? CCDictionary::createWithDictionary(logs[i]) : CCDictionary::create();
+    for (size_t i = 0; i < 4; ++i) result.logs[i] = cf::retainedDictionarySnapshot(logs[i], EnumerateCollisionLog{});
     result.last = {p->m_lastCollisionTop, p->m_lastCollisionBottom, p->m_lastCollisionLeft, p->m_lastCollisionRight};
     return result;
 }
 void restoreCollisions(PlayerObject* p, CollisionState const& state) {
     CCDictionary** targets[] = {&p->m_collisionLogTop, &p->m_collisionLogBottom, &p->m_collisionLogLeft, &p->m_collisionLogRight};
     for (size_t i = 0; i < 4; ++i) {
-        auto copy = CCDictionary::createWithDictionary(state.logs[i].data());
-        copy->retain(); if (*targets[i]) (*targets[i])->release(); *targets[i] = copy;
+        cf::restoreRetainedDictionary(*targets[i], state.logs[i].data(), EnumerateCollisionLog{});
     }
     p->m_lastCollisionTop = state.last[0]; p->m_lastCollisionBottom = state.last[1];
     p->m_lastCollisionLeft = state.last[2]; p->m_lastCollisionRight = state.last[3];
@@ -1844,7 +1856,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.1", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.2", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

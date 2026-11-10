@@ -1,4 +1,17 @@
-# Click Frames 1.0.1 — experimental
+# Click Frames 1.0.2 — experimental
+
+## Collision dictionary ownership regression
+
+Cocos CCDictionary::createWithDictionary calls copyWithZone, which calls copy()
+on every stored value. Engine collision identities do not necessarily implement
+copy(); a null result reaches setObject/retain. Never deep-copy these dictionaries.
+RetainedDictionary.hpp creates an independent membership snapshot via setObject
+(retaining the original CCObjects). Restore repopulates the existing player
+dictionary, preserving its identity, or allocates/retains a dictionary if absent.
+Snapshot values remain shared engine identities, not cloned mutable world state.
+The sanitizer regression suite uses noncopyable engine objects to enforce that
+copy() is never called and checks retention/key/alias/null behavior. Actual Cocos
+ABI and installed-mod behavior still require device verification.
 
 The v1.0.0 comparator included sprite rotation/scale and inactive P2. These are
 not reliable gameplay state. v1.0.1 compares vehicleSize/playerSpeed, skips

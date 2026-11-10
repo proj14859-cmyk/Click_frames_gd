@@ -1,5 +1,21 @@
 # Click Frames GD
 
+## v1.0.2 / 2026-11-10 / 21:48 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Elimina el crash en captureCollisions: CCDictionary::createWithDictionary hace copias profundas virtuales de los valores; los objetos de colision de GD no tienen por que admitir copy(). Una copia nula terminaba en CCObject::retain.
+- La captura y la restauracion ahora copian la pertenencia al diccionario reteniendo las identidades originales, sin clonar objetos del juego. Se conservan claves enteras o texto y se omiten valores nulos.
+
+-Mejoras:
+- Restaurar conserva la direccion del diccionario del jugador, evitando invalidar referencias que otros componentes puedan mantener. La instantanea conserva su propio conjunto de entradas.
+
+-Cambios:
+- Se mantiene la validacion fisica y causal de cada estado. Los valores son referencias retenidas, no una copia independiente de objetos mutables ni un snapshot universal.
+- No se atribuye el fallo a Mega Hack, Versus o FrameLab: la ruta que provoca este crash estaba en nuestro codigo de copia de diccionarios.
+
+-Implementaciones:
+- RetainedDictionary.hpp y una suite de regresion para valores no copiables, retencion, claves enteras/texto, identidad de destino, alias y casos vacios/nulos. Compilacion y pruebas no sustituyen reproducir el caso en Android.
+
 ## v1.0.1 / 2026-11-10 / 21:25 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
