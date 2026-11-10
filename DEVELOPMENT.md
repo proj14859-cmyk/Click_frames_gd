@@ -1,4 +1,24 @@
-# Click Frames 0.10.0 — experimental
+# Click Frames 1.0.0 — experimental
+
+The scan scheduler runs the ordinary scheduler chain in bounded 8 ms batches,
+at most 256 fixed 1/240 s slices. The first baseline uses ordinary cadence;
+two repeats compare pre-command observations. A mismatch rebuilds without
+batching; a second mismatch aborts without producing a window. No direct
+GJBaseGameLayer update bypass or concurrent physics threads are used.
+This advances all scheduled targets and cannot isolate private mod state.
+Native snapshots retain native GD checkpoint coverage, not universal engine
+coverage. Local rejoin compares observable player state for four grounded
+ticks, not trigger equivalence. Local horizons remain explicitly scoped.
+Wave corridor and flight recovery algorithms and fractional CBF are pending.
+
+## Successful showcase completion
+
+Playback now intercepts successful completion separately from the trial state
+machine: verify all presses were dispatched, stop the mod session, clear its HUD,
+and call the original PlayLayer::levelComplete once within the hook. It never
+queues a reset on success. Practice mode is preserved and the native game selects
+its completion UI. Pending failure still blocks success. Record/Analyze are
+unchanged. resetLevel/resetTrial clear showcaseComplete for later attempts.
 
 ## Split bundle and scope migration
 

@@ -3,6 +3,40 @@
 #include <map>
 
 namespace cf {
+// Compare engine observations at the same pre-command physics tick, not at
+// render callbacks. Hidden trigger state still requires full continuation probes.
+struct Observation {
+    std::array<double, 13> values{};
+    std::array<int, 9> flags{};
+    bool operator==(Observation const&) const = default;
+};
+inline bool matches(Observation const& a, Observation const& b) {
+    for (auto v : a.values) if (!std::isfinite(v)) return false;
+    for (auto v : b.values) if (!std::isfinite(v)) return false;
+    return a == b;
+}
+inline bool candidateTrial(std::vector<Input> const& source, size_t index, int offset, std::vector<Input>& out) {
+    if (index >= source.size()) return false;
+    auto const& press = source[index];
+    bool discrete = press.mode == 0 || press.mode == 2 || press.mode == 6;
+    if (!press.down || press.button != 1 || !discrete) return trial(source, index, offset, out);
+    auto adjusted = source;
+    for (size_t i = index + 1; i < source.size(); ++i) {
+        auto const& e = source[i];
+        if (e.p1 != press.p1 || e.button != press.button) continue;
+        if (e.down || e.mode != press.mode) break;
+        int64_t release = int64_t(e.tick) + offset;
+        if (release < 0 || release > std::numeric_limits<int>::max()) return false;
+        for (size_t j = i + 1; j < source.size(); ++j)
+            if (source[j].p1 == e.p1 && source[j].button == e.button && release > source[j].tick) return false;
+        adjusted[i].tick = int(release);
+        break;
+    }
+    return trial(adjusted, index, offset, out);
+}
+inline bool allPressesDispatched(std::vector<Input> const& events, size_t next) {
+    return next <= events.size() && std::none_of(events.begin() + next, events.end(), [](auto const& e) { return e.down; });
+}
 // Baseline offset zero is known to pass. Visit only the connected component.
 struct ContinuousSearch {
     int radius = 1, offset = -1;

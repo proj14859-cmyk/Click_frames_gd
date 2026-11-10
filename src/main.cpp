@@ -4,6 +4,7 @@
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/FMODAudioEngine.hpp>
+#include <Geode/modify/CCScheduler.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include "Timing.hpp"
@@ -22,7 +23,7 @@ using namespace geode::prelude;
 
 namespace {
 enum class State { Idle, Record, Verify, Analyze, Ready, Playback };
-enum class Pending { None, Pass, Fail };
+enum class Pending { None, Pass, Fail, Invalid };
 struct Checkpoint { size_t inputs, trace; std::array<bool, 6> held; };
 struct NativeState {
     Ref<CheckpointObject> checkpoint;
@@ -99,6 +100,15 @@ struct Session {
     size_t nextVisual = 0;
     std::string captureDigest, traceDigest;
     bool captureDirty = true, viewsDirty = true, storageBlocked = false, reportDirty = false;
+    bool showcaseComplete = false;
+    int baselinePass = 0, baselineEnd = 0;
+    bool batchDisabled = false, confirmingBoundary = false;
+    std::map<int, cf::Observation> baseline;
+    size_t baselineCompared = 0;
+    uint64_t batchUpdates = 0;
+    size_t nativeObjectStates = 0;
+    int rejoinStreak = 0;
+    std::vector<int> previousPlaybackTicks;
     uint64_t physicsCalls = 0, restores = 0, restoreFallbacks = 0;
     double analysisSeconds = 0;
     bool analysisClock = false;
@@ -110,6 +120,7 @@ constexpr int VERIFY_SHIFTS[] = {0, 1, -1, 2, -2};
 constexpr int VERIFY_SHIFT_COUNT = 5;
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
+bool scanBatchActive = false;
 bool hasLiveOwner() {
     auto current = PlayLayer::get();
     return current && s.owner == current && current->m_level && current->m_player1 && current->m_player2;
@@ -119,6 +130,18 @@ int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 int playerMode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
         p->m_isRobot ? 5 : p->m_isSpider ? 6 : p->m_isSwing ? 7 : 0;
+}
+cf::Observation observation(float dt) {
+    auto a = s.owner->m_player1, b = s.owner->m_player2;
+    cf::Observation o;
+    o.values = {a->getPositionX(), a->getPositionY(), a->m_yVelocity,
+        b->getPositionX(), b->getPositionY(), b->m_yVelocity,
+        a->getScaleX(), a->getScaleY(), b->getScaleX(), b->getScaleY(),
+        a->getRotation(), b->getRotation(), dt};
+    int held = 0; for (size_t i = 0; i < s.injectedHeld.size(); ++i) if (s.injectedHeld[i]) held |= 1 << i;
+    o.flags = {playerMode(a), playerMode(b), a->m_isUpsideDown, b->m_isUpsideDown,
+        a->m_isOnGround, b->m_isOnGround, s.owner->m_gameState.m_isDualMode, held, int(s.next)};
+    return o;
 }
 void observeLanding() {
     for (int p = 0; p < 2; ++p) {
@@ -131,10 +154,10 @@ void observeLanding() {
         else if (!s.validatingSnapshot && index == s.target && s.recording.analysisPolicy != 0 &&
                  s.referenceLandings[index].known) {
             s.localLandingPassed = cf::sameLanding(s.referenceLandings[index], landing, 60.f);
-            if (!s.localLandingPassed) { s.message = "Candidate landed outside the reference platform/corridor"; s.pending = Pending::Fail; }
-            else if (s.recording.analysisPolicy == 2 && s.targetExecuted) {
-                s.message = "Reference landing reached (local window)"; s.pending = Pending::Pass; ++s.localPasses;
+            if (!s.localLandingPassed && s.recording.analysisPolicy == 1) {
+                s.message = "Candidate landed outside the selected same-jump policy"; s.pending = Pending::Fail;
             }
+            // A nearby landing alone is insufficient to certify reconvergence.
         }
         s.activeJump[p] = size_t(-1);
     }
@@ -203,6 +226,8 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
+    report += fmt::format("Analysis policy: CF-ANALYSIS-1\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+        s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     std::error_code reportError;
     if (changedCapture || s.reportDirty || !std::filesystem::exists(path().parent_path() / "scan-report.txt", reportError)) view("scan-report.txt", report);
     // Windows are checkpointed per event, but large derived predictions only at
@@ -375,6 +400,7 @@ void stop(std::string message) {
 }
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
+    s.showcaseComplete = false;
     s.resetting = true; releaseInjected(); clearMarkers();
     if (s.state == State::Verify || s.state == State::Analyze) applyBackground(true);
     // Automated runs stay in practice and reset through the normal practice path.
@@ -411,10 +437,12 @@ void resetTrial() {
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0; s.lastPressTick = -1; s.lastIntervalMs = -1.f; s.divergences = 0;
     s.activeJump.fill(size_t(-1)); s.airborne.fill(false); s.localLandingPassed = false;
-    s.targetExecuted = false; s.segmentMissed = false;
+    s.targetExecuted = false; s.segmentMissed = false; s.rejoinStreak = 0;
     if (s.state == State::Verify) {
+        if (s.baselinePass == 0) s.baseline.clear();
         s.referenceLandings.assign(s.recording.inputs.size(), {});
         s.referencePhysics.clear(); s.referenceTrace.clear(); s.nativePool.clear();
+        s.nativeObjectStates = 0;
         s.nextNativeTick = 24; s.nativePoolLimited = false; s.activeNative = -1;
     }
     s.candidateTrace.clear(); s.snapshotCompared = 0;
@@ -441,7 +469,8 @@ void applyBackground(bool on) {
         s.previousTimeScale = scheduler->getTimeScale();
         s.objectsWereVisible = !s.owner->m_objectLayer || s.owner->m_objectLayer->isVisible();
         s.background = true;
-        scheduler->setTimeScale(static_cast<float>(Mod::get()->getSettingValue<double>("scan-speed")));
+        scheduler->setTimeScale(Mod::get()->getSettingValue<bool>("batch-analysis") ? 1.f :
+            static_cast<float>(Mod::get()->getSettingValue<double>("scan-speed")));
         if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(false);
         s.previousMusicVolume = FMODAudioEngine::get()->getBackgroundMusicVolume();
         s.musicMutedByCf = true;
@@ -466,7 +495,13 @@ void applyBackground(bool on) {
     } else if (!on && cover) cover->removeFromParent();
 }
 void hud() {
+    if (scanBatchActive) return;
     auto pl = s.owner;
+    if (s.showcaseComplete) {
+        for (char const* id : {"cf-hud", "cf-rows", "cf-ms"})
+            if (auto node = pl->getChildByID(id)) node->removeFromParent();
+        return;
+    }
     auto label = typeinfo_cast<CCLabelBMFont*>(pl->getChildByID("cf-hud"));
     if (!label) {
         label = CCLabelBMFont::create("", "chatFont.fnt"); label->setID("cf-hud");
@@ -644,6 +679,17 @@ bool supported() {
 }
 void beginAnalysis() {
     if (!s.recording.complete || s.recording.inputs.empty() || !supported()) return;
+    // Always align from the immutable capture, never from last Verify's shift.
+    s.previousPlaybackTicks.clear();
+    for (auto const& e : s.recording.inputs) s.previousPlaybackTicks.push_back(e.tick);
+    if (!s.captureDirty) {
+        cf::Recording original;
+        std::istringstream raw(cf::readFile(path()));
+        if (!cf::readCapture(raw, s.recording.key, original)) {
+            s.message = "Cannot read original capture; analysis cancelled"; return;
+        }
+        s.recording.inputs = std::move(original.inputs); s.recording.endTick = original.endTick;
+    }
     int radius = static_cast<int>(Mod::get()->getSettingValue<int64_t>("scan-radius"));
     int policy = selectedPolicy();
     if (s.recording.backend != inputBackend()) { s.message = "Input mode changed. Restore the recording's vanilla/CoS mode first."; return; }
@@ -651,7 +697,8 @@ void beginAnalysis() {
         return std::any_of(pair.second.begin(), pair.second.end(), [](auto const& b) { return !b.points.empty(); });
     });
     bool regenerate = s.recording.ready() && !havePreview && Mod::get()->getSettingValue<bool>("trajectory-preview");
-    bool changed = s.recording.radius != radius || s.recording.analysisPolicy != policy || regenerate;
+    bool changed = s.recording.radius != radius || s.recording.analysisPolicy != policy || regenerate ||
+        cf::readFile(path().parent_path() / "analysis-policy.txt") != "CF-ANALYSIS-1\n";
     if (changed) { s.recording.windows.clear(); s.predictions.clear(); }
     s.recording.analysisPolicy = policy;
     s.snapshot = nullptr; s.snapshotChecked = false;
@@ -660,10 +707,13 @@ void beginAnalysis() {
     s.recording.radius = radius;
     s.recording.windows.resize(s.recording.inputs.size()); s.recording.verified = false;
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
+    s.baselinePass = 0; s.baseline.clear(); s.baselineCompared = 0;
+    s.batchDisabled = false; s.confirmingBoundary = false; s.batchUpdates = 0;
     s.trial = s.recording.inputs; s.shiftIndex = 0; s.noRetry = false; s.firstFail.clear(); s.alert.clear();
     s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
     s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
     s.reportDirty = true;
+    cf::replaceChanged(path().parent_path() / "analysis-policy.txt", "CF-ANALYSIS-1\n");
     s.measurableTotal = std::count_if(s.recording.inputs.begin(), s.recording.inputs.end(), cf::counted); analysisClock(true);
     log::info("[CF] verify start: {} inputs, end tick {}", s.recording.inputs.size(), s.recording.endTick);
     s.message = "Verifying original run (240 TPS)"; resetTrial();
@@ -713,16 +763,25 @@ void startCandidate() {
     }
     s.message = fmt::format("{} {}% | event {}/{} | offset {:+} | {} tests", s.recording.analysisPolicy == 2 ? "Local" : "Full run",
         100 * s.measuredDone / std::max<size_t>(1, s.measurableTotal), s.measuredDone + 1, s.measurableTotal, s.offset, s.tests);
-    if (!cf::trial(s.recording.inputs, s.target, s.offset, s.trial)) {
+    if (!cf::candidateTrial(s.recording.inputs, s.target, s.offset, s.trial)) {
         s.pending = Pending::Fail; return;
     }
     resetTrial();
 }
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
+    if (result == Pending::Invalid) {
+        s.alert = s.message; stop(s.message); queueReturnToPause(); return;
+    }
     if (s.state == State::Verify) {
         auto by = VERIFY_SHIFTS[s.shiftIndex];
         if (result == Pending::Fail) {
+            if (s.batchDisabled && s.baselinePass == 0 && s.message == "Batch parity failed; rebuilding baseline at normal cadence") {
+                s.baselineCompared = 0; resetTrial(); return;
+            }
+            if (s.baselinePass > 0) {
+                s.message = "Unstable baseline: repeated route died"; s.pending = Pending::Invalid; return;
+            }
             log::info("[CF] verify failed (shift {:+}): {}", by, s.message);
             if (s.firstFail.empty()) s.firstFail = s.message;
             while (!s.noRetry && ++s.shiftIndex < VERIFY_SHIFT_COUNT) {
@@ -733,19 +792,32 @@ void consume() {
             s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nTried the whole run shifted by 0, +1, -1, +2 and -2 ticks.", s.message, s.firstFail);
             stop(s.message); queueReturnToPause(); return;
         }
-        if (by) { // keep the shift that reproduces the run
+        if (s.baselinePass == 0) {
+            s.baselineEnd = tick();
+        } else if (tick() != s.baselineEnd || s.baselineCompared != s.baseline.size()) {
+            s.message = "Unstable baseline: completion tick or physics schedule changed";
+            s.pending = Pending::Invalid; return;
+        }
+        if (++s.baselinePass < 3) {
+            s.baselineCompared = 0;
+            s.message = fmt::format("Checking saved route: replay {} of 3", s.baselinePass + 1);
+            resetTrial(); return;
+        }
+        if (by) { // derived playback alignment; immutable capture.flr is not rewritten
             std::vector<cf::Input> moved;
             if (cf::shiftAll(s.recording.inputs, by, moved)) {
                 s.recording.inputs = std::move(moved);
-                // Windows measured against the old timings cannot be resumed.
-                s.recording.windows.assign(s.recording.inputs.size(), {});
-                s.predictions.clear();
+                // Invalidate below only if this differs from saved alignment.
             }
         }
         // Trailing releases beyond completion were never replayed: do not analyze
         // them as if the baseline proved they executed successfully.
         s.recording.inputs.resize(s.next);
         s.recording.windows.resize(s.next);
+        bool alignmentChanged = s.previousPlaybackTicks.size() != s.recording.inputs.size();
+        for (size_t i = 0; !alignmentChanged && i < s.recording.inputs.size(); ++i)
+            alignmentChanged = s.previousPlaybackTicks[i] != s.recording.inputs[i].tick;
+        if (alignmentChanged) { s.recording.windows.assign(s.recording.inputs.size(), {}); s.predictions.clear(); }
         s.recording.endTick = tick();
         s.segmentExits = cf::segmentExits(s.recording, s.referencePhysics);
         log::info("[CF] verified (shift {:+}, {} position drifts)", by, s.divergences);
@@ -762,6 +834,12 @@ void consume() {
             if (!s.snapshotChecked) { ++s.restoreFallbacks; s.snapshot = nullptr; log::warn("[CF] native-state validation failed; full restart fallback"); }
         } else {
             bool pass = result == Pending::Pass;
+            if (!pass && s.search.window().width() <= 3 && !s.confirmingBoundary && !s.batchDisabled &&
+                Mod::get()->getSettingValue<bool>("batch-analysis")) {
+                s.confirmingBoundary = true; s.fullRestartRetry = true;
+                startCandidate(); return;
+            }
+            s.confirmingBoundary = false;
             bool confirm = s.activeNative >= 0 && !s.nativePool[s.activeNative].failureConfirmed;
             if (!pass && s.snapshotChecked && !s.fullRestartRetry && confirm) {
                 s.fullRestartRetry = true; startCandidate(); return;
@@ -785,10 +863,39 @@ void consume() {
     } else if (s.state == State::Playback) {
         if (result == Pending::Fail) s.alert = s.message;
         stop(result == Pending::Pass ? "Showcase complete. Replay available" : s.message);
-        queueReturnToPause();
+        if (result == Pending::Fail) queueReturnToPause();
     }
 }
 }
+
+// Advance the ordinary scheduler in bounded fixed slices, retaining the normal
+// engine/hook order. Rendering occurs once after the batch. Never recursively
+// call this hook or directly bypass PlayLayer's update chain.
+class $modify(CFScanScheduler, cocos2d::CCScheduler) {
+    void update(float dt) {
+        static bool inside = false;
+        auto scanning = [] { return hasLiveOwner() && !s.owner->m_isPaused && !s.returningToPause &&
+            (s.state == State::Verify || s.state == State::Analyze); };
+        if (inside || !scanning() || !Mod::get()->getSettingValue<bool>("batch-analysis")) {
+            CCScheduler::update(dt); return;
+        }
+        inside = true;
+        scanBatchActive = true;
+        auto owner = s.owner;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8);
+        bool fast = !s.batchDisabled && !s.confirmingBoundary &&
+            !(s.state == State::Verify && s.baselinePass == 0);
+        int limit = fast ? 256 : 1;
+        for (int i = 0; i < limit; ++i) {
+            CCScheduler::update(fast ? 1.f / 240.f : dt);
+            ++s.batchUpdates;
+            if (!scanning() || s.owner != owner || std::chrono::steady_clock::now() >= deadline) break;
+        }
+        scanBatchActive = false;
+        inside = false;
+        if (hasLiveOwner()) hud();
+    }
+};
 
 #ifndef GEODE_IS_WINDOWS
 class $modify(CFAudio, FMODAudioEngine) {
@@ -848,6 +955,47 @@ class $modify(CFBase, GJBaseGameLayer) {
                 return;
             }
             int now = tick();
+            if (s.state == State::Verify) {
+                auto current = observation(dt);
+                if (s.baselinePass == 0) {
+                    if (s.baseline.size() >= 250000 && !s.baseline.contains(now)) {
+                        s.message = "Reference exceeds observation memory limit"; s.pending = Pending::Invalid; return;
+                    }
+                    s.baseline.try_emplace(now, current);
+                } else {
+                    auto it = s.baseline.find(now);
+                    if (it == s.baseline.end() || !cf::matches(it->second, current)) {
+                        if (!s.batchDisabled) {
+                            s.batchDisabled = true; s.baselinePass = 0;
+                            s.message = "Batch parity failed; rebuilding baseline at normal cadence";
+                            s.pending = Pending::Fail;
+                        } else {
+                            s.message = fmt::format("Unstable physics baseline at tick {}", now);
+                            s.pending = Pending::Invalid;
+                        }
+                        return;
+                    }
+                    ++s.baselineCompared;
+                }
+            }
+            if (s.state == State::Analyze && s.validatingSnapshot) {
+                auto it = s.baseline.find(now);
+                if (it == s.baseline.end() || !cf::matches(it->second, observation(dt))) {
+                    s.message = "Snapshot physics parity failed; using full replay"; s.pending = Pending::Fail; return;
+                }
+            }
+            if (s.state == State::Analyze && !s.validatingSnapshot && s.targetExecuted &&
+                s.recording.analysisPolicy == 2 && now > s.recording.inputs[s.target].tick) {
+                auto it = s.baseline.find(now);
+                bool grounded = s.owner->m_player1->m_isOnGround &&
+                    (!s.owner->m_gameState.m_isDualMode || s.owner->m_player2->m_isOnGround);
+                bool same = grounded && it != s.baseline.end() && cf::matches(it->second, observation(dt));
+                s.rejoinStreak = same ? s.rejoinStreak + 1 : 0;
+                if (s.rejoinStreak >= 4) {
+                    s.message = "Observable physics rejoined (local window)";
+                    s.pending = Pending::Pass; ++s.localPasses; return;
+                }
+            }
             if (s.state == State::Verify || s.state == State::Analyze) {
                 observeLanding();
                 if (s.pending != Pending::None) return;
@@ -867,10 +1015,13 @@ class $modify(CFBase, GJBaseGameLayer) {
                     bool landingRequired = s.referenceLandings[s.target].known;
                     bool pass = s.targetExecuted && (landingRequired ? s.localLandingPassed :
                         cf::atSegmentExit(exit, player->getPositionX(), player->getPositionY(), playerMode(player), player->m_isUpsideDown));
-                    s.pending = pass ? Pending::Pass : Pending::Fail;
-                    if (pass) ++s.localPasses;
-                    s.message = pass ? "Local segment exit reached" : "Candidate did not reach the reference segment exit";
-                    return;
+                    // A zone mismatch is not a collision. Continue the real run
+                    // rather than turning a heuristic rejection into a narrow window.
+                    if (pass) {
+                        s.pending = Pending::Pass; ++s.localPasses;
+                        s.message = "Local horizon survived (not full-route certification)"; return;
+                    }
+                    s.segmentMissed = true; ++s.localFallbackTrials;
                 }
             }
             auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
@@ -895,7 +1046,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             }
             s.injecting = false;
             if (int64_t(tick()) > int64_t(s.recording.endTick) + 2400) {
-                s.message = "Replay timed out"; s.pending = Pending::Fail;
+                s.message = "Replay timed out; window not measured"; s.pending = Pending::Invalid;
             }
         }
         GJBaseGameLayer::processCommands(dt, half, last);
@@ -970,7 +1121,7 @@ class $modify(CFPlay, PlayLayer) {
             }
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
             else { s.watchdogTick = tick(); s.stalledSeconds = 0; }
-            if (s.stalledSeconds > 10) { s.message = "Replay stalled for 10 seconds"; s.pending = Pending::Fail; }
+            if (s.stalledSeconds > 10) { s.message = "Replay stalled; window not measured"; s.pending = Pending::Invalid; }
         }
         if (s.pending != Pending::None) consume();
         hud();
@@ -989,13 +1140,14 @@ class $modify(CFPlay, PlayLayer) {
             auto point = cf::Sample{now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()};
             if (s.state == State::Verify) {
                 if (s.referenceTrace.size() < 100000) s.referenceTrace[now] = point;
-                if (Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited && s.nativePool.size() < 8 && now >= s.nextNativeTick) {
-                    s.nextNativeTick = now + std::max(24, s.recording.endTick / 8);
+                if (Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited && s.nativePool.size() < 64 && now >= s.nextNativeTick) {
+                    s.nextNativeTick = now + std::max(24, s.recording.endTick / 64);
                     auto cp = createCheckpoint();
                     if (cp) {
                         size_t states = cp->m_vectorSavedObjectStateRef.size() + cp->m_vectorActiveSaveObjectState.size() + cp->m_vectorSpecialSaveObjectState.size();
-                        if (states > 25000) { s.nativePoolLimited = true; log::warn("[CF] native state cache limited by object-state count"); }
+                        if (states > 25000 || s.nativeObjectStates + states > 100000) { s.nativePoolLimited = true; log::warn("[CF] native state cache limited by object-state count"); }
                         else {
+                            s.nativeObjectStates += states;
                             s.nativePool.emplace_back(); auto& n = s.nativePool.back();
                             n.checkpoint = cp; n.tick = now; n.next = s.next; n.held = s.injectedHeld;
                             n.buttons = m_queuedButtons; n.recorded = m_queuedRecordedButtons; n.replay = m_queuedReplayButtons;
@@ -1086,6 +1238,7 @@ class $modify(CFPlay, PlayLayer) {
         s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
     }
     void resetLevel() {
+        if (s.owner == this) s.showcaseComplete = false;
         if (running() && !s.resetting) stop("Automated run cancelled by manual restart");
         s.restored = false; PlayLayer::resetLevel();
         if (s.state == State::Record && !s.resetting) {
@@ -1107,12 +1260,29 @@ class $modify(CFPlay, PlayLayer) {
         if (active && player->m_isDead && s.owner == this && running() &&
             s.pending == Pending::None) {
             s.message = fmt::format("Replay died at tick {}", tick());
-            s.pending = Pending::Fail;
+            // A delayed jump may legitimately die before its shifted press.
+            // Only death before BOTH original and candidate times is unrelated
+            // to the perturbation and must not narrow the measured window.
+            int firstChanged = s.state == State::Analyze && s.target < s.recording.inputs.size() ?
+                s.recording.inputs[s.target].tick + std::min(0, s.offset) : 0;
+            s.pending = s.state == State::Analyze && !s.validatingSnapshot && tick() < firstChanged ?
+                Pending::Invalid : Pending::Fail;
             log::info("[CF] actual death: tick {}, player {}, first input {}", tick(),
                 player == m_player1 ? 1 : 2, s.trial.empty() ? -1 : s.trial.front().tick);
         }
     }
     void levelComplete() {
+        if (s.owner == this && s.state == State::Playback) {
+            if (s.pending == Pending::Fail) return;
+            if (!cf::allPressesDispatched(s.recording.inputs, s.next)) {
+                s.message = "Level finished before all clicks were replayed"; s.pending = Pending::Fail; return;
+            }
+            // Successful showcases use the native completion path. Analysis and
+            // recording retain their reset/pause handoff. Keep the game's mode.
+            stop("Showcase complete. Native completion screen");
+            s.showcaseComplete = true; clearMarkers(); hud();
+            PlayLayer::levelComplete(); return;
+        }
         if (s.state == State::Record) {
             s.captureDirty = true;
             s.recording.complete = true; s.recording.endTick = tick();
@@ -1471,7 +1641,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.10.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.0", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
