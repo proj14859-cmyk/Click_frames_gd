@@ -1,5 +1,65 @@
 # Click Frames GD
 
+## v0.6.0 / 2026-11-10 / 01:50 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La migración valida y copia las grabaciones antiguas sin eliminarlas. Las versiones de un nivel se separan por fingerprint.
+
+-Mejoras:
+- Inputs, trayectoria y márgenes accesibles por nivel. Los informes sin cambios no se reescriben durante la misma sesión.
+- La caché de informes guarda hashes en lugar de duplicar en memoria las trayectorias CSV.
+
+-Cambios:
+- Ubicación activa: `recordings/<nombre>-<id>/<fingerprint>/capture.cfr`.
+- Los CSV son derivados: editarlos no modifica la reproducción. Esta versión conserva el análisis exhaustivo desde cero; el nuevo almacenamiento no lo acelera por sí solo.
+
+-Implementaciones:
+- `metadata.json`: esquema, fingerprint, compatibilidad, TPS y estado completo/verificado.
+- `capture.cfr`: fuente de verdad de inputs, trayectoria y ventanas, en formato CFR 2.
+- `inputs.csv`: tick, pulsación/liberación, botón, jugador y posición.
+- `trace.csv`: posiciones muestreadas de ambos jugadores, no un estado completo del motor.
+- `windows.csv`: margen temprano/tardío, ancho, límite inferior y milisegundos por input. Los anchos sin medir quedan vacíos.
+- `scan-report.txt`: progreso guardado, radio de búsqueda y último estado, sin estimación de tiempo restante.
+- `.bak` guarda la versión anterior; `.tmp` es un archivo transitorio.
+
+Los `.cfpack` conservan su formato e incluyen las capturas completas. Los informes se regeneran al abrir el nivel importado. Las grabaciones anteriores en `levels/` y en la raíz se copian al abrir su nivel; los originales quedan intactos. Export incluye también las versiones anteriores del mismo nivel en `levels/`.
+
+Plan de aceleración: buscar desde el input original hacia cada lado hasta el primer fallo, después restaurar estados completos cerca del input en vez de reiniciar desde cero. Los checkpoints de práctica y trace.csv por sí solos no bastan para restaurar triggers, objetos y física. Comparar cada optimización con el análisis exhaustivo antes de activarla.
+
+## v0.5.2 / 2026-11-10 / 01:25 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Se bloquea la solicitud automática de checkpoints del jugador durante Verify, Analyze y Play, antes de entrar al código de colocación.
+- Se eliminan los hooks que devolvían nullptr desde createCheckpoint y markCheckpoint: otros mods pueden esperar un objeto válido. Esto corrige una posible causa del acceso nulo mostrado dentro de Mega Hack; requiere prueba con los mods del dispositivo.
+- La música se silencia por volumen durante Verify y Analyze, incluso si los reinicios intentan restaurarlo. Se recupera el volumen previo al pausar, detener o salir.
+
+-Mejoras:
+- La grabación en práctica conserva los checkpoints normales.
+
+-Cambios:
+- La música continúa avanzando en silencio durante el análisis, sin llamadas globales a resumeAllMusic que pudieran reanudar canciones pausadas por GD.
+
+-Implementaciones:
+- Protección en tryPlaceCheckpoint y updateCheckpointTest, limitada a los jugadores de la sesión automática.
+- Versión visible del menú sincronizada con el paquete.
+- En Windows las funciones inline no admiten hooks: se bloquea tryPlaceCheckpoint y se reaplica el silencio después del reinicio y en cada actualización. Android intercepta también updateCheckpointTest y los cambios de volumen.
+
+## v0.5.1 / 2026-11-10 / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Verify y Analyze silencian la música de fondo mientras se ejecutan y la restauran al pausar, detener o terminar.
+
+-Mejoras:
+- Los sonidos de clicks del mod siguen activos durante el análisis y el showcase conserva su audio normal.
+
+-Cambios:
+- La música ya no participa en el ciclo de audio de una verificación automática.
+
+-Implementaciones:
+- Restauración segura de la música incluso si cambia la escena durante Verify.
+
+La grabación `run-1539950219185091717.cfr` comienza con el primer click en el tick 104; el fallo del tick 214 sucede después del primer click. La música no cambia la física, pero se silencia para eliminar carga y sincronización de audio durante Verify. Si sigue muriendo en el mismo tick, la causa es una divergencia de reproducción del nivel o de otro mod.
+
 ## v0.5.0 / 2026-11-10 / 00:49 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

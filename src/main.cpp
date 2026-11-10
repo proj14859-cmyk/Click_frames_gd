@@ -2,9 +2,12 @@
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include "Timing.hpp"
+#include "Storage.hpp"
 #include "Pack.hpp"
 #include <array>
 #include <cmath>
@@ -43,6 +46,9 @@ struct Session {
     bool noRetry = false;
     bool background = false, objectsWereVisible = true;
     float previousTimeScale = 1.f;
+    bool musicMutedByCf = false;
+    float previousMusicVolume = 0.f;
+    std::map<std::string, std::string> savedViews;
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
@@ -57,18 +63,26 @@ bool hasLiveOwner() {
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
-std::filesystem::path levelDir(std::string const& folder) { return Mod::get()->getSaveDir() / "levels" / folder; }
-std::filesystem::path path() { return levelDir(s.folder) / ("run-" + s.recording.key + ".cfr"); }
-// v0.2.x kept runs directly in the save dir; move this level's run into its folder.
+std::filesystem::path levelDir(std::string const& folder) { return Mod::get()->getSaveDir() / "recordings" / folder; }
+std::filesystem::path path() { return levelDir(s.folder) / s.recording.key / "capture.cfr"; }
+// Copy and validate legacy captures; never delete the old data during migration.
 void migrateOldRun() {
-    auto file = path(), old = Mod::get()->getSaveDir() / ("run-" + s.recording.key + ".cfr");
+    auto file = path();
     std::error_code ec;
-    if (std::filesystem::exists(file, ec) || !std::filesystem::exists(old, ec)) return;
-    std::filesystem::create_directories(file.parent_path(), ec);
-    std::filesystem::rename(old, file, ec);
-    if (ec) return;
-    auto oldBak = old, newBak = file; oldBak += ".bak"; newBak += ".bak";
-    std::filesystem::rename(oldBak, newBak, ec);
+    if (std::filesystem::exists(file, ec)) return;
+    auto name = "run-" + s.recording.key + ".cfr";
+    for (auto const& old : {Mod::get()->getSaveDir() / "levels" / s.folder / name,
+                           Mod::get()->getSaveDir() / name}) {
+        std::ifstream in(old); cf::Recording checked;
+        if (!cf::read(in, s.recording.key, checked)) continue;
+        std::filesystem::create_directories(file.parent_path(), ec);
+        if (ec) { s.message = "Could not create recording folder"; return; }
+        auto tmp = file; tmp += ".tmp";
+        std::filesystem::copy_file(old, tmp, std::filesystem::copy_options::overwrite_existing, ec);
+        if (!ec) std::filesystem::rename(tmp, file, ec);
+        if (ec) s.message = "Could not migrate recording; original preserved";
+        return;
+    }
 }
 void fixPracticeTouchPriority() {
     if (!hasLiveOwner() || !s.owner->m_uiLayer) return;
@@ -109,7 +123,19 @@ bool writeSafe(std::filesystem::path const& file, std::string const& text) {
 }
 void save() {
     std::ostringstream text; cf::write(text, s.recording);
-    if (!writeSafe(path(), text.str())) s.message = "Could not save recording";
+    if (!writeSafe(path(), text.str())) { s.message = "Could not save recording"; return; }
+    auto view = [](std::string const& name, std::string const& data) {
+        auto digest = cf::fingerprint(data);
+        auto it = s.savedViews.find(name);
+        if (it != s.savedViews.end() && it->second == digest) return;
+        if (writeSafe(path().parent_path() / name, data)) s.savedViews[name] = digest;
+        else s.message = "Capture saved; could not update report files";
+    };
+    view("metadata.json", cf::metadataJson(s.recording));
+    view("inputs.csv", cf::inputsCsv(s.recording));
+    view("trace.csv", cf::traceCsv(s.recording));
+    view("windows.csv", cf::windowsCsv(s.recording));
+    view("scan-report.txt", cf::scanReport(s.recording, s.message));
 }
 std::string readAll(std::filesystem::path const& file) {
     std::error_code ec;
@@ -122,12 +148,24 @@ std::string readAll(std::filesystem::path const& file) {
 std::string exportPack() {
     cf::Pack pack; pack.folder = s.folder;
     size_t bytes = 0; std::error_code ec;
-    for (auto const& entry : std::filesystem::directory_iterator(levelDir(s.folder), ec)) {
+    std::map<std::string, std::filesystem::path> captures;
+    auto legacy = Mod::get()->getSaveDir() / "levels" / s.folder;
+    for (auto const& entry : std::filesystem::directory_iterator(legacy, ec)) {
         auto name = entry.path().filename().string();
-        if (entry.path().extension() != ".cfr" || !cf::runName(name) || pack.files.size() >= cf::PACK_MAX_FILES) continue;
-        auto size = entry.file_size(ec);
+        if (cf::runName(name)) captures[name] = entry.path();
+    }
+    ec.clear();
+    // Keep the existing wire format: pack members still use run-<key>.cfr.
+    for (auto const& entry : std::filesystem::directory_iterator(levelDir(s.folder), ec)) {
+        auto name = "run-" + entry.path().filename().string() + ".cfr";
+        if (cf::runName(name)) captures[name] = entry.path() / "capture.cfr";
+    }
+    ec.clear();
+    for (auto const& [name, capture] : captures) {
+        if (pack.files.size() >= cf::PACK_MAX_FILES) return "Too many recordings for one pack.";
+        auto size = std::filesystem::file_size(capture, ec);
         if (ec || size > cf::PACK_MAX_BYTES - bytes) return "Runs are too large to export.";
-        auto data = readAll(entry.path());
+        auto data = readAll(capture);
         if (data.empty()) return "Could not read a recording for export.";
         bytes += data.size();
         pack.files.push_back({name, std::move(data)});
@@ -158,7 +196,10 @@ std::string importPacks() {
             std::istringstream data(f.data); cf::Recording r;
             ok = cf::read(data, f.name.substr(4, f.name.size() - 8), r) && ok;
         }
-        if (ok) for (auto const& f : pack.files) ok = writeSafe(levelDir(pack.folder) / f.name, f.data) && ok;
+        if (ok) for (auto const& f : pack.files) {
+            auto key = f.name.substr(4, f.name.size() - 8);
+            ok = writeSafe(levelDir(pack.folder) / key / "capture.cfr", f.data) && ok;
+        }
         if (!ok) { ++failed; continue; }
         ++files; runs += pack.files.size();
         auto done = file; done += ".done"; std::filesystem::rename(file, done, ec);
@@ -206,9 +247,11 @@ void stop(std::string message) {
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
     s.resetting = true; releaseInjected(); clearMarkers();
+    if (s.state == State::Verify || s.state == State::Analyze) applyBackground(true);
     // Automated runs stay in practice and reset through the normal practice path.
     if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
     s.owner->removeAllCheckpoints(); s.owner->resetLevel();
+    if (s.musicMutedByCf) FMODAudioEngine::get()->setBackgroundMusicVolume(0.f);
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0; s.lastPressTick = -1; s.divergences = 0;
@@ -225,6 +268,10 @@ void applyBackground(bool on) {
             scheduler->setTimeScale(s.previousTimeScale);
             s.background = false;
         }
+        if (!on && s.musicMutedByCf) {
+            s.musicMutedByCf = false;
+            FMODAudioEngine::get()->setBackgroundMusicVolume(s.previousMusicVolume);
+        }
         return;
     }
     if (on && !s.background) {
@@ -233,11 +280,18 @@ void applyBackground(bool on) {
         s.background = true;
         scheduler->setTimeScale(static_cast<float>(Mod::get()->getSettingValue<double>("scan-speed")));
         if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(false);
+        s.previousMusicVolume = FMODAudioEngine::get()->getBackgroundMusicVolume();
+        s.musicMutedByCf = true;
     } else if (!on && s.background) {
         scheduler->setTimeScale(s.previousTimeScale);
         if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(s.objectsWereVisible);
         s.background = false;
+        if (s.musicMutedByCf) {
+            s.musicMutedByCf = false;
+            FMODAudioEngine::get()->setBackgroundMusicVolume(s.previousMusicVolume);
+        }
     }
+    if (on) FMODAudioEngine::get()->setBackgroundMusicVolume(0.f);
     auto cover = s.owner->getChildByID("cf-cover");
     if (on && !cover) {
         auto win = CCDirector::get()->getWinSize();
@@ -423,6 +477,31 @@ void consume() {
 }
 }
 
+#ifndef GEODE_IS_WINDOWS
+class $modify(CFAudio, FMODAudioEngine) {
+    void setBackgroundMusicVolume(float volume) {
+        FMODAudioEngine::setBackgroundMusicVolume(s.musicMutedByCf ? 0.f : volume);
+    }
+};
+#endif
+
+class $modify(CFPlayer, PlayerObject) {
+    bool blocksCheckpoint() {
+        return hasLiveOwner() && running() &&
+            (this == s.owner->m_player1 || this == s.owner->m_player2);
+    }
+    void tryPlaceCheckpoint() {
+        if (blocksCheckpoint()) return;
+        PlayerObject::tryPlaceCheckpoint();
+    }
+#ifndef GEODE_IS_WINDOWS
+    void updateCheckpointTest() {
+        if (blocksCheckpoint()) return;
+        PlayerObject::updateCheckpointTest();
+    }
+#endif
+};
+
 class $modify(CFBase, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool p1) {
         if (static_cast<GJBaseGameLayer*>(s.owner) != this) return GJBaseGameLayer::handleButton(down, button, p1);
@@ -481,6 +560,7 @@ class $modify(CFPlay, PlayLayer) {
         if (cf::read(file, s.recording.key, loaded)) {
             s.recording = std::move(loaded); s.state = s.recording.ready() ? State::Ready : State::Idle;
             s.message = s.recording.ready() ? "Saved showcase available" : "Saved run: Analyze to continue";
+            save(); // Regenerate derived files on opening imported or migrated captures.
         } else if (std::filesystem::exists(recordingPath)) s.message = "Recording format changed. Record a new run.";
         layer->unschedule(schedule_selector(CFPlay::service));
         layer->schedule(schedule_selector(CFPlay::service));
@@ -530,14 +610,6 @@ class $modify(CFPlay, PlayLayer) {
                 }
             }
         }
-    }
-    CheckpointObject* createCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::createCheckpoint();
-    }
-    CheckpointObject* markCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::markCheckpoint();
     }
     void storeCheckpoint(CheckpointObject* cp) {
         if (s.owner == this && running()) return;
@@ -761,7 +833,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.5.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.6.0", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
