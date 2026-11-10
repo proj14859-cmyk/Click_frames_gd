@@ -120,6 +120,7 @@ constexpr int VERIFY_SHIFTS[] = {0, 1, -1, 2, -2};
 constexpr int VERIFY_SHIFT_COUNT = 5;
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
+bool scanBatchActive = false;
 bool hasLiveOwner() {
     auto current = PlayLayer::get();
     return current && s.owner == current && current->m_level && current->m_player1 && current->m_player2;
@@ -492,6 +493,7 @@ void applyBackground(bool on) {
     } else if (!on && cover) cover->removeFromParent();
 }
 void hud() {
+    if (scanBatchActive) return;
     auto pl = s.owner;
     if (s.showcaseComplete) {
         for (char const* id : {"cf-hud", "cf-rows", "cf-ms"})
@@ -878,6 +880,7 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
             CCScheduler::update(dt); return;
         }
         inside = true;
+        scanBatchActive = true;
         auto owner = s.owner;
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8);
         bool fast = !s.batchDisabled && !s.confirmingBoundary &&
@@ -888,7 +891,9 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
             ++s.batchUpdates;
             if (!scanning() || s.owner != owner || std::chrono::steady_clock::now() >= deadline) break;
         }
+        scanBatchActive = false;
         inside = false;
+        if (hasLiveOwner()) hud();
     }
 };
 
