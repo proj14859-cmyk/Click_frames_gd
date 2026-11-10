@@ -43,6 +43,7 @@ struct Session {
     bool noRetry = false;
     bool background = false, objectsWereVisible = true;
     float previousTimeScale = 1.f;
+    bool musicPausedByCf = false;
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
@@ -225,6 +226,10 @@ void applyBackground(bool on) {
             scheduler->setTimeScale(s.previousTimeScale);
             s.background = false;
         }
+        if (!on && s.musicPausedByCf) {
+            FMODAudioEngine::get()->resumeAllMusic();
+            s.musicPausedByCf = false;
+        }
         return;
     }
     if (on && !s.background) {
@@ -233,10 +238,16 @@ void applyBackground(bool on) {
         s.background = true;
         scheduler->setTimeScale(static_cast<float>(Mod::get()->getSettingValue<double>("scan-speed")));
         if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(false);
+        FMODAudioEngine::get()->pauseAllMusic(true);
+        s.musicPausedByCf = true;
     } else if (!on && s.background) {
         scheduler->setTimeScale(s.previousTimeScale);
         if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(s.objectsWereVisible);
         s.background = false;
+        if (s.musicPausedByCf) {
+            FMODAudioEngine::get()->resumeAllMusic();
+            s.musicPausedByCf = false;
+        }
     }
     auto cover = s.owner->getChildByID("cf-cover");
     if (on && !cover) {

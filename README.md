@@ -1,5 +1,21 @@
 # Click Frames GD
 
+## v0.5.1 / 2026-11-10 / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Verify y Analyze silencian la música de fondo mientras se ejecutan y la restauran al pausar, detener o terminar.
+
+-Mejoras:
+- Los sonidos de clicks del mod siguen activos durante el análisis y el showcase conserva su audio normal.
+
+-Cambios:
+- La música ya no participa en el ciclo de audio de una verificación automática.
+
+-Implementaciones:
+- Restauración segura de la música incluso si cambia la escena durante Verify.
+
+La grabación `run-1539950219185091717.cfr` comienza con el primer click en el tick 104; el fallo del tick 214 sucede después del primer click. La música no cambia la física, pero se silencia para eliminar carga y sincronización de audio durante Verify. Si sigue muriendo en el mismo tick, la causa es una divergencia de reproducción del nivel o de otro mod.
+
 ## v0.5.0 / 2026-11-10 / 00:49 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
