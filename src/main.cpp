@@ -950,7 +950,8 @@ void consume() {
     } else if (s.state == State::Analyze) {
         if (s.validatingSnapshot) {
             s.validatingSnapshot = false;
-            s.snapshotChecked = s.snapshot && result == Pending::Pass && tick() == s.snapshotEndTick && s.snapshotCompared > 0;
+            s.snapshotChecked = s.snapshot && result == Pending::Pass && tick() == s.snapshotEndTick && s.snapshotCompared > 0 &&
+                !s.causalMismatch && s.causalCursor == s.causalTrace.size();
             if (s.activeNative >= 0) {
                 s.nativePool[s.activeNative].checked = s.snapshotChecked;
                 s.nativePool[s.activeNative].rejected = !s.snapshotChecked;
@@ -1204,7 +1205,10 @@ class $modify(CFBase, GJBaseGameLayer) {
                 else if (now == exit.tick) {
                     auto player = s.recording.inputs[s.target].p1 ? s.owner->m_player1 : s.owner->m_player2;
                     bool landingRequired = s.referenceLandings[s.target].known;
-                    bool pass = s.targetExecuted && !s.causalMismatch && (landingRequired ? s.localLandingPassed :
+                    auto causalReference = s.baseline.find(now);
+                    bool sameCauses = !s.causalMismatch && causalReference != s.baseline.end() &&
+                        s.causalCursor == size_t(causalReference->second.flags[9]);
+                    bool pass = s.targetExecuted && sameCauses && (landingRequired ? s.localLandingPassed :
                         cf::atSegmentExit(exit, player->getPositionX(), player->getPositionY(), playerMode(player), player->m_isUpsideDown));
                     // A zone mismatch is not a collision. Continue the real run
                     // rather than turning a heuristic rejection into a narrow window.
@@ -1487,7 +1491,7 @@ class $modify(CFPlay, PlayLayer) {
         }
         if (running()) {
             if (s.pending == Pending::None) {
-                if (s.state == State::Analyze && s.causalMismatch && !s.recoveringFlight) {
+                if (s.state == State::Analyze && (s.causalMismatch || s.causalCursor != s.causalTrace.size()) && !s.recoveringFlight) {
                     s.message = "Candidate changed the recorded causal route; window not certified";
                     s.pending = s.validatingSnapshot ? Pending::Fail : Pending::Invalid; return;
                 }
