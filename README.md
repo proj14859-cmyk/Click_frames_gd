@@ -16,6 +16,7 @@
 -Implementaciones:
 - Protección en tryPlaceCheckpoint y updateCheckpointTest, limitada a los jugadores de la sesión automática.
 - Versión visible del menú sincronizada con el paquete.
+- En Windows las funciones inline no admiten hooks: se bloquea tryPlaceCheckpoint y se reaplica el silencio después del reinicio y en cada actualización. Android intercepta también updateCheckpointTest y los cambios de volumen.
 
 ## v0.5.1 / 2026-11-10 / GD 2.2081 / Geode 5.11.2
 

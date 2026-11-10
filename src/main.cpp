@@ -214,6 +214,7 @@ void resetTrial() {
     // Automated runs stay in practice and reset through the normal practice path.
     if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
     s.owner->removeAllCheckpoints(); s.owner->resetLevel();
+    if (s.musicMutedByCf) FMODAudioEngine::get()->setBackgroundMusicVolume(0.f);
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0; s.lastPressTick = -1; s.divergences = 0;
@@ -439,11 +440,13 @@ void consume() {
 }
 }
 
+#ifndef GEODE_IS_WINDOWS
 class $modify(CFAudio, FMODAudioEngine) {
     void setBackgroundMusicVolume(float volume) {
         FMODAudioEngine::setBackgroundMusicVolume(s.musicMutedByCf ? 0.f : volume);
     }
 };
+#endif
 
 class $modify(CFPlayer, PlayerObject) {
     bool blocksCheckpoint() {
@@ -454,10 +457,12 @@ class $modify(CFPlayer, PlayerObject) {
         if (blocksCheckpoint()) return;
         PlayerObject::tryPlaceCheckpoint();
     }
+#ifndef GEODE_IS_WINDOWS
     void updateCheckpointTest() {
         if (blocksCheckpoint()) return;
         PlayerObject::updateCheckpointTest();
     }
+#endif
 };
 
 class $modify(CFBase, GJBaseGameLayer) {
