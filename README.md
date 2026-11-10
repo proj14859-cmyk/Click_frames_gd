@@ -1,5 +1,25 @@
 # Click Frames GD
 
+## v0.5.0 / 2026-11-10 / 00:49 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- El análisis comprueba la muerte real después de `destroyPlayer`, en lugar de fallar ante cualquier solicitud de colisión. Ignora como causa de fallo al jugador secundario fuera de dual y las llamadas durante reinicios.
+- Diagnóstico de muerte con tick, jugador y primer input en el log. La grabación adjunta al reporte tiene su primer input en el tick 198; el aviso del tick 2 requiere comprobarse de nuevo en el dispositivo.
+- Se conservan la restauración de velocidad/visibilidad, las comprobaciones de paquetes y la invalidación de márgenes al desplazar la run de v0.4.0.
+
+-Mejoras:
+- Contador por filas de colores según el ancho real de las ventanas y resumen equivalente en el menú.
+- Degradado de rojo para ventanas estrechas a verde para ventanas amplias.
+
+-Cambios:
+- `makeRows` incluye todos los anchos desde el mínimo medido hasta el máximo, con filas vacías intermedias. No muestra categorías inferiores al mínimo del nivel.
+- La última fila agrupa los anchos restantes como `N+` al alcanzar el límite de filas; el máximo también muestra `+` si es un límite inferior.
+- Se eliminan las comprobaciones del ZIP que exigían omitir huecos; se mantienen las pruebas válidas y se añaden casos para intervalos y límites abiertos.
+
+-Implementaciones:
+- Ajuste Max counter rows (2–12, por defecto 8).
+- Integración de las funciones del ZIP v0.5.0 sobre la versión actual del repositorio.
+
 ## v0.4.0 / 2026-11-10 / 00:26 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

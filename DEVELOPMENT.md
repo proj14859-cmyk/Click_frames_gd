@@ -1,4 +1,4 @@
-# Click Frames 0.4.0 — experimental
+# Click Frames 0.5.0 — experimental
 
 ## 0.2.1 completion handoff
 
@@ -121,3 +121,17 @@ reject duplicate destinations and trailing bytes, and safe writes restore the
 backup if the final rename fails. Imports validate every recording before writing;
 I/O failure during a multi-run pack may still leave some runs imported, with
 previous versions retained as backups.
+
+## 0.5.0 counter and death handling
+
+Rows span every integer width between measured minimum and maximum, including
+empty intermediate widths, capped by max-rows with a final N+ bucket. Only the
+maximum inherits lowerBound; colors interpolate from red at 1 to green at 10+.
+The gameplay and popup counters share this row definition.
+
+Automated collision handling calls the original destroyPlayer and only fails on
+an alive-to-dead transition of player1 or an active dual player2. Reset requests
+and ignored engine calls no longer count as deaths. This addresses a false-fail
+path; the exact Android tick-2 report cannot be reproduced with a recording alone
+without the level and runtime/mod state. Device regression must also confirm a
+real death still fails and retries the current trial.
