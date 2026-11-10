@@ -42,7 +42,8 @@ inline std::string scanReport(Recording const& r, std::string const& status) {
         << "\nBackend: " << r.backend << "\nLanding policy: " << r.analysisPolicy
         << "\nComplete: " << r.complete << "\nMeasured jump events: " << measured << '/' << total
         << "\nSearch radius: " << r.radius << "\nStatus: " << status
-        << "\nCSV files are derived; capture.cfr is authoritative.\n";
+        << "\nScope: " << (r.analysisPolicy == 2 ? "local segment (not full-route certification)" : "full recorded route")
+        << "\nAuthoritative files: capture.flr + matching playback.flp. CSVs are derived; edits are visual only.\n";
     return out.str();
 }
 inline std::string metadataJson(Recording const& r) {
@@ -56,9 +57,9 @@ inline std::string metadataJson(Recording const& r) {
     std::ostringstream out;
     out << "{\n  \"schema\": 1,\n  \"fingerprint\": \"" << key.str()
         << "\",\n  \"gd\": \"2.2081\",\n  \"geode\": \"5.11.2\",\n  \"tps\": 240,\n"
-        << "  \"capture_format\": 4,\n  \"backend\": " << std::quoted(r.backend)
+        << "  \"storage_schema\": 2,\n  \"capture_format\": \"CFCAP 1\",\n  \"playback_format\": \"CFPLAY 1\",\n  \"backend\": " << std::quoted(r.backend)
         << ",\n  \"analysis_policy\": " << r.analysisPolicy
-        << ",\n  \"capture\": \"capture.cfr\",\n  \"complete\": " << (r.complete ? "true" : "false")
+        << ",\n  \"capture\": \"capture.flr\",\n  \"playback\": \"playback.flp\",\n  \"complete\": " << (r.complete ? "true" : "false")
         << ",\n  \"verified\": " << (r.verified ? "true" : "false") << ",\n  \"end_tick\": " << r.endTick << "\n}\n";
     return out.str();
 }
