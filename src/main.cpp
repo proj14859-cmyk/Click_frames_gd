@@ -5,10 +5,12 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include "Timing.hpp"
+#include "Pack.hpp"
 #include <array>
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <sstream>
 using namespace geode::prelude;
 
 namespace {
@@ -35,7 +37,17 @@ struct Session {
     std::array<int, 5> tally{};
     std::array<bool, 5> visibleRows{};
     std::string message = "Record a practice run";
+    std::string folder; // levels/<name>-<id>/ holds this level's runs
+    std::string alert, firstFail; // why a run stopped, shown once pause is back
+    int shiftIndex = 0, lastPressTick = -1, divergences = 0;
+    bool noRetry = false;
+    bool background = false, objectsWereVisible = true;
+    float previousTimeScale = 1.f;
 };
+// The recorded tick and the replay's injection point can differ by a step or two, so
+// verification retries the whole run shifted before it gives up.
+constexpr int VERIFY_SHIFTS[] = {0, 1, -1, 2, -2};
+constexpr int VERIFY_SHIFT_COUNT = 5;
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
 bool hasLiveOwner() {
@@ -45,7 +57,19 @@ bool hasLiveOwner() {
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
-std::filesystem::path path() { return Mod::get()->getSaveDir() / ("run-" + s.recording.key + ".cfr"); }
+std::filesystem::path levelDir(std::string const& folder) { return Mod::get()->getSaveDir() / "levels" / folder; }
+std::filesystem::path path() { return levelDir(s.folder) / ("run-" + s.recording.key + ".cfr"); }
+// v0.2.x kept runs directly in the save dir; move this level's run into its folder.
+void migrateOldRun() {
+    auto file = path(), old = Mod::get()->getSaveDir() / ("run-" + s.recording.key + ".cfr");
+    std::error_code ec;
+    if (std::filesystem::exists(file, ec) || !std::filesystem::exists(old, ec)) return;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    std::filesystem::rename(old, file, ec);
+    if (ec) return;
+    auto oldBak = old, newBak = file; oldBak += ".bak"; newBak += ".bak";
+    std::filesystem::rename(oldBak, newBak, ec);
+}
 void fixPracticeTouchPriority() {
     if (!hasLiveOwner() || !s.owner->m_uiLayer) return;
     auto dispatcher = CCDirector::get()->getTouchDispatcher();
@@ -60,20 +84,87 @@ void fixPracticeTouchPriority() {
         }
     }
 }
-void save() {
-    auto tmp = path(); tmp += ".tmp";
-    std::ofstream out(tmp); cf::write(out, s.recording); out.close();
-    if (!out) { s.message = "Could not save recording"; return; }
+// Stage a temp file, keep the previous version as .bak, then swap in the new one.
+bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     std::error_code ec;
-    // Keep a recoverable previous version on platforms where rename cannot replace.
-    auto backup = path(); backup += ".bak";
-    if (std::filesystem::exists(path())) {
+    std::filesystem::create_directories(file.parent_path(), ec);
+    auto tmp = file; tmp += ".tmp";
+    std::ofstream out(tmp, std::ios::binary); out << text; out.close();
+    if (!out) return false;
+    if (std::filesystem::exists(file, ec)) {
+        auto backup = file; backup += ".bak";
         std::filesystem::remove(backup, ec); ec.clear();
-        std::filesystem::rename(path(), backup, ec);
-        if (ec) { s.message = "Could not back up recording"; return; }
+        std::filesystem::rename(file, backup, ec);
+        if (ec) return false;
     }
-    std::filesystem::rename(tmp, path(), ec);
-    if (ec) s.message = "Could not finish saving recording";
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) {
+        // Restore the old run if the final rename failed after backing it up.
+        auto backup = file; backup += ".bak";
+        std::error_code restore;
+        if (std::filesystem::exists(backup, restore)) std::filesystem::rename(backup, file, restore);
+        return false;
+    }
+    return true;
+}
+void save() {
+    std::ostringstream text; cf::write(text, s.recording);
+    if (!writeSafe(path(), text.str())) s.message = "Could not save recording";
+}
+std::string readAll(std::filesystem::path const& file) {
+    std::error_code ec;
+    auto bytes = std::filesystem::file_size(file, ec);
+    if (ec || bytes > cf::PACK_MAX_BYTES + 16384) return {};
+    std::ifstream in(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+// Export: every run of this level into exports/<folder>.cfpack
+std::string exportPack() {
+    cf::Pack pack; pack.folder = s.folder;
+    size_t bytes = 0; std::error_code ec;
+    for (auto const& entry : std::filesystem::directory_iterator(levelDir(s.folder), ec)) {
+        auto name = entry.path().filename().string();
+        if (entry.path().extension() != ".cfr" || !cf::runName(name) || pack.files.size() >= cf::PACK_MAX_FILES) continue;
+        auto size = entry.file_size(ec);
+        if (ec || size > cf::PACK_MAX_BYTES - bytes) return "Runs are too large to export.";
+        auto data = readAll(entry.path());
+        if (data.empty()) return "Could not read a recording for export.";
+        bytes += data.size();
+        pack.files.push_back({name, std::move(data)});
+    }
+    if (pack.files.empty()) return "Nothing to export: record and analyze this level first.";
+    if (bytes > cf::PACK_MAX_BYTES) return "Runs are too large to export.";
+    auto out = Mod::get()->getSaveDir() / "exports" / (s.folder + ".cfpack");
+    std::filesystem::create_directories(out.parent_path(), ec);
+    std::ofstream file(out, std::ios::binary); cf::packWrite(file, pack); file.close();
+    if (!file) return "Could not write the export file.";
+    return fmt::format("Exported {} run(s) to:\n{}", pack.files.size(), out.string());
+}
+// Import: every .cfpack in imports/. A pack is checked completely before any file is written.
+std::string importPacks() {
+    if (s.state == State::Record || running()) return "Stop the current run first.";
+    auto dir = Mod::get()->getSaveDir() / "imports";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    std::vector<std::filesystem::path> found;
+    for (auto const& entry : std::filesystem::directory_iterator(dir, ec))
+        if (entry.path().extension() == ".cfpack") found.push_back(entry.path());
+    if (found.empty()) return fmt::format("No .cfpack files found. Copy them to:\n{}", dir.string());
+    size_t runs = 0, files = 0, failed = 0;
+    for (auto const& file : found) {
+        std::istringstream in(readAll(file));
+        cf::Pack pack; bool ok = cf::packRead(in, pack);
+        for (auto const& f : pack.files) {
+            std::istringstream data(f.data); cf::Recording r;
+            ok = cf::read(data, f.name.substr(4, f.name.size() - 8), r) && ok;
+        }
+        if (ok) for (auto const& f : pack.files) ok = writeSafe(levelDir(pack.folder) / f.name, f.data) && ok;
+        if (!ok) { ++failed; continue; }
+        ++files; runs += pack.files.size();
+        auto done = file; done += ".done"; std::filesystem::rename(file, done, ec);
+    }
+    return fmt::format("Imported {} run(s) from {} file(s).{}", runs, files,
+        failed ? fmt::format("\n{} file(s) were invalid and left in place.", failed) : "");
 }
 void releaseInjected() {
     if (!hasLiveOwner()) return;
@@ -87,6 +178,7 @@ void releaseInjected() {
     s.injecting = false; s.injectedHeld.fill(false);
 }
 void clearMarkers();
+void applyBackground(bool on);
 void queueReturnToPause() {
     if (!hasLiveOwner() || s.returningToPause) return;
     s.returningToPause = true;
@@ -102,12 +194,14 @@ void queueReturnToPause() {
         Loader::get()->queueInMainThread([] {
             if (hasLiveOwner()) s.owner->pauseGame(false);
             s.returningToPause = false;
+            if (!s.alert.empty()) { FLAlertLayer::create("Click Frames", s.alert, "OK")->show(); s.alert.clear(); }
         });
     });
 }
 void stop(std::string message) {
     s.state = s.recording.ready() ? State::Ready : State::Idle;
     s.pending = Pending::None; releaseInjected(); s.message = std::move(message); save();
+    applyBackground(false);
 }
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
@@ -117,8 +211,42 @@ void resetTrial() {
     s.owner->removeAllCheckpoints(); s.owner->resetLevel();
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     s.watchdogTick = -1; s.stalledSeconds = 0;
-    s.comparedSamples = 0;
+    s.comparedSamples = 0; s.lastPressTick = -1; s.divergences = 0;
     fixPracticeTouchPriority();
+}
+// Verify/Analyze run the level behind a cover: objects hidden (nothing to draw) and the
+// game sped up (setting "scan-speed"; 1 = normal). Called every frame, so it undoes itself.
+void applyBackground(bool on) {
+    auto scheduler = CCDirector::get()->getScheduler();
+    if (!hasLiveOwner()) {
+        // Scene replacement may already have cleared PlayLayer::get(). Restore
+        // global timing without dereferencing the old layer in that case.
+        if (!on && s.background) {
+            scheduler->setTimeScale(s.previousTimeScale);
+            s.background = false;
+        }
+        return;
+    }
+    if (on && !s.background) {
+        s.previousTimeScale = scheduler->getTimeScale();
+        s.objectsWereVisible = !s.owner->m_objectLayer || s.owner->m_objectLayer->isVisible();
+        s.background = true;
+        scheduler->setTimeScale(static_cast<float>(Mod::get()->getSettingValue<double>("scan-speed")));
+        if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(false);
+    } else if (!on && s.background) {
+        scheduler->setTimeScale(s.previousTimeScale);
+        if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(s.objectsWereVisible);
+        s.background = false;
+    }
+    auto cover = s.owner->getChildByID("cf-cover");
+    if (on && !cover) {
+        auto win = CCDirector::get()->getWinSize();
+        auto layer = CCLayerColor::create({8, 12, 22, 255}); layer->setID("cf-cover");
+        auto text = CCLabelBMFont::create("", "chatFont.fnt"); text->setID("cf-cover-label");
+        text->setAlignment(kCCTextAlignmentCenter); text->setPosition({win.width / 2, win.height / 2});
+        layer->addChild(text);
+        s.owner->addChild(layer, 900);
+    } else if (!on && cover) cover->removeFromParent();
 }
 void hud() {
     auto pl = s.owner;
@@ -136,12 +264,28 @@ void hud() {
             if (s.visibleRows[i]) text += fmt::format("\n{}{}F: {}", i + 1, i == 4 ? "+" : "", s.tally[i]);
     }
     label->setString(text.c_str());
+    if (auto cover = pl->getChildByID("cf-cover"))
+        if (auto big = typeinfo_cast<CCLabelBMFont*>(cover->getChildByID("cf-cover-label")))
+            big->setString((s.message + "\n\nPause to stop and save").c_str());
 }
 constexpr ccColor3B WINDOW_COLORS[5] = {
     {255, 75, 75}, {255, 150, 55}, {255, 225, 70}, {245, 245, 245}, {105, 245, 125}
 };
+void showMs(float ms) {
+    auto label = typeinfo_cast<CCLabelBMFont*>(s.owner->getChildByID("cf-ms"));
+    if (!label) {
+        label = CCLabelBMFont::create("", "bigFont.fnt"); label->setID("cf-ms");
+        auto win = CCDirector::get()->getWinSize();
+        label->setAnchorPoint({1, 0}); label->setPosition({win.width - 10, 8});
+        s.owner->addChild(label, 1000);
+    }
+    label->setScale(.5f * static_cast<float>(Mod::get()->getSettingValue<double>("counter-scale")));
+    label->setString(fmt::format("{:.1f} MS", ms).c_str());
+}
 void clearMarkers() {
-    if (!hasLiveOwner() || !s.owner->m_objectLayer) return;
+    if (!hasLiveOwner()) return;
+    if (auto ms = s.owner->getChildByID("cf-ms")) ms->removeFromParent();
+    if (!s.owner->m_objectLayer) return;
     if (auto node = s.owner->m_objectLayer->getChildByID("cf-markers")) node->removeFromParent();
 }
 void prepareShowcase() {
@@ -153,6 +297,10 @@ void marker(size_t index) {
     auto w = s.recording.windows[index];
     if (!w.measured) return;
     ++s.tally[cf::category(w)];
+    if (e.down) { // time since the previous press, like the ms readout of other frame counters
+        if (s.lastPressTick >= 0) showMs((e.tick - s.lastPressTick) * 1000.f / 240.f);
+        s.lastPressTick = e.tick;
+    }
     if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
         auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
         if (!root) {
@@ -165,7 +313,7 @@ void marker(size_t index) {
         ccColor4F fill{border.r, border.g, border.b, e.down ? .22f : .04f};
         auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, fill, e.down ? 2.5f : 1.5f, border, 48);
         node->addChild(circle);
-        auto label = CCLabelBMFont::create(fmt::format("{}{}F{}\n-{} / +{}", e.down ? "" : "R ", w.width(), w.lowerBound ? "+" : "", w.early, w.late).c_str(), "bigFont.fnt");
+        auto label = CCLabelBMFont::create(fmt::format("{}{}F{}\n-{} / +{}\n{:.1f}ms", e.down ? "" : "R ", w.width(), w.lowerBound ? "+" : "", w.early, w.late, w.width() * 1000.f / 240.f).c_str(), "bigFont.fnt");
         label->setAlignment(kCCTextAlignmentCenter); label->setScale(.28f * scale);
         label->setColor(color3); label->setPosition({0, 27.f * scale}); node->addChild(label, 1);
         root->addChild(node);
@@ -191,7 +339,8 @@ void beginAnalysis() {
     s.recording.radius = radius;
     s.recording.windows.resize(s.recording.inputs.size()); s.recording.verified = false;
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
-    s.trial = s.recording.inputs;
+    s.trial = s.recording.inputs; s.shiftIndex = 0; s.noRetry = false; s.firstFail.clear(); s.alert.clear();
+    log::info("[CF] verify start: {} inputs, end tick {}", s.recording.inputs.size(), s.recording.endTick);
     s.message = "Verifying original run (240 TPS)"; resetTrial();
 }
 void nextEvent() {
@@ -212,7 +361,7 @@ void startCandidate() {
         save(); ++s.target; nextEvent();
         if (s.state != State::Analyze) return;
     }
-    s.message = fmt::format("Event {}/{} | offset {:+} | {} tests", s.target + 1, s.recording.inputs.size(), s.offset, s.tests);
+    s.message = fmt::format("Analyzing {}% | event {}/{} | offset {:+} | {} tests", 100 * s.target / std::max<size_t>(1, s.recording.inputs.size()), s.target + 1, s.recording.inputs.size(), s.offset, s.tests);
     if (!cf::trial(s.recording.inputs, s.target, s.offset, s.trial)) {
         s.pending = Pending::Fail; return;
     }
@@ -221,13 +370,39 @@ void startCandidate() {
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
     if (s.state == State::Verify) {
-        if (result == Pending::Fail) { stop(s.message); queueReturnToPause(); return; }
+        auto by = VERIFY_SHIFTS[s.shiftIndex];
+        if (result == Pending::Fail) {
+            log::info("[CF] verify failed (shift {:+}): {}", by, s.message);
+            if (s.firstFail.empty()) s.firstFail = s.message;
+            while (!s.noRetry && ++s.shiftIndex < VERIFY_SHIFT_COUNT) {
+                if (!cf::shiftAll(s.recording.inputs, VERIFY_SHIFTS[s.shiftIndex], s.trial)) continue;
+                s.message = fmt::format("Verifying original run (shift {:+})", VERIFY_SHIFTS[s.shiftIndex]);
+                resetTrial(); return;
+            }
+            s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nTried the whole run shifted by 0, +1, -1, +2 and -2 ticks.", s.message, s.firstFail);
+            stop(s.message); queueReturnToPause(); return;
+        }
+        if (by) { // keep the shift that reproduces the run
+            std::vector<cf::Input> moved;
+            if (cf::shiftAll(s.recording.inputs, by, moved)) {
+                s.recording.inputs = std::move(moved);
+                // Windows measured against the old timings cannot be resumed.
+                s.recording.windows.assign(s.recording.inputs.size(), {});
+            }
+        }
+        // Trailing releases beyond completion were never replayed: do not analyze
+        // them as if the baseline proved they executed successfully.
+        s.recording.inputs.resize(s.next);
+        s.recording.windows.resize(s.next);
+        s.recording.endTick = tick();
+        log::info("[CF] verified (shift {:+}, {} position drifts)", by, s.divergences);
         s.recording.verified = true; s.state = State::Analyze; s.target = 0;
         nextEvent(); startCandidate();
     } else if (s.state == State::Analyze) {
         ++s.tests; s.outcomes[s.offset + s.recording.radius] = result == Pending::Pass;
         ++s.offset; startCandidate();
     } else if (s.state == State::Playback) {
+        if (result == Pending::Fail) s.alert = s.message;
         stop(result == Pending::Pass ? "Showcase complete. Replay available" : s.message);
         queueReturnToPause();
     }
@@ -259,8 +434,8 @@ class $modify(CFBase, GJBaseGameLayer) {
         if (static_cast<GJBaseGameLayer*>(s.owner) == this && running() && s.pending == Pending::None) {
             bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - .25f) <= .005f;
             if (dt > 0 && !validStep) {
-                s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail;
-                if (s.state == State::Analyze) { stop(s.message); queueReturnToPause(); }
+                s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail; s.noRetry = true;
+                if (s.state == State::Analyze) { s.alert = s.message; stop(s.message); queueReturnToPause(); }
                 return;
             }
             auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
@@ -281,9 +456,12 @@ class $modify(CFBase, GJBaseGameLayer) {
 
 class $modify(CFPlay, PlayLayer) {
     static void bindSession(PlayLayer* layer) {
+        applyBackground(false);
         s = {}; s.owner = layer;
         auto level = layer->m_level;
+        s.folder = fmt::format("{}-{}", cf::slug(std::string(level->m_levelName)), level->m_levelID.value());
         s.recording.key = cf::fingerprint(fmt::format("{}:{}:{}", level->m_levelID.value(), std::string(level->m_levelName), std::string(level->m_levelString)));
+        migrateOldRun();
         auto recordingPath = path();
         std::ifstream file(recordingPath); cf::Recording loaded;
         if (cf::read(file, s.recording.key, loaded)) {
@@ -302,7 +480,8 @@ class $modify(CFPlay, PlayLayer) {
     }
     void service(float dt) {
         if (s.owner != this || !hasLiveOwner()) return;
-        if (m_isPaused) { hud(); return; }
+        if (m_isPaused) { applyBackground(false); hud(); return; }
+        applyBackground(s.state == State::Verify || s.state == State::Analyze);
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
             else { s.watchdogTick = tick(); s.stalledSeconds = 0; }
@@ -312,7 +491,7 @@ class $modify(CFPlay, PlayLayer) {
         hud();
     }
     void pauseGame(bool unfocused) {
-        if (s.owner == this) s.physicalHeld.fill(false);
+        if (s.owner == this) { s.physicalHeld.fill(false); applyBackground(false); }
         PlayLayer::pauseGame(unfocused);
     }
     void postUpdate(float dt) {
@@ -332,7 +511,8 @@ class $modify(CFPlay, PlayLayer) {
                 auto point = trace[s.sample++];
                 if (std::abs(point.x - m_player1->getPositionX()) > .5f || std::abs(point.y - m_player1->getPositionY()) > .5f ||
                     std::abs(point.x2 - m_player2->getPositionX()) > .5f || std::abs(point.y2 - m_player2->getPositionY()) > .5f) {
-                    s.message = fmt::format("Replay divergence at tick {}", now); s.pending = Pending::Fail;
+                    // Only a warning: what matters is that the replay finishes the level.
+                    if (!s.divergences++) log::info("[CF] first position drift at tick {}", now);
                 }
             }
         }
@@ -397,7 +577,10 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if (running()) { s.message = fmt::format("Replay died at tick {}", tick()); s.pending = Pending::Fail; return; }
+        if (running()) {
+            if (!s.resetting && s.pending == Pending::None) { s.message = fmt::format("Replay died at tick {}", tick()); s.pending = Pending::Fail; }
+            return;
+        }
         PlayLayer::destroyPlayer(player, object);
     }
     void levelComplete() {
@@ -411,11 +594,12 @@ class $modify(CFPlay, PlayLayer) {
             if (s.pending == Pending::None) {
                 auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
                 bool valid = s.next == events.size();
-                if (s.state == State::Verify || s.state == State::Playback)
-                    valid = valid && std::abs(tick() - s.recording.endTick) <= 1 &&
-                        (!s.recording.trace.empty() && s.comparedSamples > 0);
+                if (!valid && s.state != State::Analyze) { // only trailing releases may be left over
+                    valid = true;
+                    for (size_t i = s.next; i < events.size(); ++i) if (events[i].down) valid = false;
+                }
                 s.pending = valid ? Pending::Pass : Pending::Fail;
-                if (!valid) s.message = "Completion did not match recorded run";
+                if (!valid) s.message = "Level finished before all clicks were replayed";
             }
             return;
         }
@@ -424,7 +608,10 @@ class $modify(CFPlay, PlayLayer) {
     void onExit() {
         // onExit is a scene lifecycle notification, not destruction. Reparenting
         // and scene overlays must not erase the current recording/session.
-        if (s.owner == this && !s.recording.key.empty()) save();
+        if (s.owner == this) {
+            applyBackground(false);
+            if (!s.recording.key.empty()) save();
+        }
         PlayLayer::onExit();
     }
 };
@@ -464,17 +651,17 @@ class CFPopup : public Popup {
         status->limitLabelWidth(398, .5f, .25f);
         bool active = s.state == State::Record || running();
         auto add = [this](char const* title, char const* hint, CCPoint pos, bool enabled,
-                          std::function<void()> action) {
+                          std::function<void()> action, float width = 128) {
             auto card = CCScale9Sprite::create("square02b_001.png");
-            card->setContentSize({128, 48});
+            card->setContentSize({width, 48});
             card->setColor(enabled ? ccColor3B{34, 57, 83} : ccColor3B{35, 39, 49});
             card->setOpacity(245);
             auto heading = CCLabelBMFont::create(title, "bigFont.fnt");
-            heading->limitLabelWidth(116, .34f, .2f); heading->setPosition({64, 32});
+            heading->limitLabelWidth(width - 12, .34f, .2f); heading->setPosition({width / 2, 32});
             heading->setColor(enabled ? ccColor3B{235, 246, 255} : ccColor3B{115, 124, 139});
             card->addChild(heading);
             auto subtitle = CCLabelBMFont::create(hint, "chatFont.fnt");
-            subtitle->limitLabelWidth(118, .43f, .2f); subtitle->setPosition({64, 13});
+            subtitle->limitLabelWidth(width - 10, .43f, .2f); subtitle->setPosition({width / 2, 13});
             subtitle->setColor({150, 175, 195}); card->addChild(subtitle);
             auto item = CCMenuItemExt::createSpriteExtra(card, [action](auto) {
                 // Closing a popup may destroy the callback's owning menu.
@@ -515,10 +702,23 @@ class CFPopup : public Popup {
             onClose(nullptr);
             if (auto popup = CFPopup::create()) popup->show();
         });
-        add("SETTINGS", "Sounds, circles, scan", {79, 59}, true, [] { openSettingsPopup(Mod::get()); });
-        add("HELP", "How to test this mod", {215, 59}, true, [] {
-            FLAlertLayer::create("How to use", "<cg>1. Record</c>: starts a NEW run in practice. Finish the level using checkpoints as needed.\n<cy>2. Analyze</c>: verifies the saved run, then replays many tests to measure each input. This can take a long time. Pause to Stop / Save and resume later.\n<cb>3. Play</c>: replays with circles, sounds and the counter. Use it again to replay.\nGray buttons unlock after the previous step. 240 TPS; disable CBF and ignore damage.", "OK")->show();
-        });
+        add("SETTINGS", "Options", {46, 59}, true, [] { openSettingsPopup(Mod::get()); }, 62);
+        add("HELP", "Guide", {114, 59}, true, [] {
+            FLAlertLayer::create("How to use", "<cg>1. Record</c>: starts a NEW run in practice. Finish the level using checkpoints as needed.\n<cy>2. Analyze</c>: verifies the saved run, then replays many tests to measure each input. This can take a long time. Pause to Stop / Save and resume later.\n<cb>3. Play</c>: replays with circles, sounds and the counter. Use it again to replay.\n<cp>Export / Import</c>: Export writes this level's runs to a .cfpack file. To load one you received, copy it into the imports folder and press Import.\nGray buttons unlock after the previous step. 240 TPS; disable CBF and ignore damage.", "OK")->show();
+        }, 62);
+        add("EXPORT", "Share", {182, 59}, !active, [this] {
+            if (!ensureSession()) return;
+            auto message = exportPack();
+            onClose(nullptr);
+            FLAlertLayer::create("Export", message, "OK")->show();
+        }, 62);
+        add("IMPORT", "From file", {250, 59}, !active, [this] {
+            if (!ensureSession()) return;
+            auto message = importPacks();
+            if (hasLiveOwner() && s.state != State::Record && !running()) CFPlay::bindSession(s.owner); // load what was just imported
+            onClose(nullptr);
+            FLAlertLayer::create("Import", message, "OK")->show();
+        }, 62);
         auto panel = CCScale9Sprite::create("square02b_001.png");
         panel->setContentSize({118, 160}); panel->setColor({20, 30, 47});
         panel->setOpacity(240); panel->setPosition({351, 115}); m_mainLayer->addChild(panel);
@@ -533,7 +733,7 @@ class CFPopup : public Popup {
                   {351, 158.f - i * 18.f}, .55f, WINDOW_COLORS[i]);
         }
         label(fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.2.2", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.4.0", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

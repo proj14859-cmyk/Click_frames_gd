@@ -33,5 +33,12 @@ int main() {
     std::stringstream old("CLICKFRAMES 1"); assert(!cf::read(old,"test",loaded));
     std::stringstream truncated("CLICKFRAMES 2"); assert(!cf::read(truncated,"test",loaded));
     assert(cf::fingerprint("level-a") != cf::fingerprint("level-b"));
+    std::vector<cf::Input> run{{5,true,1,true,0.f,0.f},{9,false,1,true,0.f,0.f}}, moved;
+    assert(cf::shiftAll(run, -5, moved) && moved[0].tick == 0 && moved[1].tick == 4);
+    assert(!cf::shiftAll(run, -6, moved) && moved[0].tick == 0); // failed shift leaves out untouched
+    assert(cf::shiftAll(run, 2, run) && run[0].tick == 7 && run[1].tick == 11); // in place
+    run[0].tick = std::numeric_limits<int>::max();
+    auto previous = moved;
+    assert(!cf::shiftAll(run, 2, moved) && moved[0].tick == previous[0].tick);
     std::cout << "Timing tests passed\n";
 }
