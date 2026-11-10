@@ -14,6 +14,22 @@ struct CausalEvent {
     int tick = 0, kind = 0, object = 0, player = 0, detail = 0;
     bool operator==(CausalEvent const&) const = default;
 };
+inline bool countsAsCause(int kind) {
+    // kind 6 used to contain every gameEventTriggered broadcast. These include
+    // contact/material feedback even when no event trigger is listening.
+    return kind >= 1 && kind <= 8 && kind != 6;
+}
+inline std::string describeCause(CausalEvent const& e) {
+    constexpr char const* names[] = {"unknown", "orb-call", "trigger-contact", "pad", "teleport", "group-toggle", "raw-signal", "pickup", "event-trigger"};
+    std::ostringstream out;
+    out << "tick=" << e.tick << " kind=" << e.kind << '(' << (e.kind >= 0 && e.kind <= 8 ? names[e.kind] : "unknown")
+        << ") object=" << e.object << " player=" << e.player << " detail=" << e.detail;
+    return out.str();
+}
+inline std::string causalDifference(CausalEvent const* expected, CausalEvent const& observed, size_t index) {
+    return "Causal entry " + std::to_string(index) + "\nExpected: " + (expected ? describeCause(*expected) : "<end of reference>") +
+        "\nObserved: " + describeCause(observed);
+}
 inline bool sameCause(CausalEvent const& a, CausalEvent const& b, bool sameTick) {
     return (!sameTick || a.tick == b.tick) && a.kind == b.kind && a.object == b.object &&
         a.player == b.player && a.detail == b.detail;

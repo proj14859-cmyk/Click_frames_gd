@@ -1,5 +1,23 @@
 # Click Frames GD
 
+## v1.0.3 / 2026-11-10 / 21:58 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- El antiguo kind 6 mezclaba broadcasts de gameEventTriggered (contactos/materiales incluidos) con activaciones causales. Ya no participa en la paridad; los triggers de evento despachados por activateEventTrigger se registran como kind 8.
+- Las diferencias causales aceleradas tienen el mismo reintento sin batching que las fisicas, mediante un estado explicito. La paridad fisica, orbes, pads, teletransportes, grupos y pickups permanecen comprobados.
+- No se registran nuevos eventos despues de que el ensayo tenga un resultado pendiente, evitando sobrescribir el primer fallo.
+
+-Mejoras:
+- baseline-difference.txt muestra la entrada esperada y la observada con tick, clase, objeto, jugador y detalle. Tambien identifica una referencia agotada. El numero del aviso anterior era el indice de la entrada, no el ID de GJGameEvent.
+
+-Cambios:
+- Politica CF-ANALYSIS-3: Analyze invalida resultados de la politica anterior. Los formatos de captura y Edit no cambian.
+- No se ignoran arbitrariamente los primeros ticks ni se aprueban ensayos con fisica divergente. La imagen original no permite saber que GJGameEvent/material se comparo porque el aviso anterior no los mostraba.
+
+-Implementaciones:
+- raw-game-signals.tsv conserva hasta 64 avisos por intento (maximo 64 KiB por sesion) con event, material y playerID original, solo como diagnostico.
+- Pruebas de separacion de kind 6/8, diferencias reales y diagnosticos esperado/observado. Verificar el mismo nivel en Android sigue siendo necesario.
+
 ## v1.0.2 / 2026-11-10 / 21:48 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

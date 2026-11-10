@@ -1,4 +1,15 @@
-# Click Frames 1.0.2 — experimental
+# Click Frames 1.0.3 — experimental
+
+## Event broadcast versus trigger dispatch
+
+Do not feed every gameEventTriggered broadcast into route parity. These calls
+include ground/material feedback even without an Event Link listener. Kind 6
+is now diagnostic only, bounded in raw-game-signals.tsv with unmodified event,
+material and playerID fields. activateEventTrigger dispatches are kind 8.
+Actual trigger calls remain strict; this is not complete trigger graph coverage.
+Causal mismatch has one normal-cadence rebuild before rejecting the reference.
+baselineRetryPending replaces string matching for both physical/causal retries.
+First mismatch includes expected/observed event records and survives until save.
 
 ## Collision dictionary ownership regression
 

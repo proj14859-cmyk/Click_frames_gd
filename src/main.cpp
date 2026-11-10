@@ -180,6 +180,7 @@ struct Session {
     bool showcaseComplete = false;
     int baselinePass = 0, baselineEnd = 0;
     bool batchDisabled = false, confirmingBoundary = false;
+    bool baselineRetryPending = false;
     std::map<int, cf::Observation> baseline;
     size_t baselineCompared = 0;
     uint64_t batchUpdates = 0;
@@ -193,6 +194,8 @@ struct Session {
     std::array<CollisionState, 2> snapshotCollisions;
     std::shared_ptr<EngineState> snapshotEngineState;
     std::string parityDiagnostic;
+    std::string rawSignals;
+    size_t rawSignalCount = 0;
     std::vector<cf::CausalEvent> causalTrace;
     size_t causalCursor = 0, snapshotCausalCursor = 0;
     bool causalMismatch = false;
@@ -219,7 +222,8 @@ bool hasLiveOwner() {
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 void recordCause(int kind, GameObject* object, PlayerObject* player, int detail = 0) {
-    if (!hasLiveOwner() || s.resetting || (s.state != State::Verify && s.state != State::Analyze)) return;
+    if (!cf::countsAsCause(kind) || !hasLiveOwner() || s.resetting || s.pending != Pending::None ||
+        (s.state != State::Verify && s.state != State::Analyze)) return;
     if (player && player != s.owner->m_player1 && player != s.owner->m_player2) return;
     cf::CausalEvent e{tick(), kind, object ? object->m_uniqueID : 0,
         player == s.owner->m_player1 ? 1 : player == s.owner->m_player2 ? 2 : 0, detail};
@@ -230,8 +234,15 @@ void recordCause(int kind, GameObject* object, PlayerObject* player, int detail 
         !cf::sameCause(s.causalTrace[s.causalCursor], e, s.state == State::Verify || s.validatingSnapshot)) {
         s.causalMismatch = true;
         if (s.state == State::Verify) {
-            s.parityDiagnostic = fmt::format("Causal mismatch at tick {}, kind {}, object {}, event {}", tick(), kind, e.object, s.causalCursor);
-            s.message = s.parityDiagnostic; s.pending = Pending::Invalid;
+            auto expected = s.causalCursor < s.causalTrace.size() ? &s.causalTrace[s.causalCursor] : nullptr;
+            s.parityDiagnostic = cf::causalDifference(expected, e, s.causalCursor);
+            if (!s.batchDisabled && Mod::get()->getSettingValue<bool>("batch-analysis")) {
+                s.batchDisabled = true; s.baselinePass = 0; s.baselineRetryPending = true;
+                s.message = "Causal cadence mismatch; rebuilding baseline without batching"; s.pending = Pending::Fail;
+            } else {
+                s.message = fmt::format("Route differs at tick {} (kind {}). See baseline-difference.txt", tick(), kind);
+                s.pending = Pending::Invalid;
+            }
         } else if (s.validatingSnapshot) {
             s.message = "Snapshot causal mismatch; using full replay"; s.pending = Pending::Fail;
         }
@@ -337,10 +348,12 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-2\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+    report += fmt::format("Analysis policy: CF-ANALYSIS-3\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     report += "Parity diagnostic: " + s.parityDiagnostic + "\n";
     if (!s.parityDiagnostic.empty()) view("baseline-difference.txt", s.parityDiagnostic + "\n");
+    if (!s.rawSignals.empty() && (flushPredictions || (s.state != State::Analyze && s.state != State::Verify)))
+        view("raw-game-signals.tsv", "pass\ttick\tevent\tmaterial\tplayer-id\n" + s.rawSignals);
     if (!s.recoveryReport.empty()) view("flight-recoveries.tsv", "event\toffset\tneighbor\tadjustment\trecovered\n" + s.recoveryReport);
     std::error_code reportError;
     if (changedCapture || s.reportDirty || !std::filesystem::exists(path().parent_path() / "scan-report.txt", reportError)) view("scan-report.txt", report);
@@ -567,6 +580,7 @@ void resetTrial() {
     s.activeJump.fill(size_t(-1)); s.airborne.fill(false); s.localLandingPassed = false;
     s.targetExecuted = false; s.segmentMissed = false; s.rejoinStreak = 0;
     if (s.state == State::Verify) {
+        s.rawSignalCount = 0;
         if (s.baselinePass == 0) { s.baseline.clear(); s.updateSchedule.clear(); s.causalTrace.clear(); }
         s.referenceLandings.assign(s.recording.inputs.size(), {});
         s.referencePhysics.clear(); s.referenceTrace.clear(); s.nativePool.clear();
@@ -826,7 +840,7 @@ void beginAnalysis() {
     });
     bool regenerate = s.recording.ready() && !havePreview && Mod::get()->getSettingValue<bool>("trajectory-preview");
     bool changed = s.recording.radius != radius || s.recording.analysisPolicy != policy || regenerate ||
-        cf::readFile(path().parent_path() / "analysis-policy.txt") != "CF-ANALYSIS-2\n";
+        cf::readFile(path().parent_path() / "analysis-policy.txt") != "CF-ANALYSIS-3\n";
     if (changed) { s.recording.windows.clear(); s.predictions.clear(); }
     s.recording.analysisPolicy = policy;
     s.snapshot = nullptr; s.snapshotChecked = false;
@@ -837,13 +851,14 @@ void beginAnalysis() {
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
     s.baselinePass = 0; s.baseline.clear(); s.baselineCompared = 0;
     s.initialSharedSeed = GameToolbox::getfast_srand(); s.parityDiagnostic.clear();
+    s.rawSignals.clear(); s.rawSignalCount = 0; s.baselineRetryPending = false;
     s.recoveringFlight = false; s.recoveryReport.clear();
     s.batchDisabled = false; s.confirmingBoundary = false; s.batchUpdates = 0;
     s.trial = s.recording.inputs; s.shiftIndex = 0; s.noRetry = false; s.firstFail.clear(); s.alert.clear();
     s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
     s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
     s.reportDirty = true;
-    cf::replaceChanged(path().parent_path() / "analysis-policy.txt", "CF-ANALYSIS-2\n");
+    cf::replaceChanged(path().parent_path() / "analysis-policy.txt", "CF-ANALYSIS-3\n");
     s.measurableTotal = std::count_if(s.recording.inputs.begin(), s.recording.inputs.end(), cf::counted); analysisClock(true);
     log::info("[CF] verify start: {} inputs, end tick {}", s.recording.inputs.size(), s.recording.endTick);
     s.message = "Verifying original run (240 TPS)"; resetTrial();
@@ -911,7 +926,8 @@ void consume() {
     if (s.state == State::Verify) {
         auto by = VERIFY_SHIFTS[s.shiftIndex];
         if (result == Pending::Fail) {
-            if (s.batchDisabled && s.baselinePass == 0 && s.message == "Batch parity failed; rebuilding baseline at normal cadence") {
+            if (s.baselineRetryPending) {
+                s.baselineRetryPending = false;
                 s.baselineCompared = 0; resetTrial(); return;
             }
             if (s.baselinePass > 0) {
@@ -1099,9 +1115,16 @@ class $modify(CFPlayer, PlayerObject) {
 class $modify(CFBase, GJBaseGameLayer) {
     void gameEventTriggered(GJGameEvent event, int material, int playerID) {
         GJBaseGameLayer::gameEventTriggered(event, material, playerID);
-        if (static_cast<GJBaseGameLayer*>(s.owner) == this)
-            recordCause(6, nullptr, playerID == 1 ? m_player1 : playerID == 2 ? m_player2 : nullptr,
-                int(event) * 1024 + material);
+        // Keep raw broadcasts for diagnosis; only the actual event-trigger
+        // dispatch below is part of route parity. Preserve playerID verbatim.
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this && s.state == State::Verify && !s.resetting && s.rawSignalCount < 64 && s.rawSignals.size() < 65536) {
+            s.rawSignals += fmt::format("{}\t{}\t{}\t{}\t{}\n", s.baselinePass, tick(), int(event), material, playerID);
+            ++s.rawSignalCount;
+        }
+    }
+    void activateEventTrigger(EventLinkTrigger* object, gd::vector<int> const& remapKeys) {
+        GJBaseGameLayer::activateEventTrigger(object, remapKeys);
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this) recordCause(8, object, nullptr);
     }
     void pickupItem(EffectGameObject* object) {
         GJBaseGameLayer::pickupItem(object);
@@ -1167,6 +1190,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                     if (it == s.baseline.end() || !cf::matches(it->second, current)) {
                         if (!s.batchDisabled) {
                             s.batchDisabled = true; s.baselinePass = 0;
+                            s.baselineRetryPending = true;
                             s.message = "Batch parity failed; rebuilding baseline at normal cadence";
                             s.pending = Pending::Fail;
                         } else {
@@ -1855,7 +1879,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.2", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.3", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

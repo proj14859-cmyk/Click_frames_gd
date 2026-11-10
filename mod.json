@@ -3,7 +3,7 @@
   "gd": { "win": "2.2081", "android": "2.2081" },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.2",
+  "version": "v1.0.3",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": { "files": ["resources/*.wav"] },
