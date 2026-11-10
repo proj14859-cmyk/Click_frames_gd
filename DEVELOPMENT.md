@@ -1,4 +1,15 @@
-# Click Frames 0.10.1 — experimental
+# Click Frames 1.0.0 — experimental
+
+The scan scheduler runs the ordinary scheduler chain in bounded 8 ms batches,
+at most 256 fixed 1/240 s slices. The first baseline uses ordinary cadence;
+two repeats compare pre-command observations. A mismatch rebuilds without
+batching; a second mismatch aborts without producing a window. No direct
+GJBaseGameLayer update bypass or concurrent physics threads are used.
+This advances all scheduled targets and cannot isolate private mod state.
+Native snapshots retain native GD checkpoint coverage, not universal engine
+coverage. Local rejoin compares observable player state for four grounded
+ticks, not trigger equivalence. Local horizons remain explicitly scoped.
+Wave corridor and flight recovery algorithms and fractional CBF are pending.
 
 ## Successful showcase completion
 

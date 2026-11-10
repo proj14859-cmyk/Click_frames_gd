@@ -3,6 +3,18 @@
 #include <map>
 
 namespace cf {
+// Compare engine observations at the same pre-command physics tick, not at
+// render callbacks. Hidden trigger state still requires full continuation probes.
+struct Observation {
+    std::array<double, 12> values{};
+    std::array<int, 9> flags{};
+    bool operator==(Observation const&) const = default;
+};
+inline bool matches(Observation const& a, Observation const& b) {
+    for (auto v : a.values) if (!std::isfinite(v)) return false;
+    for (auto v : b.values) if (!std::isfinite(v)) return false;
+    return a == b;
+}
 inline bool allPressesDispatched(std::vector<Input> const& events, size_t next) {
     return next <= events.size() && std::none_of(events.begin() + next, events.end(), [](auto const& e) { return e.down; });
 }

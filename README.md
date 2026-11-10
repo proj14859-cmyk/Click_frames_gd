@@ -1,5 +1,27 @@
 # Click Frames GD
 
+## v1.0.0 / 2026-11-10 / 22:00 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Timeout, bloqueo y muerte anterior al input modificado dejan la ventana sin medir. Una zona local distinta ya no se convierte automaticamente en fallo fisico.
+- Verify parte de capture.flr en cada analisis; la alineacion se aplica solo al playback. Las medidas previas se invalidan si cambia esa alineacion.
+
+-Mejoras:
+- Scheduler por lotes de hasta 256 slices, con presupuesto de 8 ms por pantalla. Conserva el orden normal de actualizaciones y hooks; el nivel permanece oculto entre slices.
+- Tres referencias comparan por tick coordenadas, velocidad vertical, escala, rotacion, modo, gravedad, suelo, dual y botones. La primera corre con cadencia normal; si los lotes divergen, se reconstruye sin aceleracion.
+- Cache nativa activada por defecto: hasta 64 entradas, limites de estados de objetos y validacion de continuacion fisica antes de reutilizar. Las fronteras estrechas fallidas se confirman desde cero sin batching.
+
+-Cambios:
+- El alcance LOCAL sigue siendo local: acepta reconvergencia observable durante cuatro ticks de suelo o el horizonte configurado. No certifica igualdad de todo el estado oculto de triggers ni el resto de la run. FULL conserva la comprobacion hasta el final.
+- Los resultados anteriores a esta politica se recalculan al pulsar Analyze. Los de la nueva politica se pueden reanudar; Edit y sus archivos permanecen separados.
+- La aceleracion afecta al scheduler global mientras se analiza; otros mods pueden impedir la paridad. Desactivar Batched analysis permite comparar el comportamiento.
+
+-Implementaciones:
+- Comparacion fisica exacta de observaciones finitas, fallback de cadencia, errores tecnicos separados y marca analysis-policy.txt.
+- Alcance pendiente del plan amplio: snapshots universales independientes de checkpoints, traza causal completa de orbes/triggers, geometria analitica Wave, recuperacion de inputs de vuelo y adaptador CBF fraccionario. Esta version no implementa esas partes ni garantiza tres segundos.
+
+Prueba de dispositivo necesaria: repetir un analisis nuevo con el mismo capture, comparar ventanas FULL/LOCAL y tiempos, pausar/cancelar, comprobar restauracion de musica y probar Play/Edit hasta finalizacion nativa. Compilar no prueba rendimiento ni determinismo dentro de GD.
+
 ## v0.10.1 / 2026-11-10 / 20:17 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

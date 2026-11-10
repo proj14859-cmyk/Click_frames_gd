@@ -3,6 +3,12 @@
 #include <sstream>
 #include <iostream>
 int main() {
+    cf::Observation original, repeated;
+    assert(cf::matches(original, repeated));
+    repeated.values[2] = .000001; assert(!cf::matches(original, repeated));
+    repeated = original; repeated.flags[7] = 1; assert(!cf::matches(original, repeated));
+    repeated = original; repeated.values[0] = std::numeric_limits<double>::quiet_NaN();
+    assert(!cf::matches(repeated, repeated));
     std::vector<cf::Input> endInputs{{10, true, 1, true}, {15, false, 1, true}};
     assert(!cf::allPressesDispatched(endInputs, 0));
     assert(cf::allPressesDispatched(endInputs, 1));
