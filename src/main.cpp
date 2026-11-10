@@ -125,9 +125,10 @@ void save() {
     std::ostringstream text; cf::write(text, s.recording);
     if (!writeSafe(path(), text.str())) { s.message = "Could not save recording"; return; }
     auto view = [](std::string const& name, std::string const& data) {
+        auto digest = cf::fingerprint(data);
         auto it = s.savedViews.find(name);
-        if (it != s.savedViews.end() && it->second == data) return;
-        if (writeSafe(path().parent_path() / name, data)) s.savedViews[name] = data;
+        if (it != s.savedViews.end() && it->second == digest) return;
+        if (writeSafe(path().parent_path() / name, data)) s.savedViews[name] = digest;
         else s.message = "Capture saved; could not update report files";
     };
     view("metadata.json", cf::metadataJson(s.recording));

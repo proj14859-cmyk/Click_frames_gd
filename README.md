@@ -7,6 +7,7 @@
 
 -Mejoras:
 - Inputs, trayectoria y márgenes accesibles por nivel. Los informes sin cambios no se reescriben durante la misma sesión.
+- La caché de informes guarda hashes en lugar de duplicar en memoria las trayectorias CSV.
 
 -Cambios:
 - Ubicación activa: `recordings/<nombre>-<id>/<fingerprint>/capture.cfr`.
