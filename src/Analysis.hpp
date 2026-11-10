@@ -6,7 +6,7 @@ namespace cf {
 // Compare engine observations at the same pre-command physics tick, not at
 // render callbacks. Hidden trigger state still requires full continuation probes.
 struct Observation {
-    std::array<double, 12> values{};
+    std::array<double, 13> values{};
     std::array<int, 9> flags{};
     bool operator==(Observation const&) const = default;
 };

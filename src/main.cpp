@@ -130,13 +130,13 @@ int playerMode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
         p->m_isRobot ? 5 : p->m_isSpider ? 6 : p->m_isSwing ? 7 : 0;
 }
-cf::Observation observation() {
+cf::Observation observation(float dt) {
     auto a = s.owner->m_player1, b = s.owner->m_player2;
     cf::Observation o;
     o.values = {a->getPositionX(), a->getPositionY(), a->m_yVelocity,
         b->getPositionX(), b->getPositionY(), b->m_yVelocity,
         a->getScaleX(), a->getScaleY(), b->getScaleX(), b->getScaleY(),
-        a->getRotation(), b->getRotation()};
+        a->getRotation(), b->getRotation(), dt};
     int held = 0; for (size_t i = 0; i < s.injectedHeld.size(); ++i) if (s.injectedHeld[i]) held |= 1 << i;
     o.flags = {playerMode(a), playerMode(b), a->m_isUpsideDown, b->m_isUpsideDown,
         a->m_isOnGround, b->m_isOnGround, s.owner->m_gameState.m_isDualMode, held, int(s.next)};
@@ -223,6 +223,8 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
+    report += fmt::format("Analysis policy: CF-ANALYSIS-1\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+        s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     std::error_code reportError;
     if (changedCapture || s.reportDirty || !std::filesystem::exists(path().parent_path() / "scan-report.txt", reportError)) view("scan-report.txt", report);
     // Windows are checkpointed per event, but large derived predictions only at
@@ -949,7 +951,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             }
             int now = tick();
             if (s.state == State::Verify) {
-                auto current = observation();
+                auto current = observation(dt);
                 if (s.baselinePass == 0) {
                     if (s.baseline.size() >= 250000 && !s.baseline.contains(now)) {
                         s.message = "Reference exceeds observation memory limit"; s.pending = Pending::Invalid; return;
@@ -973,7 +975,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             }
             if (s.state == State::Analyze && s.validatingSnapshot) {
                 auto it = s.baseline.find(now);
-                if (it == s.baseline.end() || !cf::matches(it->second, observation())) {
+                if (it == s.baseline.end() || !cf::matches(it->second, observation(dt))) {
                     s.message = "Snapshot physics parity failed; using full replay"; s.pending = Pending::Fail; return;
                 }
             }
@@ -982,7 +984,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 auto it = s.baseline.find(now);
                 bool grounded = s.owner->m_player1->m_isOnGround &&
                     (!s.owner->m_gameState.m_isDualMode || s.owner->m_player2->m_isOnGround);
-                bool same = grounded && it != s.baseline.end() && cf::matches(it->second, observation());
+                bool same = grounded && it != s.baseline.end() && cf::matches(it->second, observation(dt));
                 s.rejoinStreak = same ? s.rejoinStreak + 1 : 0;
                 if (s.rejoinStreak >= 4) {
                     s.message = "Observable physics rejoined (local window)";

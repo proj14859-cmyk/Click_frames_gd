@@ -1,6 +1,6 @@
 # Click Frames GD
 
-## v1.0.0 / 2026-11-10 / 22:00 UTC / GD 2.2081 / Geode 5.11.2
+## v1.0.0 / 2026-11-10 / 20:56 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
 - Timeout, bloqueo y muerte anterior tanto al input original como al desplazado dejan la ventana sin medir. Morir esperando un salto retrasado sigue siendo fallo fisico valido. Una zona local distinta ya no se convierte automaticamente en fallo fisico.
