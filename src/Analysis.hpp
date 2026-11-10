@@ -7,14 +7,35 @@ namespace cf {
 // render callbacks. Hidden trigger state still requires full continuation probes.
 struct Observation {
     std::array<double, 13> values{};
-    std::array<int, 9> flags{};
+    std::array<int, 10> flags{};
     bool operator==(Observation const&) const = default;
 };
-inline bool matches(Observation const& a, Observation const& b) {
-    for (auto v : a.values) if (!std::isfinite(v)) return false;
-    for (auto v : b.values) if (!std::isfinite(v)) return false;
-    return a == b;
+struct CausalEvent {
+    int tick = 0, kind = 0, object = 0, player = 0, detail = 0;
+    bool operator==(CausalEvent const&) const = default;
+};
+inline bool sameCause(CausalEvent const& a, CausalEvent const& b, bool sameTick) {
+    return (!sameTick || a.tick == b.tick) && a.kind == b.kind && a.object == b.object &&
+        a.player == b.player && a.detail == b.detail;
 }
+inline std::string difference(Observation const& a, Observation const& b) {
+    constexpr char const* names[] = {"p1.x", "p1.y", "p1.vy", "p2.x", "p2.y", "p2.vy",
+        "p1.size", "p1.speed", "p2.size", "p2.speed", "visual.p1.rotation", "visual.p2.rotation", "step.dt"};
+    bool dual = a.flags[6] || b.flags[6];
+    for (size_t i = 0; i < a.flags.size(); ++i) {
+        if (!dual && (i == 1 || i == 3 || i == 5)) continue;
+        if (a.flags[i] != b.flags[i]) return "flag[" + std::to_string(i) + "]: " + std::to_string(a.flags[i]) + " -> " + std::to_string(b.flags[i]);
+    }
+    for (size_t i = 0; i < a.values.size(); ++i) {
+        if (i == 10 || i == 11 || (!dual && (i == 3 || i == 4 || i == 5 || i == 8 || i == 9))) continue;
+        double tolerance = (i == 0 || i == 1 || i == 3 || i == 4) ? .0001 : 1e-8;
+        if (!std::isfinite(a.values[i]) || !std::isfinite(b.values[i]) || std::abs(a.values[i] - b.values[i]) > tolerance) {
+            std::ostringstream out; out << std::setprecision(17) << names[i] << ": " << a.values[i] << " -> " << b.values[i]; return out.str();
+        }
+    }
+    return {};
+}
+inline bool matches(Observation const& a, Observation const& b) { return difference(a, b).empty(); }
 inline bool candidateTrial(std::vector<Input> const& source, size_t index, int offset, std::vector<Input>& out) {
     if (index >= source.size()) return false;
     auto const& press = source[index];
@@ -33,6 +54,16 @@ inline bool candidateTrial(std::vector<Input> const& source, size_t index, int o
         break;
     }
     return trial(adjusted, index, offset, out);
+}
+inline bool recoveryTrial(std::vector<Input> const& source, size_t target, int offset, size_t neighbor, int change, std::vector<Input>& out) {
+    if (target >= source.size() || neighbor <= target || neighbor >= source.size() ||
+        source[target].p1 != source[neighbor].p1) return false;
+    std::vector<Input> first;
+    if (!trial(source, neighbor, change, first)) return false;
+    auto found = std::find_if(first.begin(), first.end(), [target](auto const& e) { return e.sourceIndex == target; });
+    if (found == first.end() || !candidateTrial(first, size_t(found - first.begin()), offset, out)) return false;
+    for (auto& e : out) e.sourceIndex = first[e.sourceIndex].sourceIndex;
+    return true;
 }
 inline bool allPressesDispatched(std::vector<Input> const& events, size_t next) {
     return next <= events.size() && std::none_of(events.begin() + next, events.end(), [](auto const& e) { return e.down; });

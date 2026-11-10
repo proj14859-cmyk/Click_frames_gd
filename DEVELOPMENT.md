@@ -1,4 +1,21 @@
-# Click Frames 1.0.0 — experimental
+# Click Frames 1.0.1 — experimental
+
+The v1.0.0 comparator included sprite rotation/scale and inactive P2. These are
+not reliable gameplay state. v1.0.1 compares vehicleSize/playerSpeed, skips
+inactive P2 and visual rotations, and uses small absolute rounding tolerances.
+Every failed comparison writes the first differing field with 17-digit values.
+The scheduler now records the first run's dt sequence and repeats that grouping
+at both normal and batched cadence. Native states carry the scheduler cursor,
+shared fast_srand state, copied GJGameState, copied collision dictionaries and
+the causal cursor. Copies remain per-session and are never raw memory dumps.
+
+Causal instrumentation covers ringJump invocations, touched triggers, pads,
+teleports, toggles, game events and pickups. These are observed calls, not a
+complete graph of all trigger overrides. Baselines/restores require exact event
+tick and order; candidates require matching order for local acceptance. Flight
+recovery changes one neighboring input +/-1 and reports evidence separately.
+It never widens the fixed-route window. Snapshot universality, complete causal
+coverage, analytical wave geometry and fractional CBF remain unimplemented.
 
 The scan scheduler runs the ordinary scheduler chain in bounded 8 ms batches,
 at most 256 fixed 1/240 s slices. The first baseline uses ordinary cadence;

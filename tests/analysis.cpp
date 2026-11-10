@@ -9,12 +9,26 @@ int main() {
     repeated = original; repeated.flags[7] = 1; assert(!cf::matches(original, repeated));
     repeated = original; repeated.values[0] = std::numeric_limits<double>::quiet_NaN();
     assert(!cf::matches(repeated, repeated));
+    repeated = original; repeated.values[10] = 90; repeated.values[4] = 999;
+    repeated.flags[1] = 4; assert(cf::matches(original, repeated)); // Visual rotation and inactive P2.
+    original.flags[6] = repeated.flags[6] = 1; assert(!cf::matches(original, repeated));
+    original = {}; repeated = {}; repeated.values[0] = .00001; assert(cf::matches(original, repeated));
+    repeated.values[0] = .01; assert(!cf::matches(original, repeated));
+    cf::CausalEvent cause{10, 1, 22, 1, 0}, later{11, 1, 22, 1, 0};
+    assert(cf::sameCause(cause, later, false) && !cf::sameCause(cause, later, true));
+    later.object = 23; assert(!cf::sameCause(cause, later, false));
     std::vector<cf::Input> tap{{10, true, 1, true, 0, 0, 0}, {11, false, 1, true, 0, 0, 0}, {20, true, 1, true, 0, 0, 0}}, moved;
     assert(cf::candidateTrial(tap, 0, 3, moved));
     assert(moved[0].tick == 13 && moved[1].tick == 14);
     assert(!cf::candidateTrial(tap, 0, 10, moved));
     tap[0].mode = tap[1].mode = 5;
     assert(!cf::candidateTrial(tap, 0, 3, moved)); // Robot release remains independently meaningful.
+    std::vector<cf::Input> flight{{10, true, 1, true, 0, 0, 1}, {20, false, 1, true, 0, 0, 1}, {30, true, 1, true, 0, 0, 1}};
+    assert(cf::recoveryTrial(flight, 0, 1, 1, -1, moved));
+    assert(moved[0].tick == 11 && moved[1].tick == 19 && moved[2].tick == 30);
+    for (size_t i = 0; i < moved.size(); ++i) assert(moved[i].sourceIndex == i);
+    assert(!cf::recoveryTrial(flight, 0, 1, 1, -15, moved));
+    assert(!cf::recoveryTrial(flight, 0, 1, 0, 1, moved));
     std::vector<cf::Input> endInputs{{10, true, 1, true}, {15, false, 1, true}};
     assert(!cf::allPressesDispatched(endInputs, 0));
     assert(cf::allPressesDispatched(endInputs, 1));

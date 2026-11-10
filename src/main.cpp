@@ -18,6 +18,7 @@
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <sstream>
 using namespace geode::prelude;
 
@@ -25,6 +26,24 @@ namespace {
 enum class State { Idle, Record, Verify, Analyze, Ready, Playback };
 enum class Pending { None, Pass, Fail, Invalid };
 struct Checkpoint { size_t inputs, trace; std::array<bool, 6> held; };
+struct CollisionState {
+    std::array<Ref<CCDictionary>, 4> logs;
+    std::array<int, 4> last{};
+};
+CollisionState captureCollisions(PlayerObject* p) {
+    return {{{CCDictionary::createWithDictionary(p->m_collisionLogTop), CCDictionary::createWithDictionary(p->m_collisionLogBottom),
+        CCDictionary::createWithDictionary(p->m_collisionLogLeft), CCDictionary::createWithDictionary(p->m_collisionLogRight)}},
+        {p->m_lastCollisionTop, p->m_lastCollisionBottom, p->m_lastCollisionLeft, p->m_lastCollisionRight}};
+}
+void restoreCollisions(PlayerObject* p, CollisionState const& state) {
+    CCDictionary** targets[] = {&p->m_collisionLogTop, &p->m_collisionLogBottom, &p->m_collisionLogLeft, &p->m_collisionLogRight};
+    for (size_t i = 0; i < 4; ++i) {
+        auto copy = CCDictionary::createWithDictionary(state.logs[i].data());
+        copy->retain(); (*targets[i])->release(); *targets[i] = copy;
+    }
+    p->m_lastCollisionTop = state.last[0]; p->m_lastCollisionBottom = state.last[1];
+    p->m_lastCollisionLeft = state.last[2]; p->m_lastCollisionRight = state.last[3];
+}
 struct NativeState {
     Ref<CheckpointObject> checkpoint;
     int tick = 0; size_t next = 0;
@@ -32,6 +51,11 @@ struct NativeState {
     gd::vector<PlayerButtonCommand> buttons;
     gd::vector<RecordButtonCommand> recorded, replay;
     uint64_t randomSeed = 0, replaySeed = 0;
+    uint64_t sharedSeed = 0;
+    size_t scheduleCursor = 0;
+    size_t causalCursor = 0;
+    std::array<CollisionState, 2> collisions;
+    std::shared_ptr<GJGameState> engineState;
     double extraDelta = 0;
     int step = 0, recordedSize = 0, resumeTimer = 0;
     bool checked = false, rejected = false, failureConfirmed = false;
@@ -109,6 +133,20 @@ struct Session {
     size_t nativeObjectStates = 0;
     int rejoinStreak = 0;
     std::vector<int> previousPlaybackTicks;
+    std::vector<float> updateSchedule;
+    size_t scheduleCursor = 0;
+    uint64_t initialSharedSeed = 0, snapshotSharedSeed = 0;
+    size_t snapshotScheduleCursor = 0;
+    std::array<CollisionState, 2> snapshotCollisions;
+    std::shared_ptr<GJGameState> snapshotEngineState;
+    std::string parityDiagnostic;
+    std::vector<cf::CausalEvent> causalTrace;
+    size_t causalCursor = 0, snapshotCausalCursor = 0;
+    bool causalMismatch = false;
+    bool recoveringFlight = false;
+    int recoveryChange = -1;
+    size_t recoveryNeighbor = 0;
+    std::string recoveryReport;
     uint64_t physicsCalls = 0, restores = 0, restoreFallbacks = 0;
     double analysisSeconds = 0;
     bool analysisClock = false;
@@ -127,6 +165,25 @@ bool hasLiveOwner() {
 }
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
+void recordCause(int kind, GameObject* object, PlayerObject* player, int detail = 0) {
+    if (!hasLiveOwner() || s.resetting || (s.state != State::Verify && s.state != State::Analyze)) return;
+    cf::CausalEvent e{tick(), kind, object ? object->m_uniqueID : 0,
+        player == s.owner->m_player1 ? 1 : player == s.owner->m_player2 ? 2 : 0, detail};
+    if (s.state == State::Verify && s.baselinePass == 0) {
+        if (s.causalTrace.size() >= 1000000) { s.message = "Causal trace exceeds memory limit"; s.pending = Pending::Invalid; return; }
+        s.causalTrace.push_back(e);
+    } else if (s.causalCursor >= s.causalTrace.size() ||
+        !cf::sameCause(s.causalTrace[s.causalCursor], e, s.state == State::Verify || s.validatingSnapshot)) {
+        s.causalMismatch = true;
+        if (s.state == State::Verify) {
+            s.parityDiagnostic = fmt::format("Causal mismatch at tick {}, kind {}, object {}, event {}", tick(), kind, e.object, s.causalCursor);
+            s.message = s.parityDiagnostic; s.pending = Pending::Invalid;
+        } else if (s.validatingSnapshot) {
+            s.message = "Snapshot causal mismatch; using full replay"; s.pending = Pending::Fail;
+        }
+    }
+    ++s.causalCursor;
+}
 int playerMode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
         p->m_isRobot ? 5 : p->m_isSpider ? 6 : p->m_isSwing ? 7 : 0;
@@ -136,11 +193,11 @@ cf::Observation observation(float dt) {
     cf::Observation o;
     o.values = {a->getPositionX(), a->getPositionY(), a->m_yVelocity,
         b->getPositionX(), b->getPositionY(), b->m_yVelocity,
-        a->getScaleX(), a->getScaleY(), b->getScaleX(), b->getScaleY(),
+        a->m_vehicleSize, a->m_playerSpeed, b->m_vehicleSize, b->m_playerSpeed,
         a->getRotation(), b->getRotation(), dt};
     int held = 0; for (size_t i = 0; i < s.injectedHeld.size(); ++i) if (s.injectedHeld[i]) held |= 1 << i;
     o.flags = {playerMode(a), playerMode(b), a->m_isUpsideDown, b->m_isUpsideDown,
-        a->m_isOnGround, b->m_isOnGround, s.owner->m_gameState.m_isDualMode, held, int(s.next)};
+        a->m_isOnGround, b->m_isOnGround, s.owner->m_gameState.m_isDualMode, held, int(s.next), int(s.causalCursor)};
     return o;
 }
 void observeLanding() {
@@ -226,13 +283,21 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-1\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+    report += fmt::format("Analysis policy: CF-ANALYSIS-2\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
+    report += "Parity diagnostic: " + s.parityDiagnostic + "\n";
+    if (!s.parityDiagnostic.empty()) view("baseline-difference.txt", s.parityDiagnostic + "\n");
+    if (!s.recoveryReport.empty()) view("flight-recoveries.tsv", "event\toffset\tneighbor\tadjustment\trecovered\n" + s.recoveryReport);
     std::error_code reportError;
     if (changedCapture || s.reportDirty || !std::filesystem::exists(path().parent_path() / "scan-report.txt", reportError)) view("scan-report.txt", report);
     // Windows are checkpointed per event, but large derived predictions only at
     // Stop/completion/exit rather than repeatedly rewriting them while scanning.
     if (flushPredictions || (s.state != State::Analyze && s.state != State::Verify)) {
+        if (!s.causalTrace.empty()) {
+            std::ostringstream causes; causes << "tick\tkind\tobject\tplayer\tdetail\n";
+            for (auto const& e : s.causalTrace) causes << e.tick << '\t' << e.kind << '\t' << e.object << '\t' << e.player << '\t' << e.detail << '\n';
+            view("baseline-causes.tsv", causes.str());
+        }
         std::ostringstream predictions; cf::writePredictions(predictions, workingDigest(), s.predictions);
         view("prediction-trails.txt", predictions.str());
     }
@@ -391,6 +456,7 @@ void stop(std::string message) {
     analysisClock(false);
     s.state = s.recording.ready() ? State::Ready : State::Idle;
     s.snapshot = nullptr; s.snapshotChecked = false;
+    s.snapshotEngineState.reset(); s.snapshotCollisions = {};
     s.validatingSnapshot = false;
     s.fullRestartRetry = false;
     s.nativePool.clear(); s.referenceTrace.clear(); s.activeNative = -1;
@@ -408,6 +474,9 @@ void resetTrial() {
     s.owner->removeAllCheckpoints();
     if (!Mod::get()->getSettingValue<bool>("native-states")) { s.snapshot = nullptr; s.snapshotChecked = false; }
     bool restoring = s.snapshot && (s.validatingSnapshot || s.snapshotChecked) && !s.fullRestartRetry;
+    s.scheduleCursor = restoring ? s.snapshotScheduleCursor : 0;
+    s.causalCursor = restoring ? s.snapshotCausalCursor : 0; s.causalMismatch = false;
+    if (s.state == State::Verify || s.state == State::Analyze) GameToolbox::fast_srand(s.initialSharedSeed);
     if (restoring) {
         ++s.restores;
         s.internalCheckpoint = true;
@@ -423,6 +492,7 @@ void resetTrial() {
             ++s.restoreFallbacks;
             if (s.activeNative >= 0) s.nativePool[s.activeNative].rejected = true;
             s.snapshot = nullptr; s.snapshotChecked = false;
+            s.scheduleCursor = 0; s.causalCursor = 0;
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
         } else {
             s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld;
@@ -432,6 +502,10 @@ void resetTrial() {
             s.owner->m_randomSeed = s.snapshotRandomSeed; s.owner->m_replayRandSeed = s.snapshotReplaySeed;
             s.owner->m_extraDelta = s.snapshotExtraDelta; s.owner->m_currentStep = s.snapshotStep;
             s.owner->m_queuedRecordedButtonsSize = s.snapshotRecordedSize; s.owner->m_resumeTimer = s.snapshotResumeTimer;
+            GameToolbox::fast_srand(s.snapshotSharedSeed);
+            if (s.snapshotEngineState) s.owner->m_gameState = *s.snapshotEngineState;
+            restoreCollisions(s.owner->m_player1, s.snapshotCollisions[0]);
+            restoreCollisions(s.owner->m_player2, s.snapshotCollisions[1]);
         }
     }
     s.watchdogTick = -1; s.stalledSeconds = 0;
@@ -439,7 +513,7 @@ void resetTrial() {
     s.activeJump.fill(size_t(-1)); s.airborne.fill(false); s.localLandingPassed = false;
     s.targetExecuted = false; s.segmentMissed = false; s.rejoinStreak = 0;
     if (s.state == State::Verify) {
-        if (s.baselinePass == 0) s.baseline.clear();
+        if (s.baselinePass == 0) { s.baseline.clear(); s.updateSchedule.clear(); s.causalTrace.clear(); }
         s.referenceLandings.assign(s.recording.inputs.size(), {});
         s.referencePhysics.clear(); s.referenceTrace.clear(); s.nativePool.clear();
         s.nativeObjectStates = 0;
@@ -698,7 +772,7 @@ void beginAnalysis() {
     });
     bool regenerate = s.recording.ready() && !havePreview && Mod::get()->getSettingValue<bool>("trajectory-preview");
     bool changed = s.recording.radius != radius || s.recording.analysisPolicy != policy || regenerate ||
-        cf::readFile(path().parent_path() / "analysis-policy.txt") != "CF-ANALYSIS-1\n";
+        cf::readFile(path().parent_path() / "analysis-policy.txt") != "CF-ANALYSIS-2\n";
     if (changed) { s.recording.windows.clear(); s.predictions.clear(); }
     s.recording.analysisPolicy = policy;
     s.snapshot = nullptr; s.snapshotChecked = false;
@@ -708,12 +782,14 @@ void beginAnalysis() {
     s.recording.windows.resize(s.recording.inputs.size()); s.recording.verified = false;
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
     s.baselinePass = 0; s.baseline.clear(); s.baselineCompared = 0;
+    s.initialSharedSeed = GameToolbox::getfast_srand(); s.parityDiagnostic.clear();
+    s.recoveringFlight = false; s.recoveryReport.clear();
     s.batchDisabled = false; s.confirmingBoundary = false; s.batchUpdates = 0;
     s.trial = s.recording.inputs; s.shiftIndex = 0; s.noRetry = false; s.firstFail.clear(); s.alert.clear();
     s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
     s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
     s.reportDirty = true;
-    cf::replaceChanged(path().parent_path() / "analysis-policy.txt", "CF-ANALYSIS-1\n");
+    cf::replaceChanged(path().parent_path() / "analysis-policy.txt", "CF-ANALYSIS-2\n");
     s.measurableTotal = std::count_if(s.recording.inputs.begin(), s.recording.inputs.end(), cf::counted); analysisClock(true);
     log::info("[CF] verify start: {} inputs, end tick {}", s.recording.inputs.size(), s.recording.endTick);
     s.message = "Verifying original run (240 TPS)"; resetTrial();
@@ -741,6 +817,9 @@ void nextEvent() {
         s.activeNative = i; s.snapshot = n.checkpoint; s.snapshotTick = n.tick; s.snapshotNext = n.next; s.snapshotHeld = n.held;
         s.snapshotButtons = n.buttons; s.snapshotRecordedButtons = n.recorded; s.snapshotReplayButtons = n.replay;
         s.snapshotRandomSeed = n.randomSeed; s.snapshotReplaySeed = n.replaySeed; s.snapshotExtraDelta = n.extraDelta;
+        s.snapshotSharedSeed = n.sharedSeed; s.snapshotScheduleCursor = n.scheduleCursor;
+        s.snapshotCausalCursor = n.causalCursor;
+        s.snapshotCollisions = n.collisions; s.snapshotEngineState = n.engineState;
         s.snapshotStep = n.step; s.snapshotRecordedSize = n.recordedSize; s.snapshotResumeTimer = n.resumeTimer;
         s.snapshotChecked = n.checked; s.snapshotEndTick = s.recording.endTick;
         if (!n.checked) { s.validatingSnapshot = true; s.offset = 0; }
@@ -763,7 +842,9 @@ void startCandidate() {
     }
     s.message = fmt::format("{} {}% | event {}/{} | offset {:+} | {} tests", s.recording.analysisPolicy == 2 ? "Local" : "Full run",
         100 * s.measuredDone / std::max<size_t>(1, s.measurableTotal), s.measuredDone + 1, s.measurableTotal, s.offset, s.tests);
-    if (!cf::candidateTrial(s.recording.inputs, s.target, s.offset, s.trial)) {
+    bool prepared = s.recoveringFlight ? cf::recoveryTrial(s.recording.inputs, s.target, s.offset,
+        s.recoveryNeighbor, s.recoveryChange, s.trial) : cf::candidateTrial(s.recording.inputs, s.target, s.offset, s.trial);
+    if (!prepared) {
         s.pending = Pending::Fail; return;
     }
     resetTrial();
@@ -794,7 +875,7 @@ void consume() {
         }
         if (s.baselinePass == 0) {
             s.baselineEnd = tick();
-        } else if (tick() != s.baselineEnd || s.baselineCompared != s.baseline.size()) {
+        } else if (tick() != s.baselineEnd || s.baselineCompared != s.baseline.size() || s.causalMismatch || s.causalCursor != s.causalTrace.size()) {
             s.message = "Unstable baseline: completion tick or physics schedule changed";
             s.pending = Pending::Invalid; return;
         }
@@ -834,6 +915,15 @@ void consume() {
             if (!s.snapshotChecked) { ++s.restoreFallbacks; s.snapshot = nullptr; log::warn("[CF] native-state validation failed; full restart fallback"); }
         } else {
             bool pass = result == Pending::Pass;
+            if (s.recoveringFlight) {
+                s.recoveryReport += fmt::format("{}\t{}\t{}\t{}\t{}\n", s.target, s.offset, s.recoveryNeighbor, s.recoveryChange, pass);
+                if (!pass && s.recoveryChange == -1) { s.recoveryChange = 1; startCandidate(); return; }
+                s.recoveringFlight = false;
+                s.confirmingBoundary = false; s.fullRestartRetry = false;
+                // Recovery is evidence of another route; keep the original
+                // fixed-macro boundary failed regardless of recovery outcome.
+                ++s.tests; s.search.accept(false); s.offset = s.search.offset; startCandidate(); return;
+            }
             if (!pass && s.search.window().width() <= 3 && !s.confirmingBoundary && !s.batchDisabled &&
                 Mod::get()->getSettingValue<bool>("batch-analysis")) {
                 s.confirmingBoundary = true; s.fullRestartRetry = true;
@@ -849,6 +939,15 @@ void consume() {
                 if (pass) { s.nativePool[s.activeNative].rejected = true; ++s.restoreFallbacks; s.snapshot = nullptr; s.snapshotChecked = false; }
             }
             s.fullRestartRetry = false;
+            int mode = s.recording.inputs[s.target].mode;
+            if (!pass && (mode == 1 || mode == 3 || mode == 4 || mode == 7) && Mod::get()->getSettingValue<bool>("flight-recovery")) {
+                size_t next = s.target + 1;
+                while (next < s.recording.inputs.size() && s.recording.inputs[next].p1 != s.recording.inputs[s.target].p1) ++next;
+                if (next < s.recording.inputs.size() && s.recording.inputs[next].tick - s.recording.inputs[s.target].tick <= 240) {
+                    s.recoveringFlight = true; s.recoveryNeighbor = next; s.recoveryChange = -1;
+                    s.fullRestartRetry = true; startCandidate(); return;
+                }
+            }
             ++s.tests;
             auto& branches = s.predictions[s.target];
             bool exists = std::any_of(branches.begin(), branches.end(), [](auto const& b) { return b.pass; });
@@ -887,7 +986,23 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
             !(s.state == State::Verify && s.baselinePass == 0);
         int limit = fast ? 256 : 1;
         for (int i = 0; i < limit; ++i) {
-            CCScheduler::update(fast ? 1.f / 240.f : dt);
+            if (s.pending != Pending::None) consume();
+            if (!scanning() || s.owner != owner) break;
+            float slice = dt;
+            if (s.state == State::Verify && s.baselinePass == 0) {
+                if (s.updateSchedule.size() >= 250000) {
+                    s.message = "Reference update schedule exceeds memory limit"; s.pending = Pending::Invalid;
+                } else s.updateSchedule.push_back(dt);
+            } else if (s.scheduleCursor < s.updateSchedule.size()) {
+                slice = s.updateSchedule[s.scheduleCursor];
+            } else if (s.state == State::Analyze && !s.validatingSnapshot && !s.updateSchedule.empty()) {
+                slice = s.updateSchedule.back();
+            } else {
+                s.message = "Replay exceeded recorded update schedule; window not measured";
+                s.pending = Pending::Invalid;
+            }
+            ++s.scheduleCursor;
+            CCScheduler::update(slice);
             ++s.batchUpdates;
             if (!scanning() || s.owner != owner || std::chrono::steady_clock::now() >= deadline) break;
         }
@@ -906,6 +1021,10 @@ class $modify(CFAudio, FMODAudioEngine) {
 #endif
 
 class $modify(CFPlayer, PlayerObject) {
+    void ringJump(RingObject* object, bool skipCheck) {
+        PlayerObject::ringJump(object, skipCheck);
+        recordCause(1, object, this);
+    }
     bool blocksCheckpoint() {
         return hasLiveOwner() && running() &&
             (this == s.owner->m_player1 || this == s.owner->m_player2);
@@ -923,6 +1042,32 @@ class $modify(CFPlayer, PlayerObject) {
 };
 
 class $modify(CFBase, GJBaseGameLayer) {
+    void gameEventTriggered(GJGameEvent event, int material, int playerID) {
+        GJBaseGameLayer::gameEventTriggered(event, material, playerID);
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this)
+            recordCause(6, nullptr, playerID == 1 ? m_player1 : playerID == 2 ? m_player2 : nullptr,
+                int(event) * 1024 + material);
+    }
+    void pickupItem(EffectGameObject* object) {
+        GJBaseGameLayer::pickupItem(object);
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this) recordCause(7, object, nullptr);
+    }
+    void playerTouchedTrigger(PlayerObject* player, EffectGameObject* object) {
+        GJBaseGameLayer::playerTouchedTrigger(player, object);
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this) recordCause(2, object, player);
+    }
+    void bumpPlayer(PlayerObject* player, EffectGameObject* object) {
+        GJBaseGameLayer::bumpPlayer(player, object);
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this) recordCause(3, object, player);
+    }
+    void teleportPlayer(TeleportPortalObject* object, PlayerObject* player) {
+        GJBaseGameLayer::teleportPlayer(object, player);
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this) recordCause(4, object, player);
+    }
+    void toggleGroup(int id, bool activate) {
+        GJBaseGameLayer::toggleGroup(id, activate);
+        if (static_cast<GJBaseGameLayer*>(s.owner) == this) recordCause(5, nullptr, nullptr, id * 2 + int(activate));
+    }
     void handleButton(bool down, int button, bool p1) {
         if (static_cast<GJBaseGameLayer*>(s.owner) != this) return GJBaseGameLayer::handleButton(down, button, p1);
         if (button >= 1 && button <= 3 && (!m_level || !m_level->m_twoPlayerMode)) p1 = true;
@@ -970,9 +1115,12 @@ class $modify(CFBase, GJBaseGameLayer) {
                             s.message = "Batch parity failed; rebuilding baseline at normal cadence";
                             s.pending = Pending::Fail;
                         } else {
-                            s.message = fmt::format("Unstable physics baseline at tick {}", now);
+                            s.message = fmt::format("Unstable baseline at tick {}: {}", now,
+                                it == s.baseline.end() ? "missing reference tick" : cf::difference(it->second, current));
                             s.pending = Pending::Invalid;
                         }
+                        s.parityDiagnostic = fmt::format("tick={} pass={} batching-disabled={} {}", now, s.baselinePass,
+                            s.batchDisabled, it == s.baseline.end() ? "missing tick" : cf::difference(it->second, current));
                         return;
                     }
                     ++s.baselineCompared;
@@ -989,7 +1137,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 auto it = s.baseline.find(now);
                 bool grounded = s.owner->m_player1->m_isOnGround &&
                     (!s.owner->m_gameState.m_isDualMode || s.owner->m_player2->m_isOnGround);
-                bool same = grounded && it != s.baseline.end() && cf::matches(it->second, observation(dt));
+                bool same = grounded && !s.causalMismatch && it != s.baseline.end() && cf::matches(it->second, observation(dt));
                 s.rejoinStreak = same ? s.rejoinStreak + 1 : 0;
                 if (s.rejoinStreak >= 4) {
                     s.message = "Observable physics rejoined (local window)";
@@ -1013,7 +1161,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 else if (now == exit.tick) {
                     auto player = s.recording.inputs[s.target].p1 ? s.owner->m_player1 : s.owner->m_player2;
                     bool landingRequired = s.referenceLandings[s.target].known;
-                    bool pass = s.targetExecuted && (landingRequired ? s.localLandingPassed :
+                    bool pass = s.targetExecuted && !s.causalMismatch && (landingRequired ? s.localLandingPassed :
                         cf::atSegmentExit(exit, player->getPositionX(), player->getPositionY(), playerMode(player), player->m_isUpsideDown));
                     // A zone mismatch is not a collision. Continue the real run
                     // rather than turning a heuristic rejection into a narrow window.
@@ -1152,6 +1300,10 @@ class $modify(CFPlay, PlayLayer) {
                             n.checkpoint = cp; n.tick = now; n.next = s.next; n.held = s.injectedHeld;
                             n.buttons = m_queuedButtons; n.recorded = m_queuedRecordedButtons; n.replay = m_queuedReplayButtons;
                             n.randomSeed = m_randomSeed; n.replaySeed = m_replayRandSeed; n.extraDelta = m_extraDelta;
+                            n.sharedSeed = GameToolbox::getfast_srand(); n.scheduleCursor = s.scheduleCursor;
+                            n.causalCursor = s.causalCursor;
+                            n.collisions = {captureCollisions(m_player1), captureCollisions(m_player2)};
+                            n.engineState = std::make_shared<GJGameState>(m_gameState);
                             n.step = m_currentStep; n.recordedSize = m_queuedRecordedButtonsSize; n.resumeTimer = m_resumeTimer;
                             s.peakNativeStates = std::max(s.peakNativeStates, s.nativePool.size());
                         }
@@ -1292,6 +1444,10 @@ class $modify(CFPlay, PlayLayer) {
         }
         if (running()) {
             if (s.pending == Pending::None) {
+                if (s.state == State::Analyze && s.causalMismatch && !s.recoveringFlight) {
+                    s.message = "Candidate changed the recorded causal route; window not certified";
+                    s.pending = s.validatingSnapshot ? Pending::Fail : Pending::Invalid; return;
+                }
                 auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
                 bool valid = s.next == events.size();
                 if (s.state == State::Analyze && !s.validatingSnapshot && s.recording.analysisPolicy != 0 &&
@@ -1641,7 +1797,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.1", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
