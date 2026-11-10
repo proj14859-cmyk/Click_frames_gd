@@ -13,6 +13,8 @@ jobs:
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/timing.cpp -o /tmp/timing-tests
           /tmp/timing-tests
+          g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/pack.cpp -o /tmp/pack-tests
+          /tmp/pack-tests
   build:
     strategy:
       fail-fast: false

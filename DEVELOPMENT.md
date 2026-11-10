@@ -1,4 +1,4 @@
-# Click Frames 0.2.2 — experimental
+# Click Frames 0.4.0 — experimental
 
 ## 0.2.1 completion handoff
 
@@ -45,9 +45,13 @@ instead of crashing. Check bottom-center placement on both narrow and wide scree
 
 Pause > Frames > Record starts a new practice run from zero. Checkpoints keep
 the input prefix, trace prefix and held buttons; a retry discards the failed
-suffix. Finishing saves the run and returns to pause. Analyze starts a baseline replay. A death, a trajectory
-deviation greater than 0.5 game units at a matching sampled tick, or a timeout
-stops verification. Only a verified run can be analyzed.
+suffix. Finishing saves the run and returns to pause. Analyze starts a baseline replay. Verification passes when the replay finishes the
+level and has replayed every press; a trajectory drift over 0.5 units is only
+logged (`[CF] first position drift`). A death, a timeout or an unsupported step ends
+it. Before giving up, the whole run is retried shifted by +1, -1, +2, -2 ticks (the
+recorded tick and the replay's injection point can differ by a step); the shift that
+works is saved into the run. The reason for a failure is shown in an alert when pause
+returns and in the Geode log with the `[CF]` prefix. Only a verified run can be analyzed.
 
 Analyze / Resume verifies the baseline again and resumes at the first unmeasured
 event. Each jump press and release is independently shifted from -radius through
@@ -64,10 +68,19 @@ counter size and radius are configurable. Stop / Save cancels immediately and
 keeps completed event results; an interrupted event is retried from scratch.
 
 All automated runs use practice mode without checkpoints and intercept completion
-to avoid awarding normal completion. Trials are not accelerated: exhaustive
+to avoid awarding normal completion. Verify and Analyze run behind a cover with the objects hidden and the game sped up by
+the `scan-speed` setting (default 1.5, 1 = normal). Exhaustive
 analysis of a long run can take many hours. Pause remains available.
 
 ## Data
+
+Layout: `levels/<slug>-<levelID>/run-<fingerprint>.cfr` (+ `.bak`). v0.2.x files in the
+save dir root are moved there the first time their level is opened. `.cfpack`
+(`src/Pack.hpp`) bundles a level's runs: export writes `exports/<folder>.cfpack`,
+import reads `imports/*.cfpack`, validates the whole pack (names, sizes, each run with
+`cf::read`) before writing, then renames it `.done`. Packs carry no code or sounds.
+A shared analysis only applies if level ID, name and content match (same fingerprint)
+and the importer runs the same GD/TPS; Play stops on death, timeout or incomplete input playback. Position drift is logged; use Analyze to reverify an imported baseline.
 
 `run-<fingerprint>.cfr` contains a versioned text recording, trace, complete and
 verified flags, search radius and results. The fingerprint covers level ID, name
@@ -97,3 +110,14 @@ checkpoints, delete a checkpoint, die while holding jump, dual input, completion
 cancel/reload/resume, and runs with known one-frame and wider windows. Build
 success alone does not establish deterministic GD replay. Trace comparison only
 covers sampled positions; it is not a full internal-state determinism proof.
+
+## Integration safeguards in 0.4.0
+
+The scheduler scale and object-layer visibility are captured on analysis entry
+and restored at pause, stop and exit. Shifted verification invalidates previous
+windows; successful verification records the actual end tick and drops releases
+that were never dispatched before completion. Pack reads are bounded on disk,
+reject duplicate destinations and trailing bytes, and safe writes restore the
+backup if the final rename fails. Imports validate every recording before writing;
+I/O failure during a multi-run pack may still leave some runs imported, with
+previous versions retained as backups.

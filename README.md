@@ -1,5 +1,34 @@
 # Click Frames GD
 
+## v0.4.0 / 2026-11-10 / 00:26 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La verificación reintenta con desfases 0, +1, -1, +2 y -2 ticks antes de fallar; los desvíos de posición se registran como advertencia.
+- Si cambia el desfase de la run, se descartan los márgenes anteriores y se vuelven a medir. Se eliminan las liberaciones posteriores al final que no llegaron a reproducirse.
+- Al pausar, detener o salir del análisis se restauran la velocidad previa y la visibilidad del nivel.
+- Los paquetes rechazan rutas inválidas, nombres duplicados, datos sobrantes y tamaños excesivos. Si falla el reemplazo de una run se intenta restaurar su copia anterior.
+
+-Mejoras:
+- Verify / Analyze muestran una pantalla de progreso y ocultan los objetos durante las pruebas.
+- Velocidad de análisis configurable entre 1 y 3 (por defecto 1.5).
+- Los fallos de verificación muestran un aviso al volver a pausa y detalles en el log con prefijo `[CF]`.
+
+-Cambios:
+- Salto directo de v0.2.2 a v0.4.0; se incorporan también las funciones del parche intermedio sin publicar v0.3.0.
+- Verify comprueba que se termina el nivel y se reproducen las pulsaciones, sin exigir la misma trayectoria o tick final exacto.
+- Las grabaciones se organizan en `levels/<nombre>-<id>/`; los archivos v0.2.x se migran al abrir su nivel.
+
+-Implementaciones:
+- EXPORT reúne las runs del nivel en `exports/<nivel>.cfpack`. IMPORT carga los paquetes colocados en `imports/` y deja los procesados con extensión `.done`.
+- Milisegundos entre pulsaciones en Play y ancho de cada ventana en milisegundos sobre los círculos.
+- Pruebas automáticas del formato de paquetes y del desplazamiento completo de inputs, incluidos límites y datos inválidos.
+
+## Compartir grabaciones
+
+En pausa → Frames → EXPORT se muestra la ruta del `.cfpack`. Copia un paquete recibido a la carpeta `imports` del mod y pulsa IMPORT. El paquete conserva las runs y los márgenes; no contiene sonidos ni código. El nivel debe coincidir en nombre, ID y contenido. Puedes reproducir un análisis importado con Play; si no reproduce correctamente, detén la reproducción y vuelve a grabar o analizar.
+
+La velocidad de análisis afecta al tiempo del juego, no cambia la unidad de medida: 240 ticks por segundo, aproximadamente 4.17 ms por tick. Al pausar se restaura la velocidad previa; al continuar se aplica de nuevo la velocidad de análisis. No se ha probado todavía en el dispositivo Android del usuario.
+
 ## v0.2.2 / 2026-11-09 / 22:48 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
@@ -41,7 +70,7 @@ Para detener un análisis, pausa y abre Frames → Stop / Save. Para continuarlo
 Usa física de 240 TPS, sin Click Between Frames ni ignore damage. Plataforma no está soportado.
 La compatibilidad declarada es GD 2.2081 con Geode 5.11.2 en Windows, Android32 y Android64.
 
-El margen es el intervalo continuo de ticks válidos alrededor del click original, manteniendo los demás inputs fijos. Una única posición válida (desplazamiento de cero frames) pertenece a 1F / frame perfect. El signo `+` indica que la ventana alcanza el límite de búsqueda y podría ser mayor. El análisis depende de la reproducción de la run: si esta diverge, se detiene e informa del error.
+El margen es el intervalo continuo de ticks válidos alrededor del click original, manteniendo los demás inputs fijos. Una única posición válida (desplazamiento de cero frames) pertenece a 1F / frame perfect. El signo `+` indica que la ventana alcanza el límite de búsqueda y podría ser mayor. El análisis depende de completar la reproducción de la run. En v0.4.0 un desvío de posición se registra como advertencia; una muerte, un bloqueo o un paso físico incompatible detienen la prueba.
 
 ## Prueba táctil en Android
 

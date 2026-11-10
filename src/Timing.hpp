@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <istream>
 #include <ostream>
 #include <string>
@@ -61,6 +62,16 @@ inline bool trial(std::vector<Input> const& source, size_t index, int offset, st
     }
     std::stable_sort(out.begin(), out.end(), [](auto a, auto b) { return a.tick < b.tick; });
     return true;
+}
+// Whole-run shift (a copy, so source and out may be the same vector); false if a tick would go below 0.
+inline bool shiftAll(std::vector<Input> const& source, int by, std::vector<Input>& out) {
+    auto shifted = source;
+    for (auto& e : shifted) {
+        auto tick = static_cast<int64_t>(e.tick) + by;
+        if (tick < 0 || tick > std::numeric_limits<int>::max()) return false;
+        e.tick = static_cast<int>(tick);
+    }
+    out = std::move(shifted); return true;
 }
 inline Window measure(std::vector<bool> const& success, int radius) {
     Window w;
