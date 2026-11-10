@@ -1,5 +1,30 @@
 # Click Frames GD
 
+## v0.6.0 / 2026-11-10 / 01:50 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La migración valida y copia las grabaciones antiguas sin eliminarlas. Las versiones de un nivel se separan por fingerprint.
+
+-Mejoras:
+- Inputs, trayectoria y márgenes accesibles por nivel. Los informes sin cambios no se reescriben durante la misma sesión.
+
+-Cambios:
+- Ubicación activa: `recordings/<nombre>-<id>/<fingerprint>/capture.cfr`.
+- Los CSV son derivados: editarlos no modifica la reproducción. Esta versión conserva el análisis exhaustivo desde cero; el nuevo almacenamiento no lo acelera por sí solo.
+
+-Implementaciones:
+- `metadata.json`: esquema, fingerprint, compatibilidad, TPS y estado completo/verificado.
+- `capture.cfr`: fuente de verdad de inputs, trayectoria y ventanas, en formato CFR 2.
+- `inputs.csv`: tick, pulsación/liberación, botón, jugador y posición.
+- `trace.csv`: posiciones muestreadas de ambos jugadores, no un estado completo del motor.
+- `windows.csv`: margen temprano/tardío, ancho, límite inferior y milisegundos por input. Los anchos sin medir quedan vacíos.
+- `scan-report.txt`: progreso guardado, radio de búsqueda y último estado, sin estimación de tiempo restante.
+- `.bak` guarda la versión anterior; `.tmp` es un archivo transitorio.
+
+Los `.cfpack` conservan su formato e incluyen las capturas completas. Los informes se regeneran al abrir el nivel importado. Las grabaciones anteriores en `levels/` y en la raíz se copian al abrir su nivel; los originales quedan intactos. Export incluye también las versiones anteriores del mismo nivel en `levels/`.
+
+Plan de aceleración: buscar desde el input original hacia cada lado hasta el primer fallo, después restaurar estados completos cerca del input en vez de reiniciar desde cero. Los checkpoints de práctica y trace.csv por sí solos no bastan para restaurar triggers, objetos y física. Comparar cada optimización con el análisis exhaustivo antes de activarla.
+
 ## v0.5.2 / 2026-11-10 / 01:25 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

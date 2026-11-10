@@ -1,4 +1,16 @@
-# Click Frames 0.5.0 — experimental
+# Click Frames 0.6.0 — experimental
+
+## Per-level storage
+
+Active captures use recordings/<slug-id>/<fingerprint>/capture.cfr. Legacy root
+and levels/<slug-id>/run-<fingerprint>.cfr files are validated and copied through
+a temporary file on level open; originals are retained. Imports write the new
+layout while the CFPACK 1 wire format stays unchanged. Opening a capture creates
+metadata.json, inputs.csv, trace.csv, windows.csv and scan-report.txt. These files
+are derived views and are never loaded as gameplay state. An incomplete derived
+write does not invalidate the authoritative capture. Unchanged derived content
+is cached per session to avoid repeated disk writes. CSV generation still costs
+CPU; snapshots and early-stop analysis are future work, not enabled here.
 
 ## 0.2.1 completion handoff
 
