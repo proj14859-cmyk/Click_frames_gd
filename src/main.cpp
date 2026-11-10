@@ -154,7 +154,9 @@ void observeLanding() {
         else if (!s.validatingSnapshot && index == s.target && s.recording.analysisPolicy != 0 &&
                  s.referenceLandings[index].known) {
             s.localLandingPassed = cf::sameLanding(s.referenceLandings[index], landing, 60.f);
-            if (!s.localLandingPassed) { s.message = "Candidate landed outside the reference platform/corridor"; s.pending = Pending::Fail; }
+            if (!s.localLandingPassed && s.recording.analysisPolicy == 1) {
+                s.message = "Candidate landed outside the selected same-jump policy"; s.pending = Pending::Fail;
+            }
             // A nearby landing alone is insufficient to certify reconvergence.
         }
         s.activeJump[p] = size_t(-1);
