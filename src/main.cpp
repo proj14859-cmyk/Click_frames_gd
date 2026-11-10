@@ -31,15 +31,17 @@ struct CollisionState {
     std::array<int, 4> last{};
 };
 CollisionState captureCollisions(PlayerObject* p) {
-    return {{{CCDictionary::createWithDictionary(p->m_collisionLogTop), CCDictionary::createWithDictionary(p->m_collisionLogBottom),
-        CCDictionary::createWithDictionary(p->m_collisionLogLeft), CCDictionary::createWithDictionary(p->m_collisionLogRight)}},
-        {p->m_lastCollisionTop, p->m_lastCollisionBottom, p->m_lastCollisionLeft, p->m_lastCollisionRight}};
+    CollisionState result;
+    CCDictionary* logs[] = {p->m_collisionLogTop, p->m_collisionLogBottom, p->m_collisionLogLeft, p->m_collisionLogRight};
+    for (size_t i = 0; i < 4; ++i) result.logs[i] = logs[i] ? CCDictionary::createWithDictionary(logs[i]) : CCDictionary::create();
+    result.last = {p->m_lastCollisionTop, p->m_lastCollisionBottom, p->m_lastCollisionLeft, p->m_lastCollisionRight};
+    return result;
 }
 void restoreCollisions(PlayerObject* p, CollisionState const& state) {
     CCDictionary** targets[] = {&p->m_collisionLogTop, &p->m_collisionLogBottom, &p->m_collisionLogLeft, &p->m_collisionLogRight};
     for (size_t i = 0; i < 4; ++i) {
         auto copy = CCDictionary::createWithDictionary(state.logs[i].data());
-        copy->retain(); (*targets[i])->release(); *targets[i] = copy;
+        copy->retain(); if (*targets[i]) (*targets[i])->release(); *targets[i] = copy;
     }
     p->m_lastCollisionTop = state.last[0]; p->m_lastCollisionBottom = state.last[1];
     p->m_lastCollisionLeft = state.last[2]; p->m_lastCollisionRight = state.last[3];
@@ -167,6 +169,7 @@ bool running() { return s.state == State::Verify || s.state == State::Analyze ||
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 void recordCause(int kind, GameObject* object, PlayerObject* player, int detail = 0) {
     if (!hasLiveOwner() || s.resetting || (s.state != State::Verify && s.state != State::Analyze)) return;
+    if (player && player != s.owner->m_player1 && player != s.owner->m_player2) return;
     cf::CausalEvent e{tick(), kind, object ? object->m_uniqueID : 0,
         player == s.owner->m_player1 ? 1 : player == s.owner->m_player2 ? 2 : 0, detail};
     if (s.state == State::Verify && s.baselinePass == 0) {
