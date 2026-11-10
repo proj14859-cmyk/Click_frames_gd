@@ -807,9 +807,7 @@ void consume() {
             std::vector<cf::Input> moved;
             if (cf::shiftAll(s.recording.inputs, by, moved)) {
                 s.recording.inputs = std::move(moved);
-                // Windows measured against the old timings cannot be resumed.
-                s.recording.windows.assign(s.recording.inputs.size(), {});
-                s.predictions.clear();
+                // Invalidate below only if this differs from saved alignment.
             }
         }
         // Trailing releases beyond completion were never replayed: do not analyze
