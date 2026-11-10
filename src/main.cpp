@@ -34,8 +34,8 @@ struct Session {
     int watchdogTick = -1;
     size_t comparedSamples = 0;
     float stalledSeconds = 0;
-    std::array<int, 5> tally{};
-    std::array<bool, 5> visibleRows{};
+    std::vector<cf::Row> rows; // counter rows for this run (see cf::makeRows)
+    std::vector<int> tally;
     std::string message = "Record a practice run";
     std::string folder; // levels/<name>-<id>/ holds this level's runs
     std::string alert, firstFail; // why a run stopped, shown once pause is back
@@ -258,19 +258,32 @@ void hud() {
         pl->addChild(label, 1000);
     }
     label->setScale(static_cast<float>(Mod::get()->getSettingValue<double>("counter-scale")) * .6f);
-    std::string text = s.message;
-    if (s.state == State::Playback) {
-        for (int i = 0; i < 5; ++i)
-            if (s.visibleRows[i]) text += fmt::format("\n{}{}F: {}", i + 1, i == 4 ? "+" : "", s.tally[i]);
+    label->setString(s.message.c_str());
+    // One colored line per row of this run, like "4: 3", "5: 1", "8+: 12"
+    auto rowsNode = pl->getChildByID("cf-rows");
+    if (s.state != State::Playback) { if (rowsNode) rowsNode->removeFromParent(); }
+    else {
+        if (!rowsNode || rowsNode->getChildrenCount() != s.rows.size()) {
+            if (rowsNode) rowsNode->removeFromParent();
+            rowsNode = CCNode::create(); rowsNode->setID("cf-rows"); pl->addChild(rowsNode, 1000);
+            float scale = static_cast<float>(Mod::get()->getSettingValue<double>("counter-scale"));
+            auto win = CCDirector::get()->getWinSize();
+            for (size_t i = 0; i < s.rows.size(); ++i) {
+                auto line = CCLabelBMFont::create("", "bigFont.fnt");
+                auto c = cf::colorFor(s.rows[i].from);
+                line->setTag(static_cast<int>(i)); line->setColor({c.r, c.g, c.b}); line->setScale(.4f * scale);
+                line->setAnchorPoint({0, 1}); line->setPosition({10, win.height - 34 - static_cast<float>(i) * 17.f * scale});
+                rowsNode->addChild(line);
+            }
+        }
+        for (size_t i = 0; i < s.rows.size() && i < s.tally.size(); ++i)
+            if (auto line = typeinfo_cast<CCLabelBMFont*>(rowsNode->getChildByTag(static_cast<int>(i))))
+                line->setString(fmt::format("{}: {}", cf::label(s.rows[i]), s.tally[i]).c_str());
     }
-    label->setString(text.c_str());
     if (auto cover = pl->getChildByID("cf-cover"))
         if (auto big = typeinfo_cast<CCLabelBMFont*>(cover->getChildByID("cf-cover-label")))
             big->setString((s.message + "\n\nPause to stop and save").c_str());
 }
-constexpr ccColor3B WINDOW_COLORS[5] = {
-    {255, 75, 75}, {255, 150, 55}, {255, 225, 70}, {245, 245, 245}, {105, 245, 125}
-};
 void showMs(float ms) {
     auto label = typeinfo_cast<CCLabelBMFont*>(s.owner->getChildByID("cf-ms"));
     if (!label) {
@@ -289,14 +302,15 @@ void clearMarkers() {
     if (auto node = s.owner->m_objectLayer->getChildByID("cf-markers")) node->removeFromParent();
 }
 void prepareShowcase() {
-    s.tally.fill(0); s.visibleRows = cf::visibleCategories(s.recording); clearMarkers();
+    s.rows = cf::makeRows(s.recording, static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-rows")));
+    s.tally.assign(s.rows.size(), 0); clearMarkers();
 }
 void marker(size_t index) {
     auto const e = s.recording.inputs[index];
     if (e.button != 1) return;
     auto w = s.recording.windows[index];
     if (!w.measured) return;
-    ++s.tally[cf::category(w)];
+    if (auto row = cf::rowOf(s.rows, w); row >= 0 && static_cast<size_t>(row) < s.tally.size()) ++s.tally[row];
     if (e.down) { // time since the previous press, like the ms readout of other frame counters
         if (s.lastPressTick >= 0) showMs((e.tick - s.lastPressTick) * 1000.f / 240.f);
         s.lastPressTick = e.tick;
@@ -308,7 +322,7 @@ void marker(size_t index) {
         }
         auto node = CCNode::create(); node->setPosition({e.x, e.y});
         float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale"));
-        auto color3 = WINDOW_COLORS[cf::category(w)];
+        auto rgb = cf::colorFor(w.width()); ccColor3B color3{rgb.r, rgb.g, rgb.b};
         ccColor4F border{color3.r / 255.f, color3.g / 255.f, color3.b / 255.f, 1.f};
         ccColor4F fill{border.r, border.g, border.b, e.down ? .22f : .04f};
         auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, fill, e.down ? 2.5f : 1.5f, border, 48);
@@ -577,11 +591,19 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if (running()) {
-            if (!s.resetting && s.pending == Pending::None) { s.message = fmt::format("Replay died at tick {}", tick()); s.pending = Pending::Fail; }
-            return;
-        }
+        // A collision request may be ignored by GD (invulnerability, inactive
+        // player, reset). Let the engine decide before classifying a trial.
+        bool active = s.owner == this && running() && !s.resetting &&
+            s.pending == Pending::None && player && !player->m_isDead &&
+            (player == m_player1 || (player == m_player2 && m_gameState.m_isDualMode));
         PlayLayer::destroyPlayer(player, object);
+        if (active && player->m_isDead && s.owner == this && running() &&
+            s.pending == Pending::None) {
+            s.message = fmt::format("Replay died at tick {}", tick());
+            s.pending = Pending::Fail;
+            log::info("[CF] actual death: tick {}, player {}, first input {}", tick(),
+                player == m_player1 ? 1 : 2, s.trial.empty() ? -1 : s.trial.front().tick);
+        }
     }
     void levelComplete() {
         if (s.state == State::Record) {
@@ -723,17 +745,23 @@ class CFPopup : public Popup {
         panel->setContentSize({118, 160}); panel->setColor({20, 30, 47});
         panel->setOpacity(240); panel->setPosition({351, 115}); m_mainLayer->addChild(panel);
         label("FRAME WINDOWS", {351, 181}, .48f, {111, 219, 235});
-        std::array<int, 5> totals{};
+        auto panelRows = cf::makeRows(s.recording, static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-rows")));
+        std::vector<int> totals(panelRows.size(), 0);
         size_t measured = 0;
         for (auto const& window : s.recording.windows) {
-            if (window.measured) { ++measured; ++totals[cf::category(window)]; }
+            if (!window.measured) continue;
+            ++measured;
+            if (auto row = cf::rowOf(panelRows, window); row >= 0) ++totals[row];
         }
-        for (int i = 0; i < 5; ++i) {
-            label(fmt::format("{}{}F     {}", i + 1, i == 4 ? "+" : "", totals[i]),
-                  {351, 158.f - i * 18.f}, .55f, WINDOW_COLORS[i]);
+        float step = panelRows.empty() ? 18.f : std::min(18.f, 90.f / static_cast<float>(panelRows.size()));
+        for (size_t i = 0; i < panelRows.size(); ++i) {
+            auto c = cf::colorFor(panelRows[i].from);
+            label(fmt::format("{}:   {}", cf::label(panelRows[i]), totals[i]),
+                  {351, 158.f - static_cast<float>(i) * step}, .55f, {c.r, c.g, c.b});
         }
+        if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.4.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.5.0", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

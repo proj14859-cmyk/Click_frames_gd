@@ -6,6 +6,8 @@
 #include <iomanip>
 #include <limits>
 #include <istream>
+#include <iterator>
+#include <map>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -38,13 +40,42 @@ struct Recording {
         return true;
     }
 };
-inline int category(Window const& window) { return std::clamp(window.width(), 1, 5) - 1; }
-inline std::array<bool, 5> visibleCategories(Recording const& recording) {
-    std::array<bool, 5> result{};
-    for (size_t i = 0; i < recording.inputs.size() && i < recording.windows.size(); ++i)
-        if (recording.inputs[i].button == 1 && recording.windows[i].measured)
-            result[category(recording.windows[i])] = true;
-    return result;
+// Counter rows span every width from the smallest measured value to the largest,
+// including empty intermediate widths. The last row groups wider values when capped.
+struct Row { int from, to; bool open; }; // widths from..to; open = shown as "from+"
+inline std::vector<Row> makeRows(Recording const& r, int maxRows) {
+    int lo = 1 << 30, hi = 0; bool openTop = false;
+    for (size_t i = 0; i < r.inputs.size() && i < r.windows.size(); ++i) {
+        if (r.inputs[i].button != 1 || !r.windows[i].measured) continue;
+        int w = r.windows[i].width();
+        lo = std::min(lo, w);
+        if (w > hi) { hi = w; openTop = false; }
+        if (w == hi && r.windows[i].lowerBound) openTop = true;
+    }
+    std::vector<Row> rows;
+    if (hi == 0) return rows;
+    int limit = std::max(2, maxRows);
+    for (int w = lo; w <= hi; ++w) {
+        if (static_cast<int>(rows.size()) + 1 == limit && w < hi) { rows.push_back({w, hi, true}); break; }
+        rows.push_back({w, w, w == hi && openTop});
+    }
+    return rows;
+}
+inline int rowOf(std::vector<Row> const& rows, Window const& w) {
+    for (size_t i = 0; i < rows.size(); ++i)
+        if (w.width() >= rows[i].from && w.width() <= rows[i].to) return static_cast<int>(i);
+    return -1;
+}
+inline std::string label(Row const& row) { return std::to_string(row.from) + (row.open ? "+" : ""); }
+struct Rgb { unsigned char r, g, b; };
+// Tight is red, loose is green: width 1 = red ... 10 or more = green.
+inline Rgb colorFor(int width) {
+    static constexpr Rgb stops[5] = {{255, 75, 75}, {255, 150, 55}, {255, 225, 70}, {245, 245, 245}, {105, 245, 125}};
+    float t = std::clamp((width - 1) / 9.f, 0.f, 1.f) * 4.f;
+    int i = std::min(3, static_cast<int>(t));
+    float f = t - static_cast<float>(i);
+    auto mix = [f](unsigned char a, unsigned char b) { return static_cast<unsigned char>(a + (b - a) * f + .5f); };
+    return {mix(stops[i].r, stops[i + 1].r), mix(stops[i].g, stops[i + 1].g), mix(stops[i].b, stops[i + 1].b)};
 }
 inline std::string fingerprint(std::string const& content) {
     uint64_t h = 14695981039346656037ULL;

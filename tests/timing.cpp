@@ -19,10 +19,10 @@ int main() {
     cf::Recording r; r.key = "test"; r.inputs = input; r.complete = true; r.verified = true;
     r.windows.assign(3, cf::Window{0,0,true,false}); r.trace.push_back({1,1.5f,2,3,4}); r.endTick = 20;
     assert(r.ready());
-    auto rows = cf::visibleCategories(r);
-    assert(rows[0] && !rows[1] && !rows[2] && !rows[3] && !rows[4]);
+    auto rows = cf::makeRows(r, 8);
+    assert(rows.size() == 1 && rows[0].from == 1 && !rows[0].open && cf::label(rows[0]) == "1");
     r.windows[1] = {1, 1, true, false};
-    rows = cf::visibleCategories(r); assert(rows[0] && rows[2]);
+
     r.windows[1] = {0, 0, true, false};
     r.windows[1].measured = false; assert(!r.ready()); r.windows[1].measured = true;
     std::stringstream stream; cf::write(stream,r); cf::Recording loaded;
@@ -37,8 +37,24 @@ int main() {
     assert(cf::shiftAll(run, -5, moved) && moved[0].tick == 0 && moved[1].tick == 4);
     assert(!cf::shiftAll(run, -6, moved) && moved[0].tick == 0); // failed shift leaves out untouched
     assert(cf::shiftAll(run, 2, run) && run[0].tick == 7 && run[1].tick == 11); // in place
+    cf::Recording wide; wide.radius = 20; // 6 distinct widths, 4 rows: 2, 3, 4 exact, then everything wider shares "5+"
+    for (int w : {2, 3, 4, 5, 6, 7}) { wide.inputs.push_back({1, true, 1, true, 0.f, 0.f}); wide.windows.push_back({w - 1, 0, true, false}); }
+    auto wr = cf::makeRows(wide, 4);
+    assert(wr.size() == 4 && wr[3].from == 5 && wr[3].to == 7 && wr[3].open);
+    for (size_t i = 0; i < wide.windows.size(); ++i) assert(cf::rowOf(wr, wide.windows[i]) == std::min<int>(i, 3));
+    assert(cf::makeRows(wide, 1).size() == 2 && cf::makeRows(cf::Recording{}, 8).empty());
+    auto red = cf::colorFor(1), green = cf::colorFor(50);
+    assert(red.r == 255 && red.g == 75 && green.g == 245 && green.r == 105);
     run[0].tick = std::numeric_limits<int>::max();
     auto previous = moved;
     assert(!cf::shiftAll(run, 2, moved) && moved[0].tick == previous[0].tick);
+    // Include empty widths between the observed endpoints; lower-bound only on top.
+    cf::Recording gaps; gaps.inputs.resize(2);
+    gaps.windows = {{2, 0, true, true}, {4, 0, true, false}};
+    auto gr = cf::makeRows(gaps, 8);
+    assert(gr.size() == 3 && gr[0].from == 3 && gr[1].from == 4 && gr[2].from == 5);
+    assert(!gr[0].open && !gr[2].open);
+    gaps.windows[1].lowerBound = true;
+    gr = cf::makeRows(gaps, 8); assert(gr.back().open);
     std::cout << "Timing tests passed\n";
 }
