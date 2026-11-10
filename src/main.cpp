@@ -217,8 +217,16 @@ void resetTrial() {
 // Verify/Analyze run the level behind a cover: objects hidden (nothing to draw) and the
 // game sped up (setting "scan-speed"; 1 = normal). Called every frame, so it undoes itself.
 void applyBackground(bool on) {
-    if (!hasLiveOwner()) return;
     auto scheduler = CCDirector::get()->getScheduler();
+    if (!hasLiveOwner()) {
+        // Scene replacement may already have cleared PlayLayer::get(). Restore
+        // global timing without dereferencing the old layer in that case.
+        if (!on && s.background) {
+            scheduler->setTimeScale(s.previousTimeScale);
+            s.background = false;
+        }
+        return;
+    }
     if (on && !s.background) {
         s.previousTimeScale = scheduler->getTimeScale();
         s.objectsWereVisible = !s.owner->m_objectLayer || s.owner->m_objectLayer->isVisible();
@@ -600,8 +608,10 @@ class $modify(CFPlay, PlayLayer) {
     void onExit() {
         // onExit is a scene lifecycle notification, not destruction. Reparenting
         // and scene overlays must not erase the current recording/session.
-        applyBackground(false);
-        if (s.owner == this && !s.recording.key.empty()) save();
+        if (s.owner == this) {
+            applyBackground(false);
+            if (!s.recording.key.empty()) save();
+        }
         PlayLayer::onExit();
     }
 };

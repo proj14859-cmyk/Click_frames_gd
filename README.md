@@ -5,7 +5,7 @@
 -Correcciones:
 - La verificación reintenta con desfases 0, +1, -1, +2 y -2 ticks antes de fallar; los desvíos de posición se registran como advertencia.
 - Si cambia el desfase de la run, se descartan los márgenes anteriores y se vuelven a medir. Se eliminan las liberaciones posteriores al final que no llegaron a reproducirse.
-- Al pausar, detener o salir del análisis se restauran la velocidad previa y la visibilidad del nivel.
+- Al pausar, detener o salir del análisis se restauran la velocidad previa y la visibilidad del nivel; un cambio de escena también libera la velocidad global.
 - Los paquetes rechazan rutas inválidas, nombres duplicados, datos sobrantes y tamaños excesivos. Si falla el reemplazo de una run se intenta restaurar su copia anterior.
 
 -Mejoras:
