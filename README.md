@@ -1,5 +1,22 @@
 # Click Frames GD
 
+## v0.5.2 / 2026-11-10 / 01:25 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Se bloquea la solicitud automática de checkpoints del jugador durante Verify, Analyze y Play, antes de entrar al código de colocación.
+- Se eliminan los hooks que devolvían nullptr desde createCheckpoint y markCheckpoint: otros mods pueden esperar un objeto válido. Esto corrige una posible causa del acceso nulo mostrado dentro de Mega Hack; requiere prueba con los mods del dispositivo.
+- La música se silencia por volumen durante Verify y Analyze, incluso si los reinicios intentan restaurarlo. Se recupera el volumen previo al pausar, detener o salir.
+
+-Mejoras:
+- La grabación en práctica conserva los checkpoints normales.
+
+-Cambios:
+- La música continúa avanzando en silencio durante el análisis, sin llamadas globales a resumeAllMusic que pudieran reanudar canciones pausadas por GD.
+
+-Implementaciones:
+- Protección en tryPlaceCheckpoint y updateCheckpointTest, limitada a los jugadores de la sesión automática.
+- Versión visible del menú sincronizada con el paquete.
+
 ## v0.5.1 / 2026-11-10 / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

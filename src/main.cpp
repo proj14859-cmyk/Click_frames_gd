@@ -2,6 +2,8 @@
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include "Timing.hpp"
@@ -43,7 +45,8 @@ struct Session {
     bool noRetry = false;
     bool background = false, objectsWereVisible = true;
     float previousTimeScale = 1.f;
-    bool musicPausedByCf = false;
+    bool musicMutedByCf = false;
+    float previousMusicVolume = 0.f;
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
@@ -207,6 +210,7 @@ void stop(std::string message) {
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
     s.resetting = true; releaseInjected(); clearMarkers();
+    if (s.state == State::Verify || s.state == State::Analyze) applyBackground(true);
     // Automated runs stay in practice and reset through the normal practice path.
     if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
     s.owner->removeAllCheckpoints(); s.owner->resetLevel();
@@ -226,9 +230,9 @@ void applyBackground(bool on) {
             scheduler->setTimeScale(s.previousTimeScale);
             s.background = false;
         }
-        if (!on && s.musicPausedByCf) {
-            FMODAudioEngine::get()->resumeAllMusic();
-            s.musicPausedByCf = false;
+        if (!on && s.musicMutedByCf) {
+            s.musicMutedByCf = false;
+            FMODAudioEngine::get()->setBackgroundMusicVolume(s.previousMusicVolume);
         }
         return;
     }
@@ -238,17 +242,18 @@ void applyBackground(bool on) {
         s.background = true;
         scheduler->setTimeScale(static_cast<float>(Mod::get()->getSettingValue<double>("scan-speed")));
         if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(false);
-        FMODAudioEngine::get()->pauseAllMusic(true);
-        s.musicPausedByCf = true;
+        s.previousMusicVolume = FMODAudioEngine::get()->getBackgroundMusicVolume();
+        s.musicMutedByCf = true;
     } else if (!on && s.background) {
         scheduler->setTimeScale(s.previousTimeScale);
         if (s.owner->m_objectLayer) s.owner->m_objectLayer->setVisible(s.objectsWereVisible);
         s.background = false;
-        if (s.musicPausedByCf) {
-            FMODAudioEngine::get()->resumeAllMusic();
-            s.musicPausedByCf = false;
+        if (s.musicMutedByCf) {
+            s.musicMutedByCf = false;
+            FMODAudioEngine::get()->setBackgroundMusicVolume(s.previousMusicVolume);
         }
     }
+    if (on) FMODAudioEngine::get()->setBackgroundMusicVolume(0.f);
     auto cover = s.owner->getChildByID("cf-cover");
     if (on && !cover) {
         auto win = CCDirector::get()->getWinSize();
@@ -434,6 +439,27 @@ void consume() {
 }
 }
 
+class $modify(CFAudio, FMODAudioEngine) {
+    void setBackgroundMusicVolume(float volume) {
+        FMODAudioEngine::setBackgroundMusicVolume(s.musicMutedByCf ? 0.f : volume);
+    }
+};
+
+class $modify(CFPlayer, PlayerObject) {
+    bool blocksCheckpoint() {
+        return hasLiveOwner() && running() &&
+            (this == s.owner->m_player1 || this == s.owner->m_player2);
+    }
+    void tryPlaceCheckpoint() {
+        if (blocksCheckpoint()) return;
+        PlayerObject::tryPlaceCheckpoint();
+    }
+    void updateCheckpointTest() {
+        if (blocksCheckpoint()) return;
+        PlayerObject::updateCheckpointTest();
+    }
+};
+
 class $modify(CFBase, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool p1) {
         if (static_cast<GJBaseGameLayer*>(s.owner) != this) return GJBaseGameLayer::handleButton(down, button, p1);
@@ -541,14 +567,6 @@ class $modify(CFPlay, PlayLayer) {
                 }
             }
         }
-    }
-    CheckpointObject* createCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::createCheckpoint();
-    }
-    CheckpointObject* markCheckpoint() {
-        if (s.owner == this && running()) return nullptr;
-        return PlayLayer::markCheckpoint();
     }
     void storeCheckpoint(CheckpointObject* cp) {
         if (s.owner == this && running()) return;
@@ -772,7 +790,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.5.0", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.5.2", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
