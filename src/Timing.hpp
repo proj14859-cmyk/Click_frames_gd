@@ -20,6 +20,7 @@ struct Input {
     bool p1 = true;
     float x = 0.f, y = 0.f;
     int mode = -1; // legacy unknown; 0 cube, 1 ship, 2 ball, 3 UFO, 4 wave, 5 robot, 6 spider, 7 swing
+    size_t sourceIndex = size_t(-1); // transient identity while a candidate is sorted
 };
 inline bool counted(Input const& e) {
     return e.button == 1 && (e.down || e.mode == 1 || e.mode == 4 || e.mode == 5 || e.mode == 7);
@@ -34,6 +35,8 @@ struct Recording {
     std::string key;
     bool complete = false, verified = false;
     int endTick = 0, radius = 12;
+    int analysisPolicy = 0;
+    std::string backend = "vanilla240";
     std::vector<Input> inputs;
     std::vector<Sample> trace;
     std::vector<Window> windows;
@@ -88,7 +91,11 @@ inline std::string fingerprint(std::string const& content) {
 }
 inline bool trial(std::vector<Input> const& source, size_t index, int offset, std::vector<Input>& out) {
     if (index >= source.size()) return false;
-    out = source; out[index].tick += offset;
+    out = source;
+    for (size_t i = 0; i < out.size(); ++i) out[i].sourceIndex = i;
+    auto shiftedTick = static_cast<int64_t>(out[index].tick) + offset;
+    if (shiftedTick < 0 || shiftedTick > std::numeric_limits<int>::max()) return false;
+    out[index].tick = static_cast<int>(shiftedTick);
     auto e = out[index];
     if (e.tick < 0) return false;
     for (size_t i = 0; i < out.size(); ++i) {
@@ -117,8 +124,9 @@ inline Window measure(std::vector<bool> const& success, int radius) {
     return w;
 }
 inline void write(std::ostream& out, Recording const& r) {
-    out << "CLICKFRAMES 3 " << std::quoted(r.key) << ' ' << r.complete << ' ' << r.verified
-        << ' ' << r.endTick << ' ' << r.radius << ' ' << r.inputs.size() << ' ' << r.trace.size() << '\n';
+    out << "CLICKFRAMES 4 " << std::quoted(r.key) << ' ' << r.complete << ' ' << r.verified
+        << ' ' << r.endTick << ' ' << r.radius << ' ' << r.inputs.size() << ' ' << r.trace.size()
+        << ' ' << r.analysisPolicy << ' ' << std::quoted(r.backend) << '\n';
     out << std::setprecision(9);
     for (size_t i = 0; i < r.inputs.size(); ++i) {
         auto e = r.inputs[i]; auto w = i < r.windows.size() ? r.windows[i] : Window{};
@@ -131,13 +139,15 @@ inline void write(std::ostream& out, Recording const& r) {
 inline bool read(std::istream& in, std::string const& key, Recording& result) {
     Recording r; std::string magic; int version; size_t count, samples;
     if (!(in >> magic >> version >> std::quoted(r.key) >> r.complete >> r.verified >> r.endTick >> r.radius >> count >> samples)
-        || magic != "CLICKFRAMES" || (version != 2 && version != 3) || r.key != key || r.radius < 1 || r.radius > 60
+        || magic != "CLICKFRAMES" || (version != 2 && version != 3 && version != 4) || r.key != key || r.radius < 1 || r.radius > 60
         || count > 1000000 || samples > 2000000 || r.endTick < 0) return false;
+    if (version == 4 && (!(in >> r.analysisPolicy >> std::quoted(r.backend)) || r.analysisPolicy < 0 || r.analysisPolicy > 1 ||
+        (r.backend != "vanilla240" && r.backend != "cos240"))) return false;
     int last = -1;
     for (size_t i = 0; i < count; ++i) {
         Input e; Window w;
         if (!(in >> e.tick >> e.down >> e.button >> e.p1 >> e.x >> e.y)) return false;
-        if (version == 3 && (!(in >> e.mode) || e.mode < -1 || e.mode > 7)) return false;
+        if (version >= 3 && (!(in >> e.mode) || e.mode < -1 || e.mode > 7)) return false;
         if (!(in >> w.early >> w.late >> w.measured >> w.lowerBound)
             || e.tick < 0 || e.tick < last || (r.complete && e.tick > r.endTick) || e.button < 1 || e.button > 3 || w.early < 0 || w.late < 0
             || w.early > r.radius || w.late > r.radius || !std::isfinite(e.x) || !std::isfinite(e.y)) return false;

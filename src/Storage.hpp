@@ -39,6 +39,7 @@ inline std::string scanReport(Recording const& r, std::string const& status) {
     }
     std::ostringstream out;
     out << "Click Frames GD\nFingerprint: " << r.key << "\nTPS: 240\nVerified: " << r.verified
+        << "\nBackend: " << r.backend << "\nLanding policy: " << r.analysisPolicy
         << "\nComplete: " << r.complete << "\nMeasured jump events: " << measured << '/' << total
         << "\nSearch radius: " << r.radius << "\nStatus: " << status
         << "\nCSV files are derived; capture.cfr is authoritative.\n";
@@ -55,7 +56,9 @@ inline std::string metadataJson(Recording const& r) {
     std::ostringstream out;
     out << "{\n  \"schema\": 1,\n  \"fingerprint\": \"" << key.str()
         << "\",\n  \"gd\": \"2.2081\",\n  \"geode\": \"5.11.2\",\n  \"tps\": 240,\n"
-        << "  \"capture\": \"capture.cfr\",\n  \"complete\": " << (r.complete ? "true" : "false")
+        << "  \"capture_format\": 4,\n  \"backend\": " << std::quoted(r.backend)
+        << ",\n  \"analysis_policy\": " << r.analysisPolicy
+        << ",\n  \"capture\": \"capture.cfr\",\n  \"complete\": " << (r.complete ? "true" : "false")
         << ",\n  \"verified\": " << (r.verified ? "true" : "false") << ",\n  \"end_tick\": " << r.endTick << "\n}\n";
     return out.str();
 }

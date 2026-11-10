@@ -1,0 +1,40 @@
+#include "../src/Analysis.hpp"
+#include <cassert>
+#include <sstream>
+#include <iostream>
+int main() {
+    for (int radius = 1; radius <= 6; ++radius) {
+        for (unsigned mask = 0; mask < (1u << (2 * radius)); ++mask) {
+            std::vector<bool> truth(2 * radius + 1, false); truth[radius] = true;
+            int bit = 0;
+            for (int i = 0; i <= 2 * radius; ++i) if (i != radius) truth[i] = (mask >> bit++) & 1u;
+            cf::ContinuousSearch search; search.reset(radius); int calls = 0;
+            while (!search.done) {
+                assert(search.offset && std::abs(search.offset) <= radius);
+                search.accept(truth[search.offset + radius]); assert(++calls <= 2 * radius);
+            }
+            auto fast = search.window(), exhaustive = cf::measure(truth, radius);
+            assert(fast.early == exhaustive.early && fast.late == exhaustive.late && fast.lowerBound == exhaustive.lowerBound);
+        }
+    }
+    cf::ContinuousSearch narrow; narrow.reset(12); narrow.accept(false); narrow.accept(false);
+    assert(narrow.done && narrow.window().width() == 1);
+    cf::Landing reference{true, 200, 1234, 100, 30}, candidate{true, 203, 1234, 120, 32};
+    assert(cf::sameLanding(reference, candidate, 60));
+    candidate.platform = 4567; assert(!cf::sameLanding(reference, candidate, 60));
+    candidate.platform = 1234; candidate.x = 200; assert(!cf::sameLanding(reference, candidate, 60));
+    candidate.x = 100; candidate.y = 100; assert(!cf::sameLanding(reference, candidate, 60));
+    cf::Predictions predictions{{2, {{-1, 120, false, {{110, 1, 2, 3, 4}, {119, 5, 6, 7, 8}}}}}}, loaded;
+    std::stringstream out; cf::writePredictions(out, "hash", predictions);
+    assert(cf::readPredictions(out, "hash", 3, loaded) && loaded[2][0].points.size() == 2);
+    std::stringstream mismatch; cf::writePredictions(mismatch, "hash", predictions);
+    assert(!cf::readPredictions(mismatch, "other", 3, loaded));
+    std::stringstream bad("CFPRED 1 hash 1\n3 -1 0 10 9 1 2 3 4\n");
+    assert(!cf::readPredictions(bad, "hash", 3, loaded));
+    std::vector<cf::Input> inputs{{10, true, 1, true}, {11, true, 1, false}}, trial;
+    assert(cf::trial(inputs, 0, 2, trial) && trial[0].sourceIndex == 1 && trial[1].sourceIndex == 0);
+    cf::Recording recording; recording.key = "profile"; recording.backend = "cos240"; recording.analysisPolicy = 1;
+    std::stringstream capture; cf::write(capture, recording); cf::Recording restored;
+    assert(cf::read(capture, "profile", restored) && restored.backend == "cos240" && restored.analysisPolicy == 1);
+    std::cout << "Analysis tests passed\n";
+}

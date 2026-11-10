@@ -1,4 +1,29 @@
-# Click Frames 0.7.0 — experimental
+# Click Frames 0.8.0 — experimental
+
+## 0.8 analysis engine boundaries
+
+ContinuousSearch traverses the connected success interval around zero. Tests
+compare it exhaustively to measure() for every outcome mask up to radius 6.
+Invalid candidates count as failures without simulation. Native states are one
+retained CheckpointObject per target, captured strictly before its earliest test
+input. Baseline capture and native restore are separate automated runs. Restore
+must match the saved tick, sampled P1/P2 positions and original completion tick.
+On mismatch the state is discarded. Cached failures are rerun from zero. This
+does not constitute a universal full-state proof, hence opt-in only.
+
+Landing references are generated anew by Verify, using the first airborne-to-ground
+transition before the next press in cube/robot. Platform identity is a runtime
+pointer and never serialized. No landing reference means full-route validation.
+Candidates must match the platform and a 60x6 unit position tolerance, then finish
+the level. This is a bounded landing corridor, not semantic obstacle recognition.
+
+Trajectory previews are bounded measured candidate traces, not live isolated-world
+simulation. Hash-keyed prediction-trails.txt is derivative and optional. Native
+checkpoint pointers never go to disk. The three-branch/32768-point budget bounds
+memory; exact replays require an unchanged capture/profile. CFR 4 stores policy
+and vanilla240/cos240 input profile; CBF substep replay is not implemented. An
+external CBF provider needs a real substep replay API or an equivalent validated
+integration, not a wall-clock timestamp bolted onto integer-tick injection.
 
 ## Showcase event policy and units
 

@@ -1,5 +1,37 @@
 # Click Frames GD
 
+## v0.8.0 / 2026-11-10 / 02:34 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Búsqueda desde el input original: -1, -2... hasta el primer fallo; después +1, +2... hasta el primer fallo. Conserva el intervalo continuo del método exhaustivo y deja de probar islas desconectadas.
+- Los inputs conservan su identidad al ordenar candidatos para dual/botones independientes.
+- CFR 4 guarda la política de análisis y el perfil vanilla240/cos240; lee CFR 2/3. Un cambio de política invalida márgenes anteriores.
+
+-Mejoras:
+- Validate reference landing: en saltos de cubo/robot con aterrizaje observado en Verify, el primer aterrizaje debe coincidir en plataforma y quedar dentro de 60 unidades horizontales / 6 verticales de la referencia. Además debe terminar la run. No identifica semánticamente todos los obstáculos; los demás casos conservan la validación de ruta completa.
+- Hasta tres trazos por evento (un éxito y el primer fallo de cada lado) se muestran durante Play. Verde significa candidato que pasó la prueba y rojo candidato rechazado; la cruz señala el final de rechazo capturado, que puede ser una muerte o un aterrizaje fuera de la zona.
+
+-Cambios:
+- La vista previa usa simulaciones de candidatos ya ejecutadas y la secuencia grabada. No predice inputs manuales nuevos, no se calcula en vivo antes del análisis y puede truncarse por límites de memoria/tiempo.
+- Native state cache es experimental y está desactivado por defecto. Usa el estado nativo del checkpoint de GD; no es una copia completa del proceso ni del estado privado de los otros mods.
+- Los archivos nuevos requieren esta versión: los lectores antiguos no admiten CFR 4. Las capturas anteriores se conservan como backup al reemplazarlas.
+
+-Implementaciones:
+- Experimental native state cache: captura antes de la ventana del input, valida una repetición original desde ese estado contra posiciones de ambos jugadores y tick final, y reutiliza el estado en ese evento. Si falla, reinicia desde cero. El primer fallo de una prueba con caché se confirma desde cero antes de fijar el margen. Esta validación no demuestra equivalencia de todo el estado de triggers o de otros mods.
+- Analyzed trajectory preview: hasta 256 puntos por rama y 32768 puntos totales. Se guarda en `prediction-trails.txt` con hash del capture.cfr; se descarta si no coincide. Las previews no viajan en .cfpack. Analyze vuelve a medir una run completa importada sin previews para generarlas.
+- Perfil CoS de syzzi.click_between_frames: permite Click on Steps con física de 240 TPS y sin Physics Bypass. El perfil debe coincidir entre Record y Analyze/Play; cambiarlo durante la reproducción detiene la tarea. Compatibilidad runtime pendiente de prueba en Android.
+- Pruebas del buscador contra todos los patrones hasta radio 6, corredores de aterrizaje, caché de trazos, identidad de inputs y CFR 4.
+
+### Qué queda pendiente del plan completo
+
+CBF fraccionario y CBF Lite siguen bloqueados: almacenar ticks enteros o un reloj de pared no reproduce sus subpasos físicos. Se inspeccionó el código público de [CBF](https://github.com/theyareonit/Click-Between-Frames): subdivide PlayerObject::update y las colisiones, y no expone una interfaz pública de replay para su cola. Hace falta un adaptador de captura e inyección de esos subpasos y pruebas de equivalencia; esta versión no lo sustituye por un reloj aproximado.
+
+También quedan pendientes estados universales independientes de otros mods, validación semántica de cualquier salto y predicción de inputs manuales arbitrarios. Las funciones experimentales de arriba son partes concretas del plan, no una implementación completa de esas capacidades.
+
+### Prueba en dispositivo
+
+Primero analiza un nivel corto con Native state cache desactivado; comprueba ventanas y trazos. Repite con la caché activa y compara resultados. Prueba aterrizajes en plataformas móviles, dual, portales y muertes antes/después del target. Comprueba que Stop, Replay y salir del nivel no reutilizan un estado anterior. Con CBF usa Click on Steps y Physics Bypass desactivado; vuelve a grabar en ese perfil. No hay garantía runtime por el mero hecho de compilar.
+
 ## v0.7.0 / 2026-11-10 / 02:07 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
