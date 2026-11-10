@@ -7,6 +7,7 @@
 #include <Geode/modify/CCScheduler.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
+#include <Geode/utils/cocos.hpp>
 #include "Timing.hpp"
 #include "Storage.hpp"
 #include "Pack.hpp"
@@ -74,12 +75,10 @@ struct CollisionState {
 struct EnumerateCollisionLog {
     template<class Callback>
     void operator()(CCDictionary* dictionary, Callback const& callback) const {
-        CCDictElement* entry = nullptr;
-        CCDICT_FOREACH(dictionary, entry) {
-            if (dictionary->m_eDictType == CCDictionary::kCCDictInt)
-                callback(entry->getIntKey(), entry->getObject());
-            else if (dictionary->m_eDictType == CCDictionary::kCCDictStr)
-                callback(std::string(entry->getStrKey()), entry->getObject());
+        if (dictionary->m_eDictType == CCDictionary::kCCDictInt) {
+            for (auto [key, value] : dictionary->asExt<intptr_t, CCObject>()) callback(key, value);
+        } else if (dictionary->m_eDictType == CCDictionary::kCCDictStr) {
+            for (auto [key, value] : dictionary->asExt<std::string_view, CCObject>()) callback(std::string(key), value);
         }
     }
 };
