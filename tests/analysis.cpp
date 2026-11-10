@@ -9,6 +9,12 @@ int main() {
     repeated = original; repeated.flags[7] = 1; assert(!cf::matches(original, repeated));
     repeated = original; repeated.values[0] = std::numeric_limits<double>::quiet_NaN();
     assert(!cf::matches(repeated, repeated));
+    std::vector<cf::Input> tap{{10, true, 1, true, 0, 0, 0}, {11, false, 1, true, 0, 0, 0}, {20, true, 1, true, 0, 0, 0}}, moved;
+    assert(cf::candidateTrial(tap, 0, 3, moved));
+    assert(moved[0].tick == 13 && moved[1].tick == 14);
+    assert(!cf::candidateTrial(tap, 0, 10, moved));
+    tap[0].mode = tap[1].mode = 5;
+    assert(!cf::candidateTrial(tap, 0, 3, moved)); // Robot release remains independently meaningful.
     std::vector<cf::Input> endInputs{{10, true, 1, true}, {15, false, 1, true}};
     assert(!cf::allPressesDispatched(endInputs, 0));
     assert(cf::allPressesDispatched(endInputs, 1));

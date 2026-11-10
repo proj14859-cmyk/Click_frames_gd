@@ -757,7 +757,7 @@ void startCandidate() {
     }
     s.message = fmt::format("{} {}% | event {}/{} | offset {:+} | {} tests", s.recording.analysisPolicy == 2 ? "Local" : "Full run",
         100 * s.measuredDone / std::max<size_t>(1, s.measurableTotal), s.measuredDone + 1, s.measurableTotal, s.offset, s.tests);
-    if (!cf::trial(s.recording.inputs, s.target, s.offset, s.trial)) {
+    if (!cf::candidateTrial(s.recording.inputs, s.target, s.offset, s.trial)) {
         s.pending = Pending::Fail; return;
     }
     resetTrial();
@@ -1253,7 +1253,13 @@ class $modify(CFPlay, PlayLayer) {
         if (active && player->m_isDead && s.owner == this && running() &&
             s.pending == Pending::None) {
             s.message = fmt::format("Replay died at tick {}", tick());
-            s.pending = s.state == State::Analyze && !s.validatingSnapshot && !s.targetExecuted ? Pending::Invalid : Pending::Fail;
+            // A delayed jump may legitimately die before its shifted press.
+            // Only death before BOTH original and candidate times is unrelated
+            // to the perturbation and must not narrow the measured window.
+            int firstChanged = s.state == State::Analyze && s.target < s.recording.inputs.size() ?
+                s.recording.inputs[s.target].tick + std::min(0, s.offset) : 0;
+            s.pending = s.state == State::Analyze && !s.validatingSnapshot && tick() < firstChanged ?
+                Pending::Invalid : Pending::Fail;
             log::info("[CF] actual death: tick {}, player {}, first input {}", tick(),
                 player == m_player1 ? 1 : 2, s.trial.empty() ? -1 : s.trial.front().tick);
         }

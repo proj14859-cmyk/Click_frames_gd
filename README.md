@@ -3,8 +3,9 @@
 ## v1.0.0 / 2026-11-10 / 22:00 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
-- Timeout, bloqueo y muerte anterior al input modificado dejan la ventana sin medir. Una zona local distinta ya no se convierte automaticamente en fallo fisico.
+- Timeout, bloqueo y muerte anterior tanto al input original como al desplazado dejan la ventana sin medir. Morir esperando un salto retrasado sigue siendo fallo fisico valido. Una zona local distinta ya no se convierte automaticamente en fallo fisico.
 - Verify parte de capture.flr en cada analisis; la alineacion se aplica solo al playback. Las medidas previas se invalidan si cambia esa alineacion.
+- Los taps de cubo/bola/arana conservan su duracion desplazando press y release del mismo modo, sin cruzar el siguiente input. Robot y vuelo conservan la liberacion independiente. Es una politica de perturbacion explicita, no una medida de press con hold fijo.
 
 -Mejoras:
 - Scheduler por lotes de hasta 256 slices, con presupuesto de 8 ms por pantalla. Conserva el orden normal de actualizaciones y hooks; el nivel permanece oculto entre slices.
