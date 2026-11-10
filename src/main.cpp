@@ -10,6 +10,7 @@
 #include "Storage.hpp"
 #include "Pack.hpp"
 #include "Analysis.hpp"
+#include "Editor.hpp"
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -62,10 +63,17 @@ struct Session {
     int snapshotTick = -1, snapshotEndTick = 0;
     size_t snapshotNext = 0, snapshotCompared = 0;
     std::array<bool, 6> snapshotHeld{};
+    gd::vector<PlayerButtonCommand> snapshotButtons;
+    gd::vector<RecordButtonCommand> snapshotRecordedButtons, snapshotReplayButtons;
+    uint64_t snapshotRandomSeed = 0, snapshotReplaySeed = 0;
+    double snapshotExtraDelta = 0;
+    int snapshotStep = 0, snapshotRecordedSize = 0, snapshotResumeTimer = 0;
     std::map<int, cf::Sample> snapshotTrace;
     cf::Predictions predictions;
     std::vector<cf::Sample> candidateTrace;
     int drawnPreview = -1;
+    cf::VisualEdits visual;
+    size_t nextVisual = 0;
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
@@ -289,7 +297,15 @@ void resetTrial() {
             log::warn("[CF] snapshot restore tick mismatch; disabling native cache");
             s.snapshot = nullptr; s.snapshotChecked = false;
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
-        } else { s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld; }
+        } else {
+            s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld;
+            s.owner->m_queuedButtons = s.snapshotButtons;
+            s.owner->m_queuedRecordedButtons = s.snapshotRecordedButtons;
+            s.owner->m_queuedReplayButtons = s.snapshotReplayButtons;
+            s.owner->m_randomSeed = s.snapshotRandomSeed; s.owner->m_replayRandSeed = s.snapshotReplaySeed;
+            s.owner->m_extraDelta = s.snapshotExtraDelta; s.owner->m_currentStep = s.snapshotStep;
+            s.owner->m_queuedRecordedButtonsSize = s.snapshotRecordedSize; s.owner->m_resumeTimer = s.snapshotResumeTimer;
+        }
     }
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0; s.lastPressTick = -1; s.lastIntervalMs = -1.f; s.divergences = 0;
@@ -404,8 +420,36 @@ void clearMarkers() {
     s.drawnPreview = -1;
 }
 void prepareShowcase() {
-    s.rows = cf::makeRows(s.recording, static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-rows")));
+    cf::Recording visual;
+    if (s.visual.enabled) visual = cf::visualCounter(s.visual);
+    auto const& counter = s.visual.enabled ? visual : s.recording;
+    s.rows = cf::makeRows(counter, static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-rows")));
+    s.nextVisual = 0;
     s.tally.assign(s.rows.size(), 0); clearMarkers();
+}
+cf::Rgb visualColor(cf::VisualMarker const& m) {
+    static constexpr cf::Rgb colors[] = {{255, 255, 255}, {255, 75, 75}, {255, 225, 70}, {80, 235, 245}, {105, 245, 125}, {255, 255, 255}};
+    return m.color == 0 ? cf::colorFor(m.width) : colors[std::clamp(m.color, 1, 5)];
+}
+void visualMarker(cf::VisualMarker const& m) {
+    cf::Window window{m.width - 1, 0, true, false};
+    if (m.count) if (int row = cf::rowOf(s.rows, window); row >= 0 && size_t(row) < s.tally.size()) ++s.tally[row];
+    if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
+        auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
+        if (!root) { root = CCNode::create(); root->setID("cf-markers"); s.owner->m_objectLayer->addChild(root, 1000); }
+        auto position = cf::positionAt(s.recording.trace, m.tick, m.p1);
+        auto node = CCNode::create(); node->setPosition({position.x, position.y}); root->addChild(node);
+        auto color = visualColor(m);
+        ccColor4F border{color.r / 255.f, color.g / 255.f, color.b / 255.f, 1.f};
+        float scale = m.scale * static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale"));
+        auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, {0, 0, 0, 0}, 2.f, border, 48); node->addChild(circle);
+        auto label = CCLabelBMFont::create(fmt::format("{} F", m.width).c_str(), "bigFont.fnt");
+        label->setScale(.28f * scale); label->setColor({color.r, color.g, color.b}); label->setPosition({0, 27.f * scale}); node->addChild(label);
+    }
+    if (m.sound && Mod::get()->getSettingValue<bool>("sounds")) {
+        auto sound = m.width > 20 ? "frame-wide.wav" : fmt::format("frame-{}.wav", m.width);
+        FMODAudioEngine::get()->playEffect(fmt::format("{}/{}", Mod::get()->getID(), sound));
+    }
 }
 void marker(size_t index) {
     auto const e = s.recording.inputs[index];
@@ -413,6 +457,7 @@ void marker(size_t index) {
         if (s.lastPressTick >= 0) s.lastIntervalMs = (e.tick - s.lastPressTick) * 1000.f / 240.f;
         s.lastPressTick = e.tick;
     }
+    if (s.visual.enabled) return;
     if (!cf::counted(e)) return;
     auto w = s.recording.windows[index];
     if (!w.measured) return;
@@ -453,7 +498,7 @@ std::string inputBackend() {
 void predictionPreview() {
     if (!s.owner->m_objectLayer) return;
     int selected = -1;
-    if (Mod::get()->getSettingValue<bool>("trajectory-preview")) {
+    if (!s.visual.enabled && Mod::get()->getSettingValue<bool>("trajectory-preview")) {
         for (auto const& [index, branches] : s.predictions) {
             if (index >= s.recording.inputs.size()) continue;
             int delta = s.recording.inputs[index].tick - tick();
@@ -686,6 +731,10 @@ class $modify(CFBase, GJBaseGameLayer) {
                 handleButton(e.down, e.button, e.p1);
                 if (s.state == State::Playback) marker(index);
             }
+            if (s.state == State::Playback && s.visual.enabled) {
+                while (s.nextVisual < s.visual.markers.size() && s.visual.markers[s.nextVisual].tick <= tick())
+                    visualMarker(s.visual.markers[s.nextVisual++]);
+            }
             s.injecting = false;
             if (tick() > s.recording.endTick + 2400) {
                 s.message = "Replay timed out"; s.pending = Pending::Fail;
@@ -714,6 +763,12 @@ class $modify(CFPlay, PlayLayer) {
             s.message = s.recording.ready() ? "Saved showcase available" : "Saved run: Analyze to continue";
             std::ifstream predictions(path().parent_path() / "prediction-trails.txt");
             cf::readPredictions(predictions, cf::fingerprint(readAll(path())), s.recording.inputs.size(), s.predictions);
+            if (!s.recording.trace.empty()) {
+                std::istringstream edits(readAll(path().parent_path() / "showcase-edits.json"));
+                cf::readEdits(edits, s.recording.key, cf::fingerprint(cf::traceCsv(s.recording)),
+                    s.recording.trace.front().tick, s.recording.trace.back().tick, s.visual);
+            }
+            if (s.visual.enabled && s.recording.complete) s.message = "Edited showcase available (visual values)";
             save(); // Regenerate derived files on opening imported or migrated captures.
         } else if (std::filesystem::exists(recordingPath)) s.message = "Recording format changed. Record a new run.";
         layer->unschedule(schedule_selector(CFPlay::service));
@@ -763,6 +818,11 @@ class $modify(CFPlay, PlayLayer) {
                     auto checkpoint = createCheckpoint();
                     if (checkpoint) {
                         s.snapshot = checkpoint; s.snapshotTick = now; s.snapshotNext = s.next; s.snapshotHeld = s.injectedHeld;
+                        s.snapshotButtons = m_queuedButtons;
+                        s.snapshotRecordedButtons = m_queuedRecordedButtons; s.snapshotReplayButtons = m_queuedReplayButtons;
+                        s.snapshotRandomSeed = m_randomSeed; s.snapshotReplaySeed = m_replayRandSeed;
+                        s.snapshotExtraDelta = m_extraDelta; s.snapshotStep = m_currentStep;
+                        s.snapshotRecordedSize = m_queuedRecordedButtonsSize; s.snapshotResumeTimer = m_resumeTimer;
                     }
                 }
                 if (s.preparingSnapshot && s.snapshot && s.snapshotTrace.size() < 8192) s.snapshotTrace[now] = point;
@@ -915,6 +975,185 @@ class $modify(CFPlay, PlayLayer) {
     }
 };
 
+class CFEditor : public Popup {
+    cf::EditHistory m_history;
+    cf::VisualMarker m_brush;
+    PlayLayer* m_owner = nullptr;
+    std::string m_key, m_traceKey;
+    int m_cursor = 0, m_first = 0, m_last = 0, m_selected = -1, m_chainStart = 0, m_span = 480;
+    float m_spacing = 20.f;
+    bool m_sync = false;
+    Slider* m_timeline = nullptr;
+    CCNode* m_plot = nullptr;
+    CCLabelBMFont *m_time = nullptr, *m_selection = nullptr, *m_color = nullptr,
+        *m_count = nullptr, *m_sound = nullptr, *m_player = nullptr, *m_enabled = nullptr, *m_step = nullptr;
+    bool valid() const {
+        return hasLiveOwner() && s.owner == m_owner && s.recording.key == m_key && s.owner->m_isPaused &&
+            !running() && s.state != State::Record && !s.recording.trace.empty();
+    }
+    CCLabelBMFont* label(std::string const& text, CCPoint pos, float scale = .5f) {
+        auto l = CCLabelBMFont::create(text.c_str(), "chatFont.fnt"); l->setPosition(pos); l->setScale(scale);
+        m_mainLayer->addChild(l); return l;
+    }
+    CCLabelBMFont* button(char const* text, CCPoint pos, float width, std::function<void()> action) {
+        auto card = CCScale9Sprite::create("square02b_001.png"); card->setContentSize({width, 20}); card->setColor({35, 65, 85});
+        auto l = CCLabelBMFont::create(text, "chatFont.fnt"); l->limitLabelWidth(width - 6, .48f, .25f);
+        l->setPosition({width / 2, 10}); card->addChild(l);
+        auto item = CCMenuItemExt::createSpriteExtra(card, [this, action](auto) {
+            auto invoke = action;
+            if (!valid()) { onClose(nullptr); return; }
+            invoke();
+        });
+        item->m_scaleMultiplier = 1.f; m_buttonMenu->addChild(item);
+        item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace(pos)));
+        return l;
+    }
+    void changeStyle(std::function<void(cf::VisualMarker&)> const& fn) {
+        if (m_selected >= 0 && size_t(m_selected) < m_history.current.markers.size()) {
+            m_history.change([&](auto& doc) { fn(doc.markers[m_selected]); });
+            m_brush = m_history.current.markers[m_selected];
+        } else fn(m_brush);
+        refresh();
+    }
+    void select(int direction) {
+        auto const& markers = m_history.current.markers;
+        if (markers.empty()) { m_selected = -1; refresh(); return; }
+        std::vector<size_t> order;
+        for (size_t i = 0; i < markers.size(); ++i) order.push_back(i);
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return markers[a].tick < markers[b].tick; });
+        auto it = std::find(order.begin(), order.end(), size_t(m_selected));
+        int index = it == order.end() ? (direction > 0 ? -1 : 0) : int(it - order.begin());
+        index = (index + direction + int(order.size())) % int(order.size());
+        m_selected = int(order[index]); m_brush = markers[m_selected]; m_cursor = m_brush.tick; refresh();
+    }
+    void add() {
+        if (m_history.current.markers.size() >= cf::MAX_VISUAL_MARKERS) { FLAlertLayer::create("Limite", "Maximo 5000 circulos por presentacion.", "OK")->show(); return; }
+        m_brush.tick = m_cursor;
+        m_history.change([&](auto& doc) { doc.markers.push_back(m_brush); doc.enabled = true; });
+        m_selected = int(m_history.current.markers.size()) - 1; refresh();
+    }
+    void chain() {
+        std::vector<cf::VisualMarker> markers;
+        int from = std::min(m_chainStart, m_cursor), to = std::max(m_chainStart, m_cursor);
+        if (!cf::chainMarkers(s.recording.trace, from, to, m_spacing, m_brush,
+            cf::MAX_VISUAL_MARKERS - m_history.current.markers.size(), markers)) {
+            FLAlertLayer::create("Cadena", "No se pudo crear la cadena: limite de circulos o tramo no valido.", "OK")->show(); return;
+        }
+        m_history.change([&](auto& doc) { doc.markers.insert(doc.markers.end(), markers.begin(), markers.end()); doc.enabled = true; });
+        m_selected = int(m_history.current.markers.size()) - 1; m_brush = m_history.current.markers.back(); refresh();
+    }
+    void saveEdits() {
+        if (cf::fingerprint(cf::traceCsv(s.recording)) != m_traceKey) {
+            FLAlertLayer::create("Trayectoria distinta", "La captura cambio. Cierra y vuelve a abrir el editor.", "OK")->show(); return;
+        }
+        auto doc = m_history.current;
+        std::stable_sort(doc.markers.begin(), doc.markers.end(), [](auto const& a, auto const& b) { return a.tick < b.tick; });
+        std::ostringstream text; cf::writeEdits(text, m_key, m_traceKey, doc);
+        if (!writeSafe(path().parent_path() / "showcase-edits.json", text.str())) {
+            FLAlertLayer::create("Error", "No se pudo guardar la presentacion. La captura original no se ha cambiado.", "OK")->show(); return;
+        }
+        s.visual = std::move(doc); s.message = s.visual.enabled ? "Edited showcase saved. Frames > Play" : "Original measured showcase selected";
+        onClose(nullptr);
+    }
+    void refresh() {
+        if (!valid()) { onClose(nullptr); return; }
+        auto const& markers = m_history.current.markers;
+        if (m_selected >= 0 && size_t(m_selected) >= markers.size()) m_selected = -1;
+        if (m_selected >= 0) m_brush = markers[m_selected];
+        m_cursor = std::clamp(m_cursor, m_first, m_last);
+        m_sync = true; m_timeline->setValue(float(m_cursor - m_first) / std::max(1, m_last - m_first)); m_sync = false;
+        m_time->setString(fmt::format("Tick {} | {:.2f}s | {} circulos", m_cursor, m_cursor / 240.f, markers.size()).c_str());
+        m_time->limitLabelWidth(190, .48f, .25f);
+        m_selection->setString(fmt::format("{} | {} F", m_selected < 0 ? "Pincel" : fmt::format("Circulo {}", m_selected + 1), m_brush.width).c_str());
+        static char const* colors[] = {"Auto", "Rojo", "Amarillo", "Cian", "Verde", "Blanco"};
+        m_color->setString(fmt::format("Color: {}", colors[m_brush.color]).c_str()); m_color->limitLabelWidth(110, .48f, .25f);
+        m_count->setString(m_brush.count ? "Cuenta: SI" : "Cuenta: NO");
+        m_sound->setString(m_brush.sound ? "Audio: SI" : "Audio: NO");
+        m_player->setString(fmt::format("Jugador {} | Tam {:.2f}", m_brush.p1 ? 1 : 2, m_brush.scale).c_str());
+        m_enabled->setString(m_history.current.enabled ? "Editado: SI" : "Editado: NO");
+        m_step->setString(fmt::format("Paso: {:.0f}u", m_spacing).c_str());
+        m_plot->removeAllChildren();
+        int from = m_span ? std::max(m_first, m_cursor - m_span / 2) : m_first;
+        int to = m_span ? std::min(m_last, m_cursor + m_span / 2) : m_last;
+        std::vector<std::pair<int, cf::TracePoint>> points;
+        points.push_back({from, cf::positionAt(s.recording.trace, from, m_brush.p1)});
+        auto it = std::lower_bound(s.recording.trace.begin(), s.recording.trace.end(), from, [](auto const& p, int tick) { return p.tick < tick; });
+        auto end = std::upper_bound(s.recording.trace.begin(), s.recording.trace.end(), to, [](int tick, auto const& p) { return tick < p.tick; });
+        size_t stride = std::max<size_t>(1, size_t(end - it) / 1024);
+        for (size_t i = 0; it != end; ++it, ++i) if (i % stride == 0) points.push_back({it->tick, {m_brush.p1 ? it->x : it->x2, m_brush.p1 ? it->y : it->y2}});
+        points.push_back({to, cf::positionAt(s.recording.trace, to, m_brush.p1)});
+        float minX = points[0].second.x, maxX = minX, minY = points[0].second.y, maxY = minY;
+        for (auto const& p : points) { minX = std::min(minX, p.second.x); maxX = std::max(maxX, p.second.x); minY = std::min(minY, p.second.y); maxY = std::max(maxY, p.second.y); }
+        float scale = std::min(246.f / std::max(24.f, maxX - minX), 76.f / std::max(24.f, maxY - minY));
+        auto screen = [&](cf::TracePoint p) { return CCPoint{148.f + (p.x - (minX + maxX) / 2) * scale, 158.f + (p.y - (minY + maxY) / 2) * scale}; };
+        auto draw = CCDrawNode::create(); m_plot->addChild(draw);
+        for (size_t i = 1; i < points.size(); ++i) {
+            auto a = points[i - 1].second, b = points[i].second;
+            if (std::hypot(b.x - a.x, b.y - a.y) <= 256.f) draw->drawSegment(screen(a), screen(b), .7f, {.4f, .65f, .8f, .8f});
+        }
+        for (size_t i = 0; i < markers.size(); ++i) {
+            auto const& m = markers[i]; if (m.tick < from || m.tick > to || m.p1 != m_brush.p1) continue;
+            auto p = screen(cf::positionAt(s.recording.trace, m.tick, m.p1)); auto c = visualColor(m);
+            draw->drawCircle(p, 5.f * m.scale, {0, 0, 0, 0}, int(i) == m_selected ? 2.f : 1.f, {c.r / 255.f, c.g / 255.f, c.b / 255.f, 1}, 32);
+            if (markers.size() < 200 || int(i) == m_selected) {
+                auto text = CCLabelBMFont::create(fmt::format("{} F", m.width).c_str(), "chatFont.fnt"); text->setScale(.36f); text->setColor({c.r, c.g, c.b}); text->setPosition(p + CCPoint{0, 11}); m_plot->addChild(text);
+            }
+        }
+        draw->drawCircle(screen(cf::positionAt(s.recording.trace, m_cursor, m_brush.p1)), 2.5f, {.3f, 1.f, .9f, 1.f}, 1.f, {1, 1, 1, 1}, 20);
+    }
+    void onSeek(CCObject*) {
+        if (m_sync || !valid()) return;
+        auto tick = int64_t(m_first) + std::llround(double(m_timeline->getValue()) * (int64_t(m_last) - m_first));
+        m_cursor = static_cast<int>(std::clamp<int64_t>(tick, m_first, m_last)); refresh();
+    }
+    bool init() {
+        if (!hasLiveOwner() || running() || s.state == State::Record || s.recording.trace.empty() || !s.owner->m_isPaused) return false;
+        if (!Popup::init(430, 270)) return false;
+        setTitle("EDITOR VISUAL"); m_owner = s.owner; m_key = s.recording.key; m_traceKey = cf::fingerprint(cf::traceCsv(s.recording));
+        m_history.current = s.visual; m_first = s.recording.trace.front().tick; m_last = s.recording.trace.back().tick; m_cursor = m_chainStart = m_first;
+        m_time = label("", {110, 229});
+        m_step = button("Paso: 20u", {244, 229}, 74, [this] { m_spacing = m_spacing >= 80 ? 10.f : m_spacing * 2; refresh(); });
+        label("Trayectoria grabada | VISUAL, no medido", {148, 214}, .4f);
+        auto panel = CCScale9Sprite::create("square02b_001.png"); panel->setContentSize({266, 100}); panel->setPosition({148, 158}); panel->setColor({18, 34, 48}); m_mainLayer->addChild(panel);
+        m_plot = CCNode::create(); m_mainLayer->addChild(m_plot);
+        m_timeline = Slider::create(this, menu_selector(CFEditor::onSeek), .9f); m_timeline->setPosition({148, 97}); m_mainLayer->addChild(m_timeline);
+        auto shift = [this](int by) { m_cursor = static_cast<int>(std::clamp<int64_t>(int64_t(m_cursor) + by, m_first, m_last)); refresh(); };
+        button("-24", {40, 76}, 45, [shift] { shift(-24); }); button("-1", {92, 76}, 45, [shift] { shift(-1); });
+        button("+1", {144, 76}, 45, [shift] { shift(1); }); button("+24", {196, 76}, 45, [shift] { shift(24); });
+        button("Zoom", {251, 76}, 50, [this] { m_span = m_span == 480 ? 240 : m_span == 240 ? 960 : m_span == 960 ? 0 : 480; refresh(); });
+        button("Anterior", {43, 52}, 54, [this] { select(-1); }); button("Siguiente", {105, 52}, 60, [this] { select(1); });
+        button("Inicio", {174, 52}, 58, [this] { m_chainStart = m_cursor; FLAlertLayer::create("Inicio de cadena", "Mueve la barra al final del tramo y pulsa Cadena. Paso controla la separacion sobre la trayectoria.", "OK")->show(); });
+        button("Cadena", {247, 52}, 64, [this] { chain(); });
+        button("Deshacer", {58, 28}, 80, [this] { m_history.undo(); m_selected = -1; refresh(); });
+        button("Rehacer", {149, 28}, 80, [this] { m_history.redo(); m_selected = -1; refresh(); });
+        button("Guardar", {243, 28}, 80, [this] { saveEdits(); });
+        m_selection = label("", {352, 229});
+        label("Ventana de presentacion", {352, 209}, .42f);
+        button("F -", {320, 188}, 56, [this] { changeStyle([](auto& m) { m.width = std::max(1, m.width - 1); }); });
+        button("F +", {386, 188}, 56, [this] { changeStyle([](auto& m) { m.width = std::min(120, m.width + 1); }); });
+        m_color = button("", {352, 164}, 120, [this] { changeStyle([](auto& m) { m.color = (m.color + 1) % 6; }); });
+        button("Tam -", {320, 140}, 56, [this] { changeStyle([](auto& m) { m.scale = std::max(.5f, m.scale - .25f); }); });
+        button("Tam +", {386, 140}, 56, [this] { changeStyle([](auto& m) { m.scale = std::min(2.f, m.scale + .25f); }); });
+        m_count = button("", {320, 116}, 60, [this] { changeStyle([](auto& m) { m.count = !m.count; }); });
+        m_sound = button("", {386, 116}, 60, [this] { changeStyle([](auto& m) { m.sound = !m.sound; }); });
+        m_player = button("", {352, 92}, 120, [this] { changeStyle([](auto& m) { m.p1 = !m.p1; }); });
+        button("Anadir", {320, 68}, 56, [this] { add(); });
+        button("Mover", {386, 68}, 56, [this] {
+            if (m_selected < 0) return;
+            m_history.change([&](auto& doc) { doc.markers[m_selected].tick = m_cursor; }); refresh();
+        });
+        button("Eliminar", {352, 44}, 120, [this] {
+            if (m_selected < 0) return;
+            m_history.change([&](auto& doc) { doc.markers.erase(doc.markers.begin() + m_selected); }); m_selected = -1; refresh();
+        });
+        m_enabled = button("", {352, 20}, 120, [this] { m_history.change([](auto& doc) { doc.enabled = !doc.enabled; }); refresh(); });
+        label("Barra: elegir punto | Mover: aplicar | X: descartar sin guardar", {148, 10}, .29f);
+        refresh(); return true;
+    }
+public:
+    static CFEditor* create() { auto p = new CFEditor; if (p->init()) { p->autorelease(); return p; } delete p; return nullptr; }
+};
+
 class CFPopup : public Popup {
     static bool ensureSession() {
         auto layer = PlayLayer::get();
@@ -945,22 +1184,22 @@ class CFPopup : public Popup {
             node->setScale(scale); node->setColor(color); node->setPosition(pos);
             m_mainLayer->addChild(node); return node;
         };
-        label("PRACTICE  >  ANALYZE  >  SHOWCASE", {215, 229}, .55f, {111, 219, 235});
-        auto status = label(s.message, {215, 211}, .5f, {220, 229, 244});
-        status->limitLabelWidth(398, .5f, .25f);
+        label("PRACTICE  >  ANALYZE  >  SHOWCASE", {148, 229}, .5f, {111, 219, 235});
+        auto status = label((s.visual.enabled ? "EDITADO | " : "") + s.message, {148, 211}, .5f, {220, 229, 244});
+        status->limitLabelWidth(264, .5f, .25f);
         bool active = s.state == State::Record || running();
         auto add = [this](char const* title, char const* hint, CCPoint pos, bool enabled,
-                          std::function<void()> action, float width = 128) {
+                          std::function<void()> action, float width = 128, float height = 48) {
             auto card = CCScale9Sprite::create("square02b_001.png");
-            card->setContentSize({width, 48});
+            card->setContentSize({width, height});
             card->setColor(enabled ? ccColor3B{34, 57, 83} : ccColor3B{35, 39, 49});
             card->setOpacity(245);
             auto heading = CCLabelBMFont::create(title, "bigFont.fnt");
-            heading->limitLabelWidth(width - 12, .34f, .2f); heading->setPosition({width / 2, 32});
+            heading->limitLabelWidth(width - 12, .34f, .2f); heading->setPosition({width / 2, height * .67f});
             heading->setColor(enabled ? ccColor3B{235, 246, 255} : ccColor3B{115, 124, 139});
             card->addChild(heading);
             auto subtitle = CCLabelBMFont::create(hint, "chatFont.fnt");
-            subtitle->limitLabelWidth(width - 10, .43f, .2f); subtitle->setPosition({width / 2, 13});
+            subtitle->limitLabelWidth(width - 10, .43f, .2f); subtitle->setPosition({width / 2, height * .27f});
             subtitle->setColor({150, 175, 195}); card->addChild(subtitle);
             auto item = CCMenuItemExt::createSpriteExtra(card, [action](auto) {
                 // Closing a popup may destroy the callback's owning menu.
@@ -971,11 +1210,15 @@ class CFPopup : public Popup {
             m_buttonMenu->addChild(item);
             item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace(pos)));
         };
+        add("EDITAR", "Solo visual", {351, 211}, !active && !s.recording.trace.empty(), [this] {
+            onClose(nullptr); if (auto editor = CFEditor::create()) editor->show();
+        }, 118, 28);
         add("1. RECORD", "New practice run", {79, 171}, !active, [this] {
             if (!ensureSession()) return;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.recording.backend = inputBackend(); s.predictions.clear(); s.snapshot = nullptr;
+            s.visual = {};
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
             s.recordedHeld.fill(false); s.physicalHeld.fill(false); s.injectedHeld.fill(false);
             onClose(nullptr);
@@ -986,7 +1229,8 @@ class CFPopup : public Popup {
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             onClose(nullptr); resumeAndRun([] { beginAnalysis(); });
         });
-        add("3. PLAY", "Circles + sounds", {79, 115}, !active && s.recording.ready(), [this] {
+        add("3. PLAY", s.visual.enabled ? "Presentacion editada" : "Circles + sounds", {79, 115},
+            !active && (s.recording.ready() || (s.visual.enabled && s.recording.complete)), [this] {
             if (!ensureSession() || !supported()) {
                 FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return;
             }
@@ -1022,13 +1266,16 @@ class CFPopup : public Popup {
         auto panel = CCScale9Sprite::create("square02b_001.png");
         panel->setContentSize({118, 160}); panel->setColor({20, 30, 47});
         panel->setOpacity(240); panel->setPosition({351, 115}); m_mainLayer->addChild(panel);
-        label("FRAME WINDOWS", {351, 181}, .48f, {111, 219, 235});
-        auto panelRows = cf::makeRows(s.recording, static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-rows")));
+        label(s.visual.enabled ? "VISUAL WINDOWS" : "FRAME WINDOWS", {351, 181}, .48f, {111, 219, 235});
+        cf::Recording visual;
+        if (s.visual.enabled) visual = cf::visualCounter(s.visual);
+        auto const& panelRecording = s.visual.enabled ? visual : s.recording;
+        auto panelRows = cf::makeRows(panelRecording, static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-rows")));
         std::vector<int> totals(panelRows.size(), 0);
         size_t measured = 0;
-        for (size_t i = 0; i < s.recording.windows.size() && i < s.recording.inputs.size(); ++i) {
-            if (!cf::counted(s.recording.inputs[i])) continue;
-            auto const& window = s.recording.windows[i];
+        for (size_t i = 0; i < panelRecording.windows.size() && i < panelRecording.inputs.size(); ++i) {
+            if (!cf::counted(panelRecording.inputs[i])) continue;
+            auto const& window = panelRecording.windows[i];
             if (!window.measured) continue;
             ++measured;
             if (auto row = cf::rowOf(panelRows, window); row >= 0) ++totals[row];
@@ -1040,8 +1287,8 @@ class CFPopup : public Popup {
                   {351, 158.f - static_cast<float>(i) * step}, .55f, {c.r, c.g, c.b});
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
-        label(fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.8.0", {215, 18}, .43f, {165, 183, 204});
+        label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v0.9.0", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

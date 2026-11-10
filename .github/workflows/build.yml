@@ -19,6 +19,8 @@ jobs:
           /tmp/storage-tests
           g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/analysis.cpp -o /tmp/analysis-tests
           /tmp/analysis-tests
+          g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/editor.cpp -o /tmp/editor-tests
+          /tmp/editor-tests
   build:
     strategy:
       fail-fast: false
