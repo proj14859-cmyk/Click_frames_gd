@@ -8,7 +8,7 @@
 - Un aviso de inestabilidad incluye campo, valor original y valor observado; baseline-difference.txt y scan-report.txt conservan el diagnostico. La imagen por si sola no identifica el campo que fallo en 1.0.0.
 
 -Mejoras:
-- Snapshots ampliados con copia de GJGameState, semilla RNG global, diccionarios de colision independientes por jugador y cursores de cadencia/traza causal, ademas del checkpoint nativo y sus colas.
+- Snapshots ampliados con copias tipadas de mapas de fisica/tweens, eventos, efectos de entrada/salida, acciones dinamicas y estados de audio, junto con relojes, semilla RNG global, diccionarios de colision por jugador y cursores de cadencia/traza causal. Se complementa el checkpoint nativo; no se copia GJGameState como bloque de memoria.
 - Tres referencias verifican tambien el orden y tick de las interacciones instrumentadas. Las restauraciones deben reproducir esa traza; una discrepancia rechaza el checkpoint.
 
 -Cambios:

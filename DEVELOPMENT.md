@@ -6,7 +6,7 @@ inactive P2 and visual rotations, and uses small absolute rounding tolerances.
 Every failed comparison writes the first differing field with 17-digit values.
 The scheduler now records the first run's dt sequence and repeats that grouping
 at both normal and batched cadence. Native states carry the scheduler cursor,
-shared fast_srand state, copied GJGameState, copied collision dictionaries and
+shared fast_srand state, explicitly copied physics/tween/event/effect/action/audio maps and clocks, copied collision dictionaries and
 the causal cursor. Copies remain per-session and are never raw memory dumps.
 
 Causal instrumentation covers ringJump invocations, touched triggers, pads,

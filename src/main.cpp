@@ -26,6 +26,46 @@ namespace {
 enum class State { Idle, Record, Verify, Analyze, Ready, Playback };
 enum class Pending { None, Pass, Fail, Invalid };
 struct Checkpoint { size_t inputs, trace; std::array<bool, 6> held; };
+// GJGameState contains non-copyable binding unions. Preserve its typed dynamic
+// physics maps and clocks explicitly; native checkpoints retain other coverage.
+#define CF_DYNAMIC_STATE(X) \
+    X(m_stateObjects) X(m_unkMapPairGJGameEventIntVectorEventTriggerInstance) X(m_unkMapPairGJGameEventIntInt) \
+    X(m_enterEffectInstanceVectors) X(m_exitEffectInstanceVectors) X(m_enterChannelMap) X(m_exitChannelMap) \
+    X(m_moveEffectInstances) X(m_rotateEffectInstances) X(m_scaleEffectInstances) X(m_fadeEffectInstances) X(m_tintEffectInstances) \
+    X(m_unsortedAreaEffects) X(m_advanceFollowInstances) X(m_dynamicMoveActions) X(m_dynamicRotateActions) \
+    X(m_songChannelStates) X(m_songTriggerStateVectors) X(m_sfxTriggerStates) X(m_proximityVolumeRelated)
+struct EngineState {
+    #define CF_DECLARE_STATE(name) decltype(GJGameState::name) name;
+    CF_DYNAMIC_STATE(CF_DECLARE_STATE)
+    #undef CF_DECLARE_STATE
+    decltype(GJGameState::m_tweenActions) tweens;
+    decltype(GJGameState::m_gameObjectPhysics) physics;
+    decltype(GJGameState::m_activatedObjectIDs) activated;
+    decltype(GJGameState::m_spawnChannelRelated0) channels;
+    decltype(GJGameState::m_spawnChannelRelated1) channelFlags;
+    double levelTime = 0, totalTime = 0;
+    float timeWarp = 1, queuedTimeWarp = 1;
+    unsigned int commandIndex = 0;
+    void capture(GJGameState const& g) {
+        #define CF_CAPTURE_STATE(name) name = g.name;
+        CF_DYNAMIC_STATE(CF_CAPTURE_STATE)
+        #undef CF_CAPTURE_STATE
+        tweens = g.m_tweenActions; physics = g.m_gameObjectPhysics; activated = g.m_activatedObjectIDs;
+        channels = g.m_spawnChannelRelated0; channelFlags = g.m_spawnChannelRelated1;
+        levelTime = g.m_levelTime; totalTime = g.m_totalTime;
+        timeWarp = g.m_timeWarp; queuedTimeWarp = g.m_queuedTimeWarp; commandIndex = g.m_commandIndex;
+    }
+    void restore(GJGameState& g) const {
+        #define CF_RESTORE_STATE(name) g.name = name;
+        CF_DYNAMIC_STATE(CF_RESTORE_STATE)
+        #undef CF_RESTORE_STATE
+        g.m_tweenActions = tweens; g.m_gameObjectPhysics = physics; g.m_activatedObjectIDs = activated;
+        g.m_spawnChannelRelated0 = channels; g.m_spawnChannelRelated1 = channelFlags;
+        g.m_levelTime = levelTime; g.m_totalTime = totalTime;
+        g.m_timeWarp = timeWarp; g.m_queuedTimeWarp = queuedTimeWarp; g.m_commandIndex = commandIndex;
+    }
+};
+#undef CF_DYNAMIC_STATE
 struct CollisionState {
     std::array<Ref<CCDictionary>, 4> logs;
     std::array<int, 4> last{};
@@ -57,7 +97,7 @@ struct NativeState {
     size_t scheduleCursor = 0;
     size_t causalCursor = 0;
     std::array<CollisionState, 2> collisions;
-    std::shared_ptr<GJGameState> engineState;
+    std::shared_ptr<EngineState> engineState;
     double extraDelta = 0;
     int step = 0, recordedSize = 0, resumeTimer = 0;
     bool checked = false, rejected = false, failureConfirmed = false;
@@ -140,7 +180,7 @@ struct Session {
     uint64_t initialSharedSeed = 0, snapshotSharedSeed = 0;
     size_t snapshotScheduleCursor = 0;
     std::array<CollisionState, 2> snapshotCollisions;
-    std::shared_ptr<GJGameState> snapshotEngineState;
+    std::shared_ptr<EngineState> snapshotEngineState;
     std::string parityDiagnostic;
     std::vector<cf::CausalEvent> causalTrace;
     size_t causalCursor = 0, snapshotCausalCursor = 0;
@@ -506,7 +546,7 @@ void resetTrial() {
             s.owner->m_extraDelta = s.snapshotExtraDelta; s.owner->m_currentStep = s.snapshotStep;
             s.owner->m_queuedRecordedButtonsSize = s.snapshotRecordedSize; s.owner->m_resumeTimer = s.snapshotResumeTimer;
             GameToolbox::fast_srand(s.snapshotSharedSeed);
-            if (s.snapshotEngineState) s.owner->m_gameState = *s.snapshotEngineState;
+            if (s.snapshotEngineState) s.snapshotEngineState->restore(s.owner->m_gameState);
             restoreCollisions(s.owner->m_player1, s.snapshotCollisions[0]);
             restoreCollisions(s.owner->m_player2, s.snapshotCollisions[1]);
         }
@@ -1306,7 +1346,7 @@ class $modify(CFPlay, PlayLayer) {
                             n.sharedSeed = GameToolbox::getfast_srand(); n.scheduleCursor = s.scheduleCursor;
                             n.causalCursor = s.causalCursor;
                             n.collisions = {captureCollisions(m_player1), captureCollisions(m_player2)};
-                            n.engineState = std::make_shared<GJGameState>(m_gameState);
+                            n.engineState = std::make_shared<EngineState>(); n.engineState->capture(m_gameState);
                             n.step = m_currentStep; n.recordedSize = m_queuedRecordedButtonsSize; n.resumeTimer = m_resumeTimer;
                             s.peakNativeStates = std::max(s.peakNativeStates, s.nativePool.size());
                         }
