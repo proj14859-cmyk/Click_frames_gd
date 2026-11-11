@@ -7,7 +7,7 @@
 #include <Geode/modify/CCScheduler.hpp>
 #include <Geode/modify/MenuLayer.hpp>
 #include <Geode/ui/ScrollLayer.hpp>
-#include <Geode/utils/clipboard.hpp>
+#include <Geode/utils/general.hpp>
 #include <Geode/loader/Dirs.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
@@ -223,6 +223,7 @@ struct Session {
     uint64_t causalHash = cf::hashStart, snapshotCausalHash = cf::hashStart;
     std::vector<int> nativeTargets;
     size_t nextNativeTarget = 0;
+    size_t nextSafeNativeTarget=0;
     bool auditing = false, earlyAccepted = false, fromCache = false;
     int changedUntil = -1;
     cf::AuditGate auditGate;
@@ -873,6 +874,7 @@ void resetTrial() {
             s.scheduleCursor = 0; s.causalCursor = 0;
             s.causalHash = cf::hashStart;
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
+            s.owner->m_randomSeed=s.rootRandomSeed;s.owner->m_replayRandSeed=s.rootReplaySeed;GameToolbox::fast_srand(s.initialSharedSeed);
         } else {
             s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld;
             s.owner->m_queuedButtons = s.snapshotButtons;
@@ -900,6 +902,7 @@ void resetTrial() {
         s.nativeObjectStates = 0;
         s.nextNativeTick = 24; s.nativePoolLimited = false; s.activeNative = -1;
         s.nextNativeTarget = 0;
+        s.nextSafeNativeTarget=0;
         s.nativeTargets = cf::checkpointTargets(s.trial, s.recording.radius,
             size_t(Mod::get()->getSettingValue<int64_t>("checkpoint-budget")));
     }
@@ -1200,7 +1203,7 @@ bool chooseNativeState() {
     s.snapshot = nullptr; s.snapshotChecked = false; s.validatingSnapshot = false; s.activeNative = -1;
     s.snapshotEngineState.reset(); s.snapshotCollisions = {};
     int chosen = !s.nativeDisabled && Mod::get()->getSettingValue<bool>("native-states") ?
-        cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 2) : -1;
+        cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 1) : -1;
     if (chosen < 0) return false;
     auto const& n = s.nativePool[chosen];
     s.activeNative = chosen; s.snapshot = n.checkpoint; s.snapshotTick = n.tick; s.snapshotNext = n.next; s.snapshotHeld = n.held;
@@ -1436,15 +1439,17 @@ void consume() {
 // Advance the ordinary scheduler in bounded fixed slices, retaining the normal
 // engine/hook order. Rendering occurs once after the batch. Never recursively
 // call this hook or directly bypass PlayLayer's update chain.
-void captureTargetCheckpoint() {
+void captureTargetCheckpoint(bool safePhase=false, float dt=0) {
     if(s.state!=State::Verify || s.baselinePass!=2 || s.pending!=Pending::None)return;
     int now=tick();
-                while (s.baselinePass == 2 && s.nextNativeTarget < s.nativeTargets.size() && s.nativeTargets[s.nextNativeTarget] < now) {
-                    ++s.nextNativeTarget; ++s.missedNativeTargets;
+    auto& next=safePhase?s.nextSafeNativeTarget:s.nextNativeTarget;
+    int lead=safePhase?std::clamp(int(std::ceil(dt*240.f)),4,64):0;
+                while (next < s.nativeTargets.size() && s.nativeTargets[next] < now) {
+                    ++next; if(!safePhase)++s.missedNativeTargets;
                 }
                 if (s.baselinePass == 2 && Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited &&
-                    s.nextNativeTarget < s.nativeTargets.size() && now == s.nativeTargets[s.nextNativeTarget]) {
-                    ++s.nextNativeTarget;
+                    next < s.nativeTargets.size() && now >= s.nativeTargets[next]-lead) {
+                    do {++next;}while(next<s.nativeTargets.size() && s.nativeTargets[next]<=now+lead);
                     auto cp = s.owner->createCheckpoint();
                     if (cp) {
                         size_t states = cp->m_vectorSavedObjectStateRef.size() + cp->m_vectorActiveSaveObjectState.size() + cp->m_vectorSpecialSaveObjectState.size();
@@ -1833,6 +1838,9 @@ class $modify(CFPlay, PlayLayer) {
             auto point = cf::Sample{now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()};
             if (s.state == State::Verify) {
                 if (s.referenceTrace.size() < 100000) s.referenceTrace.set(now, point);
+                // Retain the v1.0.4 post-update restore path as a fallback if an
+                // exact pre-command target cannot round-trip across this slice.
+                captureTargetCheckpoint(true,dt);
             }
             if (s.state == State::Analyze) {
                 int eventTick = s.recording.inputs[s.target].tick;
@@ -2217,7 +2225,11 @@ class CFDiagnostics : public Popup {
         };
         button("Errores",{72,34},[this]{select(0);}); button("Crashlog",{153,34},[this]{select(1);});
         button("Geode",{231,34},[this]{select(2);});
-        button("Copiar Log",{327,34},[this]{utils::clipboard::write(m_text); Notification::create("Registro copiado",NotificationIcon::Success)->show();});
+        button("Copiar Log",{327,34},[this]{
+            bool copied=utils::clipboard::write(m_text);
+            if(!copied)diagnostic("CLIPBOARD_WRITE","No se pudo copiar el registro");
+            Notification::create(copied?"Registro copiado":"No se pudo copiar",copied?NotificationIcon::Success:NotificationIcon::Error)->show();
+        });
         select(0); return true;
     }
 public:
