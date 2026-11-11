@@ -19,6 +19,8 @@ int main() {
     auto root = solveL(one, Weighting::Base, p);
     assert(root.valid && std::abs(root.lstar-known) < 1e-4);
     assert(std::abs(root.sigmaMs() - 5) < 1e-5);
+    auto distantGuess = solveL(one, Weighting::Base, p, maxL/2);
+    assert(distantGuess.valid && std::abs(distantGuess.lstar-known) < 1e-3);
     auto wider = one; wider[0].windowFrames = 5;
     auto loose = solveL(wider, Weighting::Base, p);
     assert(loose.valid && std::abs(loose.lstar * 5 - root.lstar) < 1e-3);

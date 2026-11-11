@@ -122,6 +122,15 @@ inline Metric solvePrepared(std::span<double const> times, std::span<double cons
     double left = minL, right = std::clamp(std::isfinite(guess) ? guess + 10 : 10, minL * 2, maxL);
     double fLeft = expectedClear(times, weights, left, cancel) - p.target;
     if (fLeft <= 0) return {left, true};
+    if (std::isfinite(guess) && guess > minL && guess < maxL) {
+        double fGuess = expectedClear(times, weights, guess, cancel) - p.target;
+        if (std::abs(fGuess) <= 1e-8 * p.target) return {guess, true};
+        if (fGuess > 0) {
+            // Verify the warm-start bracket instead of assuming prefix monotonicity.
+            left = guess; fLeft = fGuess;
+            right = std::min(maxL, guess * 1.001 + .001);
+        } else right = std::min(guess, 10.); // Avoid a huge arbitrary guess exhausting 60 bisections near minL.
+    }
     double fRight = expectedClear(times, weights, right, cancel) - p.target;
     for (int i = 0; fRight > 0 && i < 64 && right < maxL; ++i) {
         if (stopped(cancel)) return {};
@@ -135,7 +144,7 @@ inline Metric solvePrepared(std::span<double const> times, std::span<double cons
         double mid = (left + right) * .5;
         if (iteration < secantIterations && std::abs(fLeft) < 1e90 && std::abs(fRight) < 1e90 && fRight != fLeft) {
             double secant = right - fRight * (right - left) / (fRight - fLeft);
-            if (std::isfinite(secant) && secant > left + .05 * (right-left) && secant < right - .05 * (right-left)) mid = secant;
+            if (std::isfinite(secant) && secant > left && secant < right) mid = secant;
         }
         double f = expectedClear(times, weights, mid, cancel) - p.target;
         if (std::abs(f) <= 1e-8 * p.target) return {mid, true};

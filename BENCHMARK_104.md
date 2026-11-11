@@ -15,8 +15,8 @@ match the exhaustive connected window; exhaustive tests include real holes.
 
 Release build on the execution machine:
 
-- 1000-click final Base solve: approximately 0.23 ms, under the plan's 50 ms target.
-- All 1000 cumulative prefixes / eight models: approximately 471 ms, separate
+- 1000-click final Base solve: approximately 0.19 ms, under the plan's 50 ms target.
+- All 1000 cumulative prefixes / eight models: approximately 122 ms with verified warm starts, separate
   from the final-only solve and therefore run outside the game thread.
 - LUT maximum absolute error against std::erfc: 4.36e-10.
 - All eight weights are checked against an independent long-double std::erf
