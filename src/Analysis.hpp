@@ -1,5 +1,6 @@
 #pragma once
 #include "Timing.hpp"
+#include "ScanSupport.hpp"
 #include <map>
 
 namespace cf {
@@ -14,6 +15,22 @@ struct CausalEvent {
     int tick = 0, kind = 0, object = 0, player = 0, detail = 0;
     bool operator==(CausalEvent const&) const = default;
 };
+inline bool countsAsCause(int kind) {
+    // kind 6 used to contain every gameEventTriggered broadcast. These include
+    // contact/material feedback even when no event trigger is listening.
+    return kind >= 1 && kind <= 8 && kind != 6;
+}
+inline std::string describeCause(CausalEvent const& e) {
+    constexpr char const* names[] = {"unknown", "orb-call", "trigger-contact", "pad", "teleport", "group-toggle", "raw-signal", "pickup", "event-trigger"};
+    std::ostringstream out;
+    out << "tick=" << e.tick << " kind=" << e.kind << '(' << (e.kind >= 0 && e.kind <= 8 ? names[e.kind] : "unknown")
+        << ") object=" << e.object << " player=" << e.player << " detail=" << e.detail;
+    return out.str();
+}
+inline std::string causalDifference(CausalEvent const* expected, CausalEvent const& observed, size_t index) {
+    return "Causal entry " + std::to_string(index) + "\nExpected: " + (expected ? describeCause(*expected) : "<end of reference>") +
+        "\nObserved: " + describeCause(observed);
+}
 inline bool sameCause(CausalEvent const& a, CausalEvent const& b, bool sameTick) {
     return (!sameTick || a.tick == b.tick) && a.kind == b.kind && a.object == b.object &&
         a.player == b.player && a.detail == b.detail;
@@ -36,6 +53,32 @@ inline std::string difference(Observation const& a, Observation const& b) {
     return {};
 }
 inline bool matches(Observation const& a, Observation const& b) { return difference(a, b).empty(); }
+inline bool exactRejoin(Observation const& a, Observation const& b) {
+    bool dual = a.flags[6] || b.flags[6];
+    for (size_t i = 0; i < a.flags.size(); ++i) {
+        if (!dual && (i == 1 || i == 3 || i == 5)) continue;
+        if (a.flags[i] != b.flags[i]) return false;
+    }
+    for (size_t i = 0; i < a.values.size(); ++i) {
+        if (i == 10 || i == 11 || (!dual && (i == 3 || i == 4 || i == 5 || i == 8 || i == 9))) continue;
+        if (!std::isfinite(a.values[i]) || !std::isfinite(b.values[i]) || a.values[i] != b.values[i]) return false;
+    }
+    return true;
+}
+inline uint64_t hashWord(uint64_t hash, uint64_t word) {
+    for (int i = 0; i < 8; ++i) { hash ^= word & 255; hash *= 1099511628211ull; word >>= 8; }
+    return hash;
+}
+constexpr uint64_t hashStart = 14695981039346656037ull;
+struct RejoinEvidence {
+    uint64_t rng = 0, replayRng = 0, sharedRng = 0, causalHash = 0, actorHash = 0, activatedHash = 0;
+    bool quietWorld = false;
+    bool operator==(RejoinEvidence const&) const = default;
+};
+inline bool canRejoin(Observation const& reference, Observation const& current,
+    RejoinEvidence const& a, RejoinEvidence const& b, int now, int changedUntil) {
+    return now > changedUntil && a.quietWorld && b.quietWorld && a == b && exactRejoin(reference, current);
+}
 inline bool candidateTrial(std::vector<Input> const& source, size_t index, int offset, std::vector<Input>& out) {
     if (index >= source.size()) return false;
     auto const& press = source[index];
@@ -115,13 +158,14 @@ struct SegmentExit {
     int mode = 0;
     bool flipped = false;
 };
-inline std::vector<SegmentExit> segmentExits(Recording const& r, std::map<int, PhysicsReference> const& reference) {
+template<class Reference>
+inline std::vector<SegmentExit> segmentExits(Recording const& r, Reference const& reference) {
     std::vector<SegmentExit> exits(r.inputs.size()); std::array<int, 2> next{r.endTick, r.endTick};
     for (size_t i = r.inputs.size(); i-- > 0;) {
         auto const& e = r.inputs[i]; int player = e.p1 ? 0 : 1;
-        auto found = reference.find(next[player]);
-        if (next[player] > e.tick && found != reference.end()) {
-            auto const& p = found->second;
+        auto found = referenceAt(reference, next[player]);
+        if (next[player] > e.tick && found) {
+            auto const& p = *found;
             exits[i] = {true, next[player], e.p1 ? p.point.x : p.point.x2, e.p1 ? p.point.y : p.point.y2,
                 e.p1 ? p.mode1 : p.mode2, e.p1 ? p.flipped1 : p.flipped2};
         }

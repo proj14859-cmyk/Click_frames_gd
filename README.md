@@ -1,5 +1,50 @@
 # Click Frames GD
 
+## v1.0.4 / 2026-11-11 / 12:10 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Conserva las correcciones de 1.0.3: broadcasts generales separados de triggers despachados, copia retenida de colisiones y comparacion de estado fisico sin rotacion/escala visual ni P2 inactivo.
+- No convierte una diferencia de altura/modo en muerte ni salta huecos de la ventana. Full run sigue certificando hasta el final.
+
+-Mejoras:
+- Tablas densas por tick y una observacion reutilizada por callback. La captura de trayectoria de candidatos respeta su opcion; el lote evita actualizar el HUD o el motor de precision en cada slice.
+- Checkpoints dirigidos por eventos en la ultima referencia, con presupuesto configurable, limites de mapas/objetos, descarte cronologico y fallback a un estado anterior antes del reinicio completo.
+- Hasta 1024 slices por lote con presupuesto configurable (12 ms por defecto). Las confirmaciones pueden usar lotes despues de pasar la referencia; se conserva el fallback automatico de cadencia.
+- Busqueda contigua por etapas desde radio 4. Local puede detener ventanas amplias en 8+ por defecto; poner Broad window lower-bound cap en 0 conserva la busqueda hasta el radio completo. N+ siempre es un minimo, no un margen exacto.
+
+-Cambios:
+- Politica CF-ANALYSIS-4 con invalidacion por ajustes de reconvergencia/cap. Captura, playback y archivos Edit conservan sus formatos.
+- Reconvergencia local en suelo o aire exige igualdad exacta del estado fisico no visual, futuro de inputs sin cambios, RNG, historia causal, contactos/flags adicionales y mundo sin efectos dinamicos activos. No equivale a un snapshot universal.
+- Una de cada diez aceptaciones tempranas se audita desde cero hasta el final. Si no coincide, se borran las ventanas locales de la sesion y se recalcula con continuaciones completas y sin atajos.
+- Si un candidato desde checkpoint discrepa de su confirmacion desde cero, se desactiva la cache para esa sesion, se invalidan las ventanas afectadas y se recalcula desde el inicio.
+- La cache solo reutiliza el mismo evento/offset/alcance en la misma sesion. No equipara aterrizajes parecidos ni usa galope que pueda ocultar un hueco.
+
+-Implementaciones:
+- Modelo estadistico L* adaptado de Frame Window Counter (MIT hyper-5), independiente de Geode: Base, Nerve, Fatigue, CPS y combinaciones, LUT erfc, secante acotada/biseccion, cancelacion y trabajador propietario sin objetos del juego.
+- Settings > Statistical precision counter muestra por defecto sigma en ms (1000/L*), con posicion, ponderacion, unidad, tiempo objetivo, respawn y coeficientes configurables. Es una estimacion estadistica de dispersion temporal; no mide latencia ni sustituye el intervalo entre clicks existente. Las ventanas N+ producen estimaciones conservadoras y Edit se identifica como Edited.
+- precision.csv / precision-visual.csv comparan intervalo, holgura temporal y las ocho metricas por prefijo; precision-report.txt guarda parametros y procedencia. Se incluye licenses/frame-window-counter.MIT.txt.
+- scan-events.tsv, scan-phases.csv y scan-report.txt registran ensayos, callbacks por fase, ratios, auditorias, cache, costes de reset y causas de fallback.
+
+Pruebas: nueve suites y benchmarks sinteticos (ver BENCHMARK_104.md). No se han medido aun GD, un movil ni la igualdad ON/OFF en tres niveles: no se promete tres segundos, cinco minutos ni una mejora de 10x. Los criterios de dispositivo del plan quedan pendientes de esos reportes reales.
+
+## v1.0.3 / 2026-11-10 / 21:58 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- El antiguo kind 6 mezclaba broadcasts de gameEventTriggered (contactos/materiales incluidos) con activaciones causales. Ya no participa en la paridad; los triggers de evento despachados por activateEventTrigger se registran como kind 8.
+- Las diferencias causales aceleradas tienen el mismo reintento sin batching que las fisicas, mediante un estado explicito. La paridad fisica, orbes, pads, teletransportes, grupos y pickups permanecen comprobados.
+- No se registran nuevos eventos despues de que el ensayo tenga un resultado pendiente, evitando sobrescribir el primer fallo.
+
+-Mejoras:
+- baseline-difference.txt muestra la entrada esperada y la observada con tick, clase, objeto, jugador y detalle. Tambien identifica una referencia agotada. El numero del aviso anterior era el indice de la entrada, no el ID de GJGameEvent.
+
+-Cambios:
+- Politica CF-ANALYSIS-3: Analyze invalida resultados de la politica anterior. Los formatos de captura y Edit no cambian.
+- No se ignoran arbitrariamente los primeros ticks ni se aprueban ensayos con fisica divergente. La imagen original no permite saber que GJGameEvent/material se comparo porque el aviso anterior no los mostraba.
+
+-Implementaciones:
+- raw-game-signals.tsv conserva hasta 64 avisos por intento (maximo 64 KiB por sesion) con event, material y playerID original, solo como diagnostico.
+- Pruebas de separacion de kind 6/8, diferencias reales y diagnosticos esperado/observado. Verificar el mismo nivel en Android sigue siendo necesario.
+
 ## v1.0.2 / 2026-11-10 / 21:48 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

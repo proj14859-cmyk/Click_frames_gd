@@ -17,6 +17,18 @@ int main() {
     cf::CausalEvent cause{10, 1, 22, 1, 0}, later{11, 1, 22, 1, 0};
     assert(cf::sameCause(cause, later, false) && !cf::sameCause(cause, later, true));
     later.object = 23; assert(!cf::sameCause(cause, later, false));
+    assert(!cf::countsAsCause(6)); // Raw feedback is not an event-trigger dispatch.
+    assert(cf::countsAsCause(8) && cf::countsAsCause(1) && cf::countsAsCause(5));
+    assert(!cf::countsAsCause(0) && !cf::countsAsCause(9));
+    auto detail = cf::causalDifference(&cause, later, 1);
+    assert(detail.find("Expected: tick=10") != std::string::npos);
+    assert(detail.find("object=22") != std::string::npos && detail.find("object=23") != std::string::npos);
+    assert(detail.find("Observed: tick=11") != std::string::npos);
+    assert(cf::causalDifference(nullptr, later, 2).find("<end of reference>") != std::string::npos);
+    auto activated = cause; activated.kind = 8;
+    assert(!cf::sameCause(cause, activated, false));
+    activated = cause; activated.player = 2; assert(!cf::sameCause(cause, activated, false));
+    activated = cause; activated.detail = 3; assert(!cf::sameCause(cause, activated, false));
     std::vector<cf::Input> tap{{10, true, 1, true, 0, 0, 0}, {11, false, 1, true, 0, 0, 0}, {20, true, 1, true, 0, 0, 0}}, moved;
     assert(cf::candidateTrial(tap, 0, 3, moved));
     assert(moved[0].tick == 13 && moved[1].tick == 14);
