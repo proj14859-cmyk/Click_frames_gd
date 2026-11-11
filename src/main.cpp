@@ -2105,6 +2105,11 @@ class CFPopup : public Popup {
             s.captureDirty = true; s.viewsDirty = true; s.captureDigest.clear(); s.traceDigest.clear(); s.storageBlocked = false;
             s.reportDirty = true;
             s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0; s.tests = 0;
+            s.probeRestores = s.trialAttempts = s.cacheHits = s.newlyMeasured = 0;
+            s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = s.missedNativeTargets = s.thinnedNativeStates = 0;
+            s.phaseCalls.fill(0); s.auditGate = {}; s.nativeDisabled = false;
+            s.resetSeconds = s.restoreSeconds = 0; s.eventReport.clear(); s.parityDiagnostic.clear();
+            s.rawSignals.clear(); s.probeCache.clear();
             s.localFallbackEvents = s.localFallbackTrials = s.localPasses = s.peakNativeStates = 0;
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
             s.recordedHeld.fill(false); s.physicalHeld.fill(false); s.injectedHeld.fill(false);
