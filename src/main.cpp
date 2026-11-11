@@ -723,6 +723,7 @@ void stop(std::string message) {
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
     auto resetStart = std::chrono::steady_clock::now();
+    bool scanningReset = s.state == State::Verify || s.state == State::Analyze;
     if (s.state == State::Analyze && !s.validatingSnapshot) ++s.trialAttempts;
     s.showcaseComplete = false;
     s.resetting = true; releaseInjected(); clearMarkers();
@@ -789,7 +790,7 @@ void resetTrial() {
     s.candidateTrace.clear(); s.snapshotCompared = 0;
     fixPracticeTouchPriority();
     double resetTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - resetStart).count();
-    s.resetSeconds += resetTime; if (restoring) s.restoreSeconds += resetTime;
+    if (scanningReset) { s.resetSeconds += resetTime; if (restoring) s.restoreSeconds += resetTime; }
 }
 // Verify/Analyze run the level behind a cover: objects hidden (nothing to draw) and the
 // game sped up (setting "scan-speed"; 1 = normal). Called every frame, so it undoes itself.
@@ -1486,7 +1487,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             }
             if (s.state == State::Analyze && !s.validatingSnapshot && !s.auditing && !s.recoveringFlight &&
                 !s.auditGate.disabled && s.targetExecuted &&
-                s.recording.analysisPolicy == 2 && now > s.recording.inputs[s.target].tick) {
+                s.recording.analysisPolicy == 2 && now > s.recording.inputs[s.target].tick && now > s.changedUntil) {
                 auto reference = s.baseline.get(now);
                 auto evidence = s.referenceEvidence.get(now);
                 bool grounded = s.owner->m_player1->m_isOnGround &&
