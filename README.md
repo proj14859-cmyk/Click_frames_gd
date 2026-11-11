@@ -14,6 +14,7 @@
 
 -Cambios:
 - playback.flp usa CFPLAY 2 y el intercambio .cfr CLICKFRAMES 6 para persistir estimacion y prueba de bordes por colision. Se leen los formatos anteriores, que no reciben certificaciones nuevas por inferencia. La captura original sigue CFCAP 1.
+- Al cargar ventanas de una politica anterior se pide Analyze de nuevo; se conservan la captura original y Edit. Asi Play no muestra margenes antiguos como si ya incluyeran las correcciones del buffer.
 - El CSV ahora tiene diez columnas: vehiculo, velocidad_x, velocidad_y, gravedad, tamano, en_suelo, distancia_obs_x, distancia_obs_y, delta_ticks, TARGET_frames. capture-physics.tsv CFPHYS 2 guarda en_suelo original; v1 se lee con suelo desconocido y no se usa para nuevas etiquetas.
 - Los shards CSV de nueve columnas se archivan con sufijo .v105 antes de regenerar el agregado. No se inventa en_suelo. Para datos nuevos hay que grabar nuevamente y analizar en Exact + Full run.
 

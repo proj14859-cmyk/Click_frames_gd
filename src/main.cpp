@@ -1599,9 +1599,10 @@ class $modify(CFAudio, FMODAudioEngine) {
 
 class $modify(CFPlayer, PlayerObject) {
     void updateJump(float dt) {
-        bool grounded=m_isOnGround;int mode=playerMode(this);
+        bool grounded=m_isOnGround;int mode=playerMode(this);double previousJump=m_lastJumpTime;
         PlayerObject::updateJump(dt);
-        if(grounded && !m_isOnGround && (mode==0 || mode==5))observeLaunch(this);
+        bool thrust=m_isUpsideDown?m_yVelocity<0:m_yVelocity>0;
+        if(grounded && (m_lastJumpTime!=previousJump || (!m_isOnGround && thrust)) && (mode==0 || mode==5))observeLaunch(this);
     }
     void ringJump(RingObject* object, bool skipCheck) {
         PlayerObject::ringJump(object, skipCheck);
@@ -1859,6 +1860,10 @@ class $modify(CFPlay, PlayLayer) {
                 }
             }
             if (s.visual.enabled && s.recording.complete) s.message = "Edited showcase available (visual values)";
+            if(loaded.analysisLoaded && !cf::readFile(path().parent_path()/"analysis-policy.txt").starts_with("CF-ANALYSIS-6\n")) {
+                s.recording.windows.assign(s.recording.inputs.size(),{});s.recording.verified=false;s.predictions.clear();s.state=State::Idle;s.reportDirty=true;
+                s.message=s.visual.enabled?"Edited showcase available; Analyze to update measured windows":"v1.0.6: Analyze again to update saved windows";
+            }
             save();
             Mod::get()->setSavedValue<std::string>("last-level-folder", s.folder);
             Mod::get()->setSavedValue<std::string>("last-recording-key", s.recording.key);
@@ -2464,7 +2469,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        add("FWC / JSON", "Ventanas cerradas",{351,35},!active && s.recording.ready(),[]{
+        add("FWC / JSON", "Solo exactas cerradas",{351,35},!active && !cf::closedWindows(s.recording).empty(),[]{
             try {
                 auto count=cf::closedWindows(s.recording).size();
                 auto root=Mod::get()->getSaveDir()/"exports"/s.folder;
