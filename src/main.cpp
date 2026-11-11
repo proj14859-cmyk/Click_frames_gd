@@ -5,6 +5,10 @@
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/modify/CCScheduler.hpp>
+#include <Geode/modify/MenuLayer.hpp>
+#include <Geode/ui/ScrollLayer.hpp>
+#include <Geode/utils/general.hpp>
+#include <Geode/loader/Dirs.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/utils/cocos.hpp>
@@ -16,6 +20,10 @@
 #include "Bundle.hpp"
 #include "RetainedDictionary.hpp"
 #include "PrecisionJob.hpp"
+#include "Diagnostics.hpp"
+#include "Training.hpp"
+#include "Interop.hpp"
+#include "Audio.hpp"
 #include <chrono>
 #include <array>
 #include <cmath>
@@ -202,6 +210,7 @@ struct Session {
     std::vector<float> updateSchedule;
     size_t scheduleCursor = 0;
     uint64_t initialSharedSeed = 0, snapshotSharedSeed = 0;
+    uint64_t rootRandomSeed=0, rootReplaySeed=0;
     size_t snapshotScheduleCursor = 0;
     std::array<CollisionState, 2> snapshotCollisions;
     std::shared_ptr<EngineState> snapshotEngineState;
@@ -214,6 +223,7 @@ struct Session {
     uint64_t causalHash = cf::hashStart, snapshotCausalHash = cf::hashStart;
     std::vector<int> nativeTargets;
     size_t nextNativeTarget = 0;
+    size_t nextSafeNativeTarget=0;
     bool auditing = false, earlyAccepted = false, fromCache = false;
     int changedUntil = -1;
     cf::AuditGate auditGate;
@@ -225,6 +235,14 @@ struct Session {
     std::array<uint64_t, 6> phaseCalls{};
     double resetSeconds = 0, restoreSeconds = 0;
     std::string eventReport;
+    cf::CausalParity causalParity;
+    size_t toleratedEventTicks = 0;
+    std::vector<cf::training::Features> features;
+    bool featuresDirty = false;
+    std::array<uint64_t,6> batchCalls{}, cadenceCalls{};
+    std::array<std::string,6> cadenceReasons{};
+    cf::training::Totals trainingTotals;
+    std::string lastDiagnostic;
     uint64_t eventStartCalls = 0, eventStartAttempts = 0, eventStartRestores = 0;
     int eventStartTests = 0;
     bool precisionDirty = true;
@@ -248,10 +266,51 @@ constexpr int VERIFY_SHIFT_COUNT = 5;
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
 cf::precision::Job precisionJob;
+struct ClickAudio {
+    FMOD::System* system=nullptr;
+    FMOD::ChannelGroup* group=nullptr;
+    std::map<int,FMOD::Sound*> sounds;
+    std::map<int,FMOD::Channel*> channels;
+    void stop(){if(group)group->stop();channels.clear();}
+    void preload() {
+        auto engine=FMODAudioEngine::get(); if(!engine || !engine->m_system) return;
+        system=engine->m_system;
+        if(!group && system->createChannelGroup("ClickFramesEffects",&group)!=FMOD_OK) {group=nullptr;return;}
+        for(int width=1;width<=21;++width) {
+            if(sounds.contains(width))continue;
+            auto name=width==21?std::string("frame-wide.wav"):fmt::format("frame-{}.wav",width);
+            auto file=CCFileUtils::sharedFileUtils()->fullPathForFilename(fmt::format("{}/{}",Mod::get()->getID(),name).c_str(),false);
+            auto wave=cf::trimWave(cf::readFile(std::string(file))); if(!wave) continue;
+            FMOD_CREATESOUNDEXINFO info{};info.cbsize=sizeof(info);info.length=unsigned(wave->bytes.size());
+            FMOD::Sound* sound=nullptr;
+            if(system->createSound(wave->bytes.data(),FMOD_OPENMEMORY|FMOD_CREATESAMPLE|FMOD_LOOP_OFF,&info,&sound)==FMOD_OK) sounds[width]=sound;
+        }
+    }
+    bool play(int width) {
+        width=std::min(21,std::max(1,width));
+        if(!group || !sounds.contains(width))return false;
+        auto engine=FMODAudioEngine::get(); if(!engine || engine->m_sfxVolume<=0)return true;
+        group->setVolume(engine->m_sfxVolume);
+        if(auto old=channels.find(width);old!=channels.end() && old->second)old->second->stop();
+        FMOD::Channel* channel=nullptr;
+        if(system->playSound(sounds[width],group,false,&channel)!=FMOD_OK || !channel)return false;
+        channel->setVolumeRamp(false);channel->setPriority(0);channels[width]=channel;return true;
+    }
+} clickAudio;
 bool scanBatchActive = false;
 bool hasLiveOwner() {
     auto current = PlayLayer::get();
     return current && s.owner == current && current->m_level && current->m_player1 && current->m_player2;
+}
+std::string phaseName() {
+    return s.state==State::Verify ? "reference" : s.state==State::Analyze ? "analysis" : s.state==State::Record ? "record" : "interface";
+}
+void diagnostic(std::string const& code, std::string const& message) {
+    auto identity=code+":"+message;
+    if(s.lastDiagnostic==identity) return;
+    s.lastDiagnostic=identity;
+    cf::diagnostics::append(Mod::get()->getSaveDir()/"error-log.txt", phaseName(), hasLiveOwner()?int(s.owner->m_gameState.m_currentProgress):-1, s.target, code, message);
+    log::error("[CF] {}: {}",code,message);
 }
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
@@ -266,7 +325,8 @@ void recordCause(int kind, GameObject* object, PlayerObject* player, int detail 
         if (s.causalTrace.size() >= 1000000) { s.message = "Causal trace exceeds memory limit"; s.pending = Pending::Invalid; return; }
         s.causalTrace.push_back(e);
     } else if (s.causalCursor >= s.causalTrace.size() ||
-        !cf::sameCause(s.causalTrace[s.causalCursor], e, s.state == State::Verify || s.validatingSnapshot)) {
+        !cf::sameCause(s.causalTrace[s.causalCursor], e, s.validatingSnapshot) ||
+        (s.state == State::Verify && std::abs(s.causalTrace[s.causalCursor].tick-e.tick)>2)) {
         s.causalMismatch = true;
         if (s.state == State::Verify) {
             auto expected = s.causalCursor < s.causalTrace.size() ? &s.causalTrace[s.causalCursor] : nullptr;
@@ -282,11 +342,36 @@ void recordCause(int kind, GameObject* object, PlayerObject* player, int detail 
             s.message = "Snapshot causal mismatch; using full replay"; s.pending = Pending::Fail;
         }
     }
+    if(s.state==State::Verify && s.baselinePass>0 && s.causalCursor<s.causalTrace.size() && s.causalTrace[s.causalCursor].tick!=e.tick) ++s.toleratedEventTicks;
     ++s.causalCursor;
 }
 int playerMode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
         p->m_isRobot ? 5 : p->m_isSpider ? 6 : p->m_isSwing ? 7 : 0;
+}
+cf::training::Features captureFeatures(PlayerObject* player, bool down) {
+    cf::training::Features f;
+    f.mode=playerMode(player); f.speed=player->m_playerSpeed; f.vy=player->m_yVelocity;
+    f.gravity=player->m_isUpsideDown; f.mini=player->m_vehicleSize!=1.f;
+    f.delta=s.recording.inputs.empty()?tick():int64_t(tick())-s.recording.inputs.back().tick;
+    // Native current hazard rects, in world units from player origin to nearest
+    // rect edge. No trajectory inference, arbitrary sentinels or future state.
+    if (!down || player->m_isSideways || !s.owner->m_objects ||
+        (player->m_vehicleSize!=1.f && player->m_vehicleSize!=.6f)) return f;
+    double best=std::numeric_limits<double>::infinity();
+    auto x=player->getPositionX(), y=player->getPositionY();
+    for (size_t i=0;i<s.owner->m_objects->count();++i) {
+        auto object=static_cast<GameObject*>(s.owner->m_objects->objectAtIndex(i));
+        if(!object || object->m_objectType!=GameObjectType::Hazard || object->m_isDisabled || object->m_isDisabled2 ||
+            object->m_objectRadius>0 || object->getRotation()!=0.f) continue;
+        auto rect=object->getObjectRect();
+        double dx=player->m_isGoingLeft?rect.getMaxX()-x:rect.getMinX()-x;
+        if((player->m_isGoingLeft? -dx:dx)<0 || std::abs(dx)>600) continue;
+        double dy=y<rect.getMinY()?rect.getMinY()-y:y>rect.getMaxY()?rect.getMaxY()-y:0.;
+        double distance=dx*dx+dy*dy;
+        if(std::isfinite(distance) && distance<best) { best=distance; f.dx=dx; f.dy=dy; f.geometry=true; }
+    }
+    return f;
 }
 cf::Observation observation(float dt) {
     auto a = s.owner->m_player1, b = s.owner->m_player2;
@@ -394,10 +479,14 @@ void fixPracticeTouchPriority() {
 }
 // Stage a temp file, keep the previous version as .bak, then swap in the new one.
 bool writeSafe(std::filesystem::path const& file, std::string const& text) {
-    return cf::replaceFile(file, text);
+    try {
+        if(cf::replaceFile(file,text)) return true;
+        diagnostic("FILE_WRITE",file.filename().string()+": no se pudo guardar");
+    } catch(std::exception const& e) { diagnostic("FILE_WRITE",e.what()); }
+    return false;
 }
 std::string analysisPolicyToken() {
-    return fmt::format("CF-ANALYSIS-4\nair={}\nwide-cap={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
+    return fmt::format("CF-ANALYSIS-5\nair={}\nwide-cap={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
         Mod::get()->getSettingValue<int64_t>("wide-window-cap"));
 }
 cf::precision::Params precisionParams() {
@@ -441,6 +530,7 @@ void precisionTick() {
     }
     if (precisionJob.poll()) {
         if (auto result = precisionJob.result()) {
+            if(!result->error.empty()) diagnostic("PRECISION",result->error);
             std::ostringstream csv;
             csv << "time_seconds,existing_press_interval_ms,window_ms,conservative";
             for (auto name : cf::precision::names) csv << ',' << name << "_Lstar," << name << "_sigma_ms";
@@ -493,9 +583,23 @@ void save(bool flushPredictions = false) {
     if (s.storageBlocked) return;
     bool changedCapture = s.captureDirty;
     if (!cf::saveBundle(path().parent_path(), s.recording, s.captureDirty, s.captureDigest)) {
-        s.message = "Could not save capture/playback bundle; previous files retained"; return;
+        s.message = "Could not save capture/playback bundle; previous files retained"; diagnostic("BUNDLE_WRITE",s.message); return;
     }
     s.captureDirty = false;
+    if(s.featuresDirty && s.features.size()==s.recording.inputs.size()) {
+        if(writeSafe(path().parent_path()/"capture-physics.tsv",cf::training::encode(s.captureDigest,s.features))) s.featuresDirty=false;
+    }
+    // Replacing a capture's shard removes stale labels after policy changes,
+    // failed certification or audit invalidation. CSV itself keeps nine columns.
+    auto training=cf::training::csv(s.recording,s.features,s.trainingTotals);
+    if(!s.captureDigest.empty()) {
+        auto root=Mod::get()->getSaveDir();
+        if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
+            diagnostic("DATASET_WRITE","No se pudo actualizar el dataset de entrenamiento");
+        auto provenance=fmt::format("CF_TRAINING 1\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-5\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nCoordinates: world units, origin-to-native-hazard-rect edge; <=600 forward; rotated/circular/sideways omitted\n",
+            s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
+        if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
+    }
     auto view = [](std::string const& name, std::string const& data) {
         auto digest = cf::fingerprint(data);
         auto it = s.savedViews.find(name);
@@ -514,7 +618,7 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-4\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+    report += fmt::format("Analysis policy: CF-ANALYSIS-5\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     size_t measuredNow = 0;
     for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
@@ -532,9 +636,13 @@ void save(bool flushPredictions = false) {
     if (s.phaseCalls[1] > s.phaseCalls[2]+s.phaseCalls[3]) report += "- Original-continuation restore probes dominate physics work. Full probes remain intentional validation.\n";
     if (s.trialAttempts && (s.phaseCalls[2]+s.phaseCalls[3])/s.trialAttempts > 100) report += "- Long candidate continuations; compare local exits and checkpoint distance.\n";
     if (s.newlyMeasured && size_t(s.tests)/s.newlyMeasured > 15) report += "- Many offsets per event; inspect broad-window cap and configured radius.\n";
-    std::ostringstream phases; phases << "phase,physics_callbacks\n";
+    report+=fmt::format("Causal time shifts accepted: {}\nCausal count recoveries: {}\nDataset evaluated presses: {}\nDataset exported rows: {}\nDataset omitted open: {}\nDataset omitted geometry: {}\nDataset omitted missing physics/window: {}\nDataset scope: Full run only; native world-unit hazard-rect edge distances; raw pre-input values\n",
+        s.toleratedEventTicks,s.causalParity.recovered,s.trainingTotals.evaluated,s.trainingTotals.exported,s.trainingTotals.open,s.trainingTotals.geometry,s.trainingTotals.missing);
+    std::ostringstream phases; phases << "phase,physics_callbacks,batch_retained,batch_drop_reason,batch_callbacks,cadence_callbacks\n";
     char const* phaseNames[] = {"reference", "restore-probe", "candidate", "confirmation", "audit", "flight-recovery"};
-    for (size_t i = 0; i < 6; ++i) phases << phaseNames[i] << ',' << s.phaseCalls[i] << '\n';
+    for (size_t i = 0; i < 6; ++i) phases << phaseNames[i] << ',' << s.phaseCalls[i] << ',' << (s.cadenceCalls[i]==0 && s.batchCalls[i]>0) << ','
+        << s.cadenceReasons[i]
+        << ',' << s.batchCalls[i] << ',' << s.cadenceCalls[i] << '\n';
     view("scan-phases.csv", phases.str());
     if (!s.eventReport.empty()) view("scan-events.tsv", "event\ttick\tearly\tlate\twidth\tlower_bound\tphysics_calls\ttest_outcomes\ttrial_attempts\trestores\n" + s.eventReport);
     report += "Parity diagnostic: " + s.parityDiagnostic + "\n";
@@ -571,7 +679,7 @@ bool readVisual(std::filesystem::path const& directory, cf::Recording const& r, 
     return cf::readEdits(in, r.key, trace, r.trace.front().tick, r.trace.back().tick, result);
 }
 // Export: every run of this level into exports/<folder>.cfpack
-std::string exportPack() {
+std::string exportPackImpl() {
     save();
     cf::Pack pack; pack.folder = s.folder;
     size_t bytes = 0; std::error_code ec;
@@ -624,7 +732,7 @@ std::string exportPack() {
     return fmt::format("Exported {} run(s) to:\n{}", pack.files.size(), out.string());
 }
 // Import: every .cfpack in imports/. A pack is checked completely before any file is written.
-std::string importPacks() {
+std::string importPacksImpl() {
     if (s.state == State::Record || running()) return "Stop the current run first.";
     auto dir = Mod::get()->getSaveDir() / "imports";
     std::error_code ec;
@@ -667,12 +775,18 @@ std::string importPacks() {
                 if (!writeSafe(directory / ("edits-" + trace + ".tsv"), content.str())) { ok = false; break; }
             }
         }
-        if (!ok) { ++failed; continue; }
+        if (!ok) { ++failed; diagnostic("IMPORT_PARSE",file.filename().string()+": paquete no valido"); continue; }
         ++files; runs += captures.size();
         auto done = file; done += ".done"; std::filesystem::rename(file, done, ec);
     }
     return fmt::format("Imported {} run(s) from {} file(s).{}", runs, files,
         failed ? fmt::format("\n{} file(s) were invalid and left in place.", failed) : "");
+}
+std::string exportPack() {
+    try {return exportPackImpl();} catch(std::exception const& e){diagnostic("EXPORT_IO",e.what());return "Error de exportacion. Consulta Diagnostico.";}
+}
+std::string importPacks() {
+    try {return importPacksImpl();} catch(std::exception const& e){diagnostic("IMPORT_IO",e.what());return "Error de importacion. Consulta Diagnostico.";}
 }
 void releaseInjected() {
     if (!hasLiveOwner()) return;
@@ -736,6 +850,7 @@ void resetTrial() {
     s.scheduleCursor = restoring ? s.snapshotScheduleCursor : 0;
     s.causalCursor = restoring ? s.snapshotCausalCursor : 0; s.causalMismatch = false;
     s.causalHash = restoring ? s.snapshotCausalHash : cf::hashStart;
+    s.causalParity.opened=-1;
     if (s.state == State::Verify || s.state == State::Analyze) GameToolbox::fast_srand(s.initialSharedSeed);
     if (restoring) {
         ++s.restores;
@@ -745,6 +860,11 @@ void resetTrial() {
         s.internalCheckpoint = false;
     }
     s.owner->resetLevel();
+    if(scanningReset && !restoring) {
+        if(s.state==State::Verify && s.baselinePass==0) {s.rootRandomSeed=s.owner->m_randomSeed;s.rootReplaySeed=s.owner->m_replayRandSeed;}
+        s.owner->m_randomSeed=s.rootRandomSeed;s.owner->m_replayRandSeed=s.rootReplaySeed;
+        GameToolbox::fast_srand(s.initialSharedSeed);
+    }
     if (s.musicMutedByCf) FMODAudioEngine::get()->setBackgroundMusicVolume(0.f);
     s.resetting = false; s.next = 0; s.sample = 0; s.lastTick = -1;
     if (restoring) {
@@ -757,6 +877,7 @@ void resetTrial() {
             s.scheduleCursor = 0; s.causalCursor = 0;
             s.causalHash = cf::hashStart;
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
+            s.owner->m_randomSeed=s.rootRandomSeed;s.owner->m_replayRandSeed=s.rootReplaySeed;GameToolbox::fast_srand(s.initialSharedSeed);
         } else {
             s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld;
             s.owner->m_queuedButtons = s.snapshotButtons;
@@ -784,6 +905,7 @@ void resetTrial() {
         s.nativeObjectStates = 0;
         s.nextNativeTick = 24; s.nativePoolLimited = false; s.activeNative = -1;
         s.nextNativeTarget = 0;
+        s.nextSafeNativeTarget=0;
         s.nativeTargets = cf::checkpointTargets(s.trial, s.recording.radius,
             size_t(Mod::get()->getSettingValue<int64_t>("checkpoint-budget")));
     }
@@ -897,6 +1019,7 @@ void showMs(float ms) {
     label->setColor(tick() - s.lastPressTick < 60 ? ccColor3B{130, 245, 225} : ccColor3B{255, 255, 255});
 }
 void clearMarkers() {
+    clickAudio.stop();
     if (!hasLiveOwner()) return;
     if (auto precision = s.owner->getChildByID("cf-precision")) precision->removeFromParent();
     if (auto ms = s.owner->getChildByID("cf-ms")) ms->removeFromParent();
@@ -906,6 +1029,7 @@ void clearMarkers() {
     s.drawnPreview = -1;
 }
 void prepareShowcase() {
+    clickAudio.preload();
     cf::Recording visual;
     if (s.visual.enabled) visual = cf::visualCounter(s.visual);
     auto const& counter = s.visual.enabled ? visual : s.recording;
@@ -933,8 +1057,7 @@ void visualMarker(cf::VisualMarker const& m) {
         label->setScale(.28f * scale); label->setColor({color.r, color.g, color.b}); label->setPosition({0, 27.f * scale}); node->addChild(label);
     }
     if (m.sound && Mod::get()->getSettingValue<bool>("sounds")) {
-        auto sound = m.width > 20 ? "frame-wide.wav" : fmt::format("frame-{}.wav", m.width);
-        FMODAudioEngine::get()->playEffect(fmt::format("{}/{}", Mod::get()->getID(), sound));
+        if(!clickAudio.play(m.width)) diagnostic("AUDIO_PLAY","No se pudo reproducir el sonido de ventana");
     }
 }
 void marker(size_t index) {
@@ -966,8 +1089,7 @@ void marker(size_t index) {
         root->addChild(node);
     }
     if (Mod::get()->getSettingValue<bool>("sounds")) {
-        auto sound = w.width() > 20 ? "frame-wide.wav" : fmt::format("frame-{}.wav", w.width());
-        FMODAudioEngine::get()->playEffect(fmt::format("{}/{}", Mod::get()->getID(), sound));
+        if(!clickAudio.play(w.width())) diagnostic("AUDIO_PLAY","No se pudo reproducir el sonido de ventana");
     }
 }
 std::string inputBackend() {
@@ -1055,6 +1177,11 @@ void beginAnalysis() {
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
     s.baselinePass = 0; s.baseline.clear(); s.baselineCompared = 0;
     s.initialSharedSeed = GameToolbox::getfast_srand(); s.parityDiagnostic.clear();
+    for(auto& f:s.features) f.replayMatch=false;
+    s.featuresDirty=!s.features.empty();
+    s.causalParity={}; s.toleratedEventTicks=0; s.batchCalls.fill(0); s.cadenceCalls.fill(0);
+    s.cadenceReasons.fill("");
+    s.lastDiagnostic.clear();
     s.rawSignals.clear(); s.rawSignalCount = 0; s.baselineRetryPending = false;
     s.recoveringFlight = false; s.recoveryReport.clear();
     s.auditing = s.earlyAccepted = s.fromCache = false; s.auditGate = {}; s.probeCache.clear();
@@ -1074,12 +1201,13 @@ void beginAnalysis() {
     s.measurableTotal = std::count_if(s.recording.inputs.begin(), s.recording.inputs.end(), cf::counted); analysisClock(true);
     log::info("[CF] verify start: {} inputs, end tick {}", s.recording.inputs.size(), s.recording.endTick);
     s.message = "Verifying original run (240 TPS)"; resetTrial();
+    save();
 }
 bool chooseNativeState() {
     s.snapshot = nullptr; s.snapshotChecked = false; s.validatingSnapshot = false; s.activeNative = -1;
     s.snapshotEngineState.reset(); s.snapshotCollisions = {};
     int chosen = !s.nativeDisabled && Mod::get()->getSettingValue<bool>("native-states") ?
-        cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 2) : -1;
+        cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 1) : -1;
     if (chosen < 0) return false;
     auto const& n = s.nativePool[chosen];
     s.activeNative = chosen; s.snapshot = n.checkpoint; s.snapshotTick = n.tick; s.snapshotNext = n.next; s.snapshotHeld = n.held;
@@ -1166,6 +1294,7 @@ void consume() {
     auto result = s.pending; s.pending = Pending::None;
     if (result == Pending::Invalid && s.state == State::Analyze && s.auditing) result = Pending::Fail;
     if (result == Pending::Invalid) {
+        diagnostic("ANALYSIS_INVALID",s.message);
         s.alert = s.message; stop(s.message); queueReturnToPause(); return;
     }
     if (s.state == State::Verify) {
@@ -1186,11 +1315,12 @@ void consume() {
                 resetTrial(); return;
             }
             s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nTried the whole run shifted by 0, +1, -1, +2 and -2 ticks.", s.message, s.firstFail);
+            diagnostic("VERIFY_FAILED",s.alert);
             stop(s.message); queueReturnToPause(); return;
         }
         if (s.baselinePass == 0) {
             s.baselineEnd = tick();
-        } else if (tick() != s.baselineEnd || s.baselineCompared != s.baseline.size() || s.causalMismatch || s.causalCursor != s.causalTrace.size()) {
+        } else if (tick() != s.baselineEnd || s.baselineCompared != s.baseline.size() || s.causalParity.opened>=0 || s.causalMismatch || s.causalCursor != s.causalTrace.size()) {
             s.message = "Unstable baseline: completion tick or physics schedule changed";
             s.pending = Pending::Invalid; return;
         }
@@ -1209,6 +1339,7 @@ void consume() {
         // Trailing releases beyond completion were never replayed: do not analyze
         // them as if the baseline proved they executed successfully.
         s.recording.inputs.resize(s.next);
+        if(s.features.size()>s.next){s.features.resize(s.next);s.featuresDirty=true;}
         s.recording.windows.resize(s.next);
         bool alignmentChanged = s.previousPlaybackTicks.size() != s.recording.inputs.size();
         for (size_t i = 0; !alignmentChanged && i < s.recording.inputs.size(); ++i)
@@ -1229,6 +1360,7 @@ void consume() {
                 s.nativePool[s.activeNative].rejected = !s.snapshotChecked;
             }
             if (!s.snapshotChecked) {
+                diagnostic("RESTORE_PARITY",s.message);
                 ++s.restoreFallbacks; ++s.parityFallbacks; s.snapshot = nullptr;
                 if (chooseNativeState()) ++s.previousStateFallbacks;
                 log::warn("[CF] native-state validation failed; trying earlier state or full replay");
@@ -1241,6 +1373,7 @@ void consume() {
                 if (!pass) {
                     log::warn("[CF] audit mismatch: event {} offset {}; clearing local results", s.target, s.offset);
                     s.parityDiagnostic = fmt::format("Audit mismatch: event={} offset={} {}. Local exits disabled; remeasuring full continuations.", s.target, s.offset, s.message);
+                    diagnostic("AUDIT_MISMATCH",s.parityDiagnostic);
                     s.recording.windows.assign(s.recording.inputs.size(), {}); s.predictions.clear(); s.probeCache.clear();
                     s.target = 0; s.newlyMeasured = 0; s.eventReport.clear(); save(); nextEvent(); startCandidate(); return;
                 }
@@ -1272,6 +1405,7 @@ void consume() {
                 if (pass) {
                     ++s.restoreFallbacks; s.nativeDisabled = true; s.fullRestartRetry = false;
                     s.parityDiagnostic = "Native candidate disagreed with full-start confirmation; cache disabled and windows invalidated";
+                    diagnostic("RESTORE_DISAGREEMENT",s.parityDiagnostic);
                     s.recording.windows.assign(s.recording.inputs.size(), {}); s.predictions.clear(); s.probeCache.clear();
                     s.target = 0; s.newlyMeasured = 0; s.eventReport.clear(); save(); nextEvent(); startCandidate(); return;
                 }
@@ -1310,6 +1444,47 @@ void consume() {
 // Advance the ordinary scheduler in bounded fixed slices, retaining the normal
 // engine/hook order. Rendering occurs once after the batch. Never recursively
 // call this hook or directly bypass PlayLayer's update chain.
+void captureTargetCheckpoint(bool safePhase=false, float dt=0) {
+    if(s.state!=State::Verify || s.baselinePass!=2 || s.pending!=Pending::None)return;
+    int now=tick();
+    auto& next=safePhase?s.nextSafeNativeTarget:s.nextNativeTarget;
+    int lead=safePhase?std::clamp(int(std::ceil(dt*240.f)),4,64):0;
+                while (next < s.nativeTargets.size() && s.nativeTargets[next] < now) {
+                    ++next; if(!safePhase)++s.missedNativeTargets;
+                }
+                if (s.baselinePass == 2 && Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited &&
+                    next < s.nativeTargets.size() && now >= s.nativeTargets[next]-lead) {
+                    do {++next;}while(next<s.nativeTargets.size() && s.nativeTargets[next]<=now+lead);
+                    auto cp = s.owner->createCheckpoint();
+                    if (cp) {
+                        size_t states = cp->m_vectorSavedObjectStateRef.size() + cp->m_vectorActiveSaveObjectState.size() + cp->m_vectorSpecialSaveObjectState.size();
+                        auto engine = std::make_shared<EngineState>(); engine->capture(s.owner->m_gameState);
+                        states += engine->units();
+                        for (size_t i = 1; s.nativeObjectStates + states > 100000 && i + 1 < s.nativePool.size(); i += 2) {
+                            auto& old = s.nativePool[i];
+                            if (!old.checkpoint) continue;
+                            old.checkpoint = nullptr; old.engineState.reset(); old.collisions = {}; old.rejected = true;
+                            s.nativeObjectStates -= std::min(s.nativeObjectStates, old.units); ++s.thinnedNativeStates;
+                        }
+                        if (states > 25000 || s.nativeObjectStates + states > 100000) { s.nativePoolLimited = true; log::warn("[CF] native state cache limited by object-state count"); }
+                        else {
+                            s.nativeObjectStates += states;
+                            s.nativePool.emplace_back(); auto& n = s.nativePool.back();
+                            n.checkpoint = cp; n.tick = now; n.next = s.next; n.held = s.injectedHeld;
+                            n.buttons = s.owner->m_queuedButtons; n.recorded = s.owner->m_queuedRecordedButtons; n.replay = s.owner->m_queuedReplayButtons;
+                            n.randomSeed = s.owner->m_randomSeed; n.replaySeed = s.owner->m_replayRandSeed; n.extraDelta = s.owner->m_extraDelta;
+                            n.sharedSeed = GameToolbox::getfast_srand(); n.scheduleCursor = s.scheduleCursor;
+                            n.causalCursor = s.causalCursor;
+                            n.causalHash = s.causalHash; n.units = states;
+                            n.collisions = {captureCollisions(s.owner->m_player1), captureCollisions(s.owner->m_player2)};
+                            n.engineState = std::move(engine);
+                            n.step = s.owner->m_currentStep; n.recordedSize = s.owner->m_queuedRecordedButtonsSize; n.resumeTimer = s.owner->m_resumeTimer;
+                            size_t resident = std::count_if(s.nativePool.begin(), s.nativePool.end(), [](auto const& state) { return bool(state.checkpoint); });
+                            s.peakNativeStates = std::max(s.peakNativeStates, resident);
+                        }
+                    }
+                }
+}
 class $modify(CFScanScheduler, cocos2d::CCScheduler) {
     void update(float dt) {
         static bool inside = false;
@@ -1430,6 +1605,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 auto player = p1 ? s.owner->m_player1 : s.owner->m_player2;
                 auto position = player ? player->getPosition() : CCPointZero;
                 int mode = playerMode(player);
+                s.features.push_back(captureFeatures(player,down)); s.featuresDirty=true;
                 s.recording.inputs.push_back({tick(), down, button, p1, position.x, position.y, mode});
                 s.captureDirty = true;
                 s.recordedHeld[i] = down;
@@ -1443,11 +1619,16 @@ class $modify(CFBase, GJBaseGameLayer) {
                 ++s.physicsCalls;
                 size_t phase = s.state == State::Verify ? 0 : s.validatingSnapshot ? 1 : s.auditing ? 4 : s.recoveringFlight ? 5 : s.confirmingBoundary ? 3 : 2;
                 ++s.phaseCalls[phase];
+                if(scanBatchActive && !s.batchDisabled && !(s.state==State::Verify && s.baselinePass==0)) ++s.batchCalls[phase];
+                else {
+                    ++s.cadenceCalls[phase];
+                    s.cadenceReasons[phase]=s.batchDisabled?"PARITY_FAILURE":!Mod::get()->getSettingValue<bool>("batch-analysis")?"USER_DISABLED":"REFERENCE_CAPTURE";
+                }
             }
             bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - .25f) <= .005f;
             if (dt > 0 && !validStep) {
                 s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail; s.noRetry = true;
-                if (s.state == State::Analyze) { s.alert = s.message; stop(s.message); queueReturnToPause(); }
+                if (s.state == State::Analyze) { diagnostic("PHYSICS_STEP",s.message);s.alert = s.message; stop(s.message); queueReturnToPause(); }
                 return;
             }
             int now = tick();
@@ -1460,7 +1641,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                     s.baseline.insert(now, current);
                 } else {
                     auto reference = s.baseline.get(now);
-                    if (!reference || !cf::matches(*reference, current)) {
+                    if (!reference || !s.causalParity.compare(*reference, current, now)) {
                         if (!s.batchDisabled) {
                             s.batchDisabled = true; s.baselinePass = 0;
                             s.baselineRetryPending = true;
@@ -1473,6 +1654,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                         }
                         s.parityDiagnostic = fmt::format("tick={} pass={} batching-disabled={} {}", now, s.baselinePass,
                             s.batchDisabled, !reference ? "missing tick" : cf::difference(*reference, current));
+                        diagnostic("PARITY_FAILURE",s.parityDiagnostic);
                         return;
                     }
                     ++s.baselineCompared;
@@ -1532,11 +1714,19 @@ class $modify(CFBase, GJBaseGameLayer) {
                     s.segmentMissed = true; ++s.localFallbackTrials;
                 }
             }
+            captureTargetCheckpoint();
             auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
             s.injecting = true;
             while (s.next < events.size() && events[s.next].tick <= tick()) {
                 auto index = s.next++; auto e = events[index];
                 auto identity = e.sourceIndex == size_t(-1) ? index : e.sourceIndex;
+                if(s.state==State::Verify && s.baselinePass==2 && identity<s.features.size() && e.down && e.button==1) {
+                    auto p=e.p1?s.owner->m_player1:s.owner->m_player2; auto actual=captureFeatures(p,true);auto& original=s.features[identity];
+                    original.replayMatch=actual.mode==original.mode && actual.speed==original.speed && actual.vy==original.vy &&
+                        actual.gravity==original.gravity && actual.mini==original.mini && actual.geometry==original.geometry &&
+                        actual.dx==original.dx && actual.dy==original.dy && p->getPositionX()==e.x && p->getPositionY()==e.y;
+                    s.featuresDirty=true;
+                }
                 if (s.state == State::Analyze && identity == s.target) s.targetExecuted = true;
                 if ((s.state == State::Verify || s.state == State::Analyze) && e.button == 1 && e.down) {
                     auto player = e.p1 ? s.owner->m_player1 : s.owner->m_player2;
@@ -1577,6 +1767,8 @@ class $modify(CFPlay, PlayLayer) {
         cf::LoadedBundle loaded;
         if (cf::loadBundle(recordingPath.parent_path(), s.recording.key, loaded)) {
             s.recording = std::move(loaded.recording); s.captureDigest = loaded.captureDigest; s.captureDirty = false;
+            auto rawFeatures=cf::readFile(recordingPath.parent_path()/"capture-physics.tsv");
+            if(!rawFeatures.empty() && !cf::training::decode(rawFeatures,s.captureDigest,s.features)) diagnostic("PHYSICS_PARSE","La captura fisica no coincide; se omite del dataset");
             s.traceDigest = cf::fingerprint(cf::traceCsv(s.recording));
             s.state = s.recording.ready() ? State::Ready : State::Idle;
             s.message = s.recording.ready() ? "Saved showcase available" : "Saved run: Analyze to continue";
@@ -1608,6 +1800,7 @@ class $modify(CFPlay, PlayLayer) {
                 std::filesystem::exists(Mod::get()->getSaveDir() / "levels" / s.folder / legacy, ec) ||
                 std::filesystem::exists(Mod::get()->getSaveDir() / legacy, ec);
             if (s.storageBlocked) s.message = "Could not load/migrate capture; original files preserved. Record explicitly to replace.";
+            if(s.storageBlocked)diagnostic("CAPTURE_READ",s.message);
         }
         layer->unschedule(schedule_selector(CFPlay::service));
         layer->schedule(schedule_selector(CFPlay::service));
@@ -1628,6 +1821,7 @@ class $modify(CFPlay, PlayLayer) {
         if (!scanBatchActive || s.background != scanning) applyBackground(scanning);
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (inputBackend() != s.recording.backend) {
+                diagnostic("INPUT_ENVIRONMENT","Input mode changed during replay");
                 stop("Input mode changed during replay. Restore vanilla/CoS mode and retry."); queueReturnToPause(); return;
             }
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
@@ -1651,42 +1845,9 @@ class $modify(CFPlay, PlayLayer) {
             auto point = cf::Sample{now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()};
             if (s.state == State::Verify) {
                 if (s.referenceTrace.size() < 100000) s.referenceTrace.set(now, point);
-                while (s.baselinePass == 2 && s.nextNativeTarget < s.nativeTargets.size() && s.nativeTargets[s.nextNativeTarget] < now) {
-                    ++s.nextNativeTarget; ++s.missedNativeTargets;
-                }
-                int lead = std::clamp(int(std::ceil(dt * 240.f)), 4, 64);
-                if (s.baselinePass == 2 && Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited &&
-                    s.nextNativeTarget < s.nativeTargets.size() && now >= s.nativeTargets[s.nextNativeTarget] - lead) {
-                    while (s.nextNativeTarget < s.nativeTargets.size() && s.nativeTargets[s.nextNativeTarget] <= now + lead) ++s.nextNativeTarget;
-                    auto cp = createCheckpoint();
-                    if (cp) {
-                        size_t states = cp->m_vectorSavedObjectStateRef.size() + cp->m_vectorActiveSaveObjectState.size() + cp->m_vectorSpecialSaveObjectState.size();
-                        auto engine = std::make_shared<EngineState>(); engine->capture(m_gameState);
-                        states += engine->units();
-                        for (size_t i = 1; s.nativeObjectStates + states > 100000 && i + 1 < s.nativePool.size(); i += 2) {
-                            auto& old = s.nativePool[i];
-                            if (!old.checkpoint) continue;
-                            old.checkpoint = nullptr; old.engineState.reset(); old.collisions = {}; old.rejected = true;
-                            s.nativeObjectStates -= std::min(s.nativeObjectStates, old.units); ++s.thinnedNativeStates;
-                        }
-                        if (states > 25000 || s.nativeObjectStates + states > 100000) { s.nativePoolLimited = true; log::warn("[CF] native state cache limited by object-state count"); }
-                        else {
-                            s.nativeObjectStates += states;
-                            s.nativePool.emplace_back(); auto& n = s.nativePool.back();
-                            n.checkpoint = cp; n.tick = now; n.next = s.next; n.held = s.injectedHeld;
-                            n.buttons = m_queuedButtons; n.recorded = m_queuedRecordedButtons; n.replay = m_queuedReplayButtons;
-                            n.randomSeed = m_randomSeed; n.replaySeed = m_replayRandSeed; n.extraDelta = m_extraDelta;
-                            n.sharedSeed = GameToolbox::getfast_srand(); n.scheduleCursor = s.scheduleCursor;
-                            n.causalCursor = s.causalCursor;
-                            n.causalHash = s.causalHash; n.units = states;
-                            n.collisions = {captureCollisions(m_player1), captureCollisions(m_player2)};
-                            n.engineState = std::move(engine);
-                            n.step = m_currentStep; n.recordedSize = m_queuedRecordedButtonsSize; n.resumeTimer = m_resumeTimer;
-                            size_t resident = std::count_if(s.nativePool.begin(), s.nativePool.end(), [](auto const& state) { return bool(state.checkpoint); });
-                            s.peakNativeStates = std::max(s.peakNativeStates, resident);
-                        }
-                    }
-                }
+                // Retain the v1.0.4 post-update restore path as a fallback if an
+                // exact pre-command target cannot round-trip across this slice.
+                captureTargetCheckpoint(true,dt);
             }
             if (s.state == State::Analyze) {
                 int eventTick = s.recording.inputs[s.target].tick;
@@ -1751,6 +1912,7 @@ class $modify(CFPlay, PlayLayer) {
         if (it == s.checkpoints.end()) {
             while (!s.recording.inputs.empty() && s.recording.inputs.back().tick > now) s.recording.inputs.pop_back();
             while (!s.recording.trace.empty() && s.recording.trace.back().tick > now) s.recording.trace.pop_back();
+            s.features.resize(s.recording.inputs.size());s.featuresDirty=true;
             s.recordedHeld.fill(false);
             for (auto const& input : s.recording.inputs) s.recordedHeld[slot(input.button, input.p1)] = input.down;
             s.restored = true;
@@ -1762,8 +1924,10 @@ class $modify(CFPlay, PlayLayer) {
             stop("Checkpoint no longer belongs to this run"); return;
         }
         s.recording.inputs.resize(saved.inputs); s.recording.trace.resize(saved.trace);
+        s.features.resize(saved.inputs); s.featuresDirty=true;
         while (!s.recording.inputs.empty() && s.recording.inputs.back().tick > now) s.recording.inputs.pop_back();
         while (!s.recording.trace.empty() && s.recording.trace.back().tick > now) s.recording.trace.pop_back();
+        s.features.resize(s.recording.inputs.size());s.featuresDirty=true;
         s.recordedHeld = saved.held; s.restored = true;
         s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
     }
@@ -1775,6 +1939,7 @@ class $modify(CFPlay, PlayLayer) {
             s.captureDirty = true;
             if (!s.restored) {
                 s.recording.inputs.clear(); s.recording.trace.clear(); s.checkpoints.clear();
+                s.features.clear();s.featuresDirty=true;
                 s.recordedHeld.fill(false);
             }
             s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
@@ -2038,6 +2203,47 @@ public:
     static CFEditor* create() { auto p = new CFEditor; if (p->init()) { p->autorelease(); return p; } delete p; return nullptr; }
 };
 
+class CFDiagnostics : public Popup {
+    std::string m_text;
+    CCLabelBMFont* m_label=nullptr;
+    ScrollLayer* m_scroll=nullptr;
+    void select(int source) {
+        auto root=Mod::get()->getSaveDir();
+        auto file=source==0?root/"error-log.txt":cf::diagnostics::newestLog(source==1?dirs::getCrashlogsDir():dirs::getGeodeLogDir());
+        m_text=file.empty()?"No se encontraron registros.":file.filename().string()+"\n"+cf::diagnostics::readLog(file);
+        m_scroll->m_contentLayer->removeAllChildren();
+        auto text=m_text.substr(0,24000);
+        if(text.size()<m_text.size()) text+="\nVista recortada. Copiar Log conserva el texto completo.";
+        // BMFont displays text literally; crashlogs cannot inject markup/buttons.
+        m_label=CCLabelBMFont::create(text.c_str(),"chatFont.fnt",800,kCCTextAlignmentLeft);
+        m_label->setScale(.43f); m_label->setAnchorPoint({0,1});
+        float height=std::max(160.f,m_label->getScaledContentSize().height+8);
+        m_scroll->m_contentLayer->setContentSize({360,height}); m_label->setPosition({4,height-4});
+        m_scroll->m_contentLayer->addChild(m_label); m_scroll->scrollToTop();
+    }
+    bool init() {
+        if(!Popup::init(400,260)) return false;
+        setTitle("Diagnostico Click Frames");
+        m_scroll=ScrollLayer::create(CCSize{360,160}); m_scroll->setPosition({20,57}); m_mainLayer->addChild(m_scroll);
+        auto button=[this](char const* title, CCPoint pos, std::function<void()> action) {
+            auto sprite=ButtonSprite::create(title); sprite->setScale(.48f);
+            auto item=CCMenuItemExt::createSpriteExtra(sprite,[action](auto){auto invoke=action;invoke();});
+            item->m_scaleMultiplier=1.f; item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace(pos))); m_buttonMenu->addChild(item);
+        };
+        button("Errores",{72,34},[this]{select(0);}); button("Crashlog",{153,34},[this]{select(1);});
+        button("Geode",{231,34},[this]{select(2);});
+        button("Copiar Log",{327,34},[this]{
+            bool copied=utils::clipboard::write(m_text);
+            if(!copied)diagnostic("CLIPBOARD_WRITE","No se pudo copiar el registro");
+            Notification::create(copied?"Registro copiado":"No se pudo copiar",copied?NotificationIcon::Success:NotificationIcon::Error)->show();
+        });
+        select(0); return true;
+    }
+public:
+    static CFDiagnostics* create(){auto p=new CFDiagnostics;if(p->init()){p->autorelease();return p;}delete p;return nullptr;}
+};
+void showDiagnostics(){if(auto p=CFDiagnostics::create()) p->show();}
+
 class CFPopup : public Popup {
     static bool ensureSession() {
         auto layer = PlayLayer::get();
@@ -2097,10 +2303,13 @@ class CFPopup : public Popup {
         add("EDITAR", "Solo visual", {351, 211}, !active && !s.recording.trace.empty(), [this] {
             onClose(nullptr); if (auto editor = CFEditor::create()) editor->show();
         }, 118, 28);
+        add("DIAGNOSTICO", "Logs / crash", {351,235}, true, []{showDiagnostics();},118,22);
         add("1. RECORD", "New practice run", {79, 171}, !active, [this] {
             if (!ensureSession()) return;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
+            s.features.clear(); s.featuresDirty=true;
+            s.causalParity={};s.toleratedEventTicks=0;s.batchCalls.fill(0);s.cadenceCalls.fill(0);s.cadenceReasons.fill("");s.lastDiagnostic.clear();
             s.recording.backend = inputBackend(); s.predictions.clear(); s.snapshot = nullptr;
             s.visual = {}; precisionJob.cancel(); s.precisionDirty = true;
             s.captureDirty = true; s.viewsDirty = true; s.captureDigest.clear(); s.traceDigest.clear(); s.storageBlocked = false;
@@ -2182,7 +2391,16 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.4", {215, 18}, .43f, {165, 183, 204});
+        add("FWC / JSON", "Ventanas cerradas",{351,35},!active && s.recording.ready(),[]{
+            try {
+                auto count=cf::closedWindows(s.recording).size();
+                auto root=Mod::get()->getSaveDir()/"exports"/s.folder;
+                bool ok=writeSafe(root/"windows.fwc",cf::fwcBytes(s.recording)) && writeSafe(root/"windows.nandl.json",cf::nandlJson(s.recording));
+                if(!ok) diagnostic("EXPORT_WRITE","No se pudo guardar FWC / NaNDL");
+                FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
+            } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
+        },118,22);
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.5", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
@@ -2198,5 +2416,16 @@ class $modify(CFPause, PauseLayer) {
         auto sprite = ButtonSprite::create("Frames"); sprite->setScale(.7f);
         auto button = CCMenuItemExt::createSpriteExtra(sprite, [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
         button->m_scaleMultiplier = 1.f; button->setPosition({0, 0}); menu->addChild(button);
+        auto diagSprite=ButtonSprite::create("Logs"); diagSprite->setScale(.5f);
+        auto diag=CCMenuItemExt::createSpriteExtra(diagSprite,[](auto){showDiagnostics();}); diag->m_scaleMultiplier=1.f;diag->setPosition({90,0});menu->addChild(diag);
+    }
+};
+class $modify(CFMenuDiagnostics, MenuLayer) {
+    bool init() {
+        if(!MenuLayer::init()) return false;
+        auto menu=CCMenu::create(); menu->setID("cf-diagnostics-menu"_spr); menu->setPosition({CCDirector::get()->getWinSize().width-38,65});
+        auto sprite=ButtonSprite::create("CF Logs"); sprite->setScale(.42f);
+        auto item=CCMenuItemExt::createSpriteExtra(sprite,[](auto){showDiagnostics();});item->m_scaleMultiplier=1.f;menu->addChild(item);addChild(menu,100);
+        return true;
     }
 };

@@ -1,5 +1,27 @@
 # Click Frames GD
 
+## v1.0.5 / 2026-11-11 / 16:23 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- Paridad causal: un unico evento puede diferirse hasta dos ticks si conserva identidad, destino y orden, y la cinematica vuelve a coincidir. Se rechazan diferencias persistentes o de modo/input; 0.05 unidades solo se permite en posiciones durante esa ventana, no como tolerancia general.
+- Full run sigue hasta el final; la reconvergencia local conserva auditorias y comprobacion del estado original ademas de la huella. Ahora incluye rotacion exacta para cortar, manteniendo la exclusion de rotacion visual en la paridad de referencia.
+
+-Mejoras:
+- Checkpoints dirigidos a click-radio-2 en la frontera fisica previa a comandos, con restauracion validada y fallback anterior. Se conserva tambien la captura segura post-update de 1.0.4 como respaldo de slices que no puedan restaurar el punto exacto. Los limites de memoria y las pruebas de continuacion completa permanecen; no son snapshots universales.
+- scan-phases.csv distingue callbacks por lotes/cadencia, batch_retained y batch_drop_reason. Confirmaciones estrechas conservan lotes tras verificar la referencia; no se atribuyen causas de fallback que no ocurrieron.
+
+-Cambios:
+- Menu principal del juego: CF Logs. Pausa: Logs. Menu Frames: Diagnostico. Permiten consultar errores propios, el ultimo crashlog y el ultimo log de Geode, y copiar el texto (hasta 4 MiB; vista limitada a 24000 caracteres).
+- error-log.txt conserva UTC, fase, tick, evento y codigo; limite 256 KiB con rotacion por lineas. Los SIGSEGV siguen a cargo de Geode; las excepciones de archivos/importacion se informan sin silenciarlas.
+- Sonidos PCM precargados en un grupo FMOD propio. Se elimina solo silencio digital inicial medido en las muestras; no equivale a compensar la latencia del dispositivo.
+
+-Implementaciones:
+- capture-physics.tsv guarda los valores originales previos a cada input, ligados al hash de capture.flr. Para el dataset se comprueba ademas su igualdad exacta con la ultima referencia reproducida. Capturas antiguas sin estos valores se omiten: hay que grabar de nuevo.
+- dataset_entrenamiento.csv en la carpeta del mod: nueve columnas numericas, double con 17 cifras significativas, solo pulsaciones button=1 de Full run con ambos bordes cerrados y geometria fiable; sin datos de Edit, NaN ni 8+. training/<capture-hash>.csv sirve de indice por captura, evitando duplicados e invalidando etiquetas tras cambios de politica o certificacion. El informe cuenta exclusiones.
+- Las distancias son unidades del mundo desde el origen del jugador hasta el borde mas cercano del rectangulo nativo de un peligro frontal a <=600 unidades. Se omiten peligros circulares/rotados y modos sideways, y no se inventa geometria para bloques o rampas sin evidencia fiable de letalidad. delta_ticks cuenta desde el anterior input registrado, incluidas liberaciones; el primero cuenta desde tick 0.
+- FWC / JSON exporta ventanas cerradas a exports/<nivel-ID>/windows.fwc (FWC2 little-endian) y windows.nandl.json. timePosition son ticks, gameFps/windowFps=240. El export incluye el scope actual; .cfpack sigue como formato nativo. No se importa CML.
+- Diez suites con ASan/UBSan y compilaciones Windows/Android. Las pruebas de velocidad, tacto/portapapeles, audio y paridad real con triggers requieren comprobarse en el juego; no se garantiza un tiempo universal. La red neuronal queda para despues.
+
 ## v1.0.4 / 2026-11-11 / 12:10 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

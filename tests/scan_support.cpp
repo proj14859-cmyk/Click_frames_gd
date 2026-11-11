@@ -30,7 +30,7 @@ int main() {
     assert(tight.done && tight.window().width() == 1 && !tight.window().lowerBound);
     std::vector<cf::Input> inputs{{20, true, 1, true}, {21, false, 1, true}, {200, true, 1, true}, {400, true, 1, true}};
     auto targets = cf::checkpointTargets(inputs, 12, 2);
-    assert(targets.size() == 2 && targets[0] == 5 && targets[1] == 385);
+    assert(targets.size() == 2 && targets[0] == 6 && targets[1] == 386);
     assert(cf::checkpointTargets(inputs, 12, 0).empty());
     std::vector<cf::Input> candidate; assert(cf::candidateTrial(inputs, 0, 1, candidate));
     assert(cf::lastChangedTick(inputs, candidate) == 21);
