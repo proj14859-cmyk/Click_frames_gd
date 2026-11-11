@@ -7,7 +7,7 @@
 - Full run sigue hasta el final; la reconvergencia local conserva auditorias y comprobacion del estado original ademas de la huella. Ahora incluye rotacion exacta para cortar, manteniendo la exclusion de rotacion visual en la paridad de referencia.
 
 -Mejoras:
-- Checkpoints dirigidos a click-radio-2 en la frontera fisica previa a comandos, con restauracion validada y fallback anterior. Los limites de memoria y las pruebas de continuacion completa permanecen; no son snapshots universales.
+- Checkpoints dirigidos a click-radio-2 en la frontera fisica previa a comandos, con restauracion validada y fallback anterior. Se conserva tambien la captura segura post-update de 1.0.4 como respaldo de slices que no puedan restaurar el punto exacto. Los limites de memoria y las pruebas de continuacion completa permanecen; no son snapshots universales.
 - scan-phases.csv distingue callbacks por lotes/cadencia, batch_retained y batch_drop_reason. Confirmaciones estrechas conservan lotes tras verificar la referencia; no se atribuyen causas de fallback que no ocurrieron.
 
 -Cambios:

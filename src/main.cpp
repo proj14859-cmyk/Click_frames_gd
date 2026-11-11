@@ -280,7 +280,7 @@ struct ClickAudio {
             if(sounds.contains(width))continue;
             auto name=width==21?std::string("frame-wide.wav"):fmt::format("frame-{}.wav",width);
             auto file=CCFileUtils::sharedFileUtils()->fullPathForFilename(fmt::format("{}/{}",Mod::get()->getID(),name).c_str(),false);
-            auto wave=cf::trimWave(cf::readFile(file)); if(!wave) continue;
+            auto wave=cf::trimWave(cf::readFile(std::string(file))); if(!wave) continue;
             FMOD_CREATESOUNDEXINFO info{};info.cbsize=sizeof(info);info.length=unsigned(wave->bytes.size());
             FMOD::Sound* sound=nullptr;
             if(system->createSound(wave->bytes.data(),FMOD_OPENMEMORY|FMOD_CREATESAMPLE|FMOD_LOOP_OFF,&info,&sound)==FMOD_OK) sounds[width]=sound;
@@ -596,6 +596,9 @@ void save(bool flushPredictions = false) {
         auto root=Mod::get()->getSaveDir();
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
             diagnostic("DATASET_WRITE","No se pudo actualizar el dataset de entrenamiento");
+        auto provenance=fmt::format("CF_TRAINING 1\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-5\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nCoordinates: world units, origin-to-native-hazard-rect edge; <=600 forward; rotated/circular/sideways omitted\n",
+            s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
+        if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
     }
     auto view = [](std::string const& name, std::string const& data) {
         auto digest = cf::fingerprint(data);
@@ -1311,6 +1314,7 @@ void consume() {
                 resetTrial(); return;
             }
             s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nTried the whole run shifted by 0, +1, -1, +2 and -2 ticks.", s.message, s.firstFail);
+            diagnostic("VERIFY_FAILED",s.alert);
             stop(s.message); queueReturnToPause(); return;
         }
         if (s.baselinePass == 0) {
@@ -1623,7 +1627,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - .25f) <= .005f;
             if (dt > 0 && !validStep) {
                 s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail; s.noRetry = true;
-                if (s.state == State::Analyze) { s.alert = s.message; stop(s.message); queueReturnToPause(); }
+                if (s.state == State::Analyze) { diagnostic("PHYSICS_STEP",s.message);s.alert = s.message; stop(s.message); queueReturnToPause(); }
                 return;
             }
             int now = tick();
@@ -1795,6 +1799,7 @@ class $modify(CFPlay, PlayLayer) {
                 std::filesystem::exists(Mod::get()->getSaveDir() / "levels" / s.folder / legacy, ec) ||
                 std::filesystem::exists(Mod::get()->getSaveDir() / legacy, ec);
             if (s.storageBlocked) s.message = "Could not load/migrate capture; original files preserved. Record explicitly to replace.";
+            if(s.storageBlocked)diagnostic("CAPTURE_READ",s.message);
         }
         layer->unschedule(schedule_selector(CFPlay::service));
         layer->schedule(schedule_selector(CFPlay::service));
@@ -1815,6 +1820,7 @@ class $modify(CFPlay, PlayLayer) {
         if (!scanBatchActive || s.background != scanning) applyBackground(scanning);
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (inputBackend() != s.recording.backend) {
+                diagnostic("INPUT_ENVIRONMENT","Input mode changed during replay");
                 stop("Input mode changed during replay. Restore vanilla/CoS mode and retry."); queueReturnToPause(); return;
             }
             if (s.watchdogTick == tick()) s.stalledSeconds += dt;
