@@ -19,13 +19,30 @@ Release build on the execution machine:
 - All 1000 cumulative prefixes / eight models: approximately 471 ms, separate
   from the final-only solve and therefore run outside the game thread.
 - LUT maximum absolute error against std::erfc: 4.36e-10.
+- All eight weights are checked against an independent long-double std::erf
+  oracle with bisection, in addition to the one-click closed-form reference.
 - Reproduce with tests/benchmark.cpp (-O2) and tests/precision.cpp. CI prints its
   own times; runtime is reported instead of a flaky hardware-dependent assertion.
+- Android CI configures the mod with CMAKE_BUILD_TYPE=Release (confirmed in run
+  43018346081), independently of the standalone benchmark's explicit -O2 flag.
 
 ## Required on-device checks (not executed here)
 
 There is no running Geometry Dash/Geode process or level geometry in this
 workspace. The attached plan alone contains no scan-report.txt measurements.
+
+The two earlier user CFR examples (1539950219185091717 and
+1962885543127956795) were read without modification with tools/precision_compare.cpp.
+Both contain zero measured windows. The tool deliberately refuses to invent L*
+from click spacing. A real per-run numerical comparison needs measured windows;
+the in-game precision.csv export produces it after Analyze.
+
+Build the read-only comparison tool with:
+
+```sh
+g++ -O2 -std=c++20 tools/precision_compare.cpp -o precision_compare
+./precision_compare run.cfr
+```
 
 1. Use the identical saved capture and input mode for a short and a long level.
    Start fresh analysis after setting the policy, and preserve scan-report.txt,

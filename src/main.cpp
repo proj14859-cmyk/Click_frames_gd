@@ -219,6 +219,8 @@ struct Session {
     cf::AuditGate auditGate;
     cf::ProbeCache probeCache;
     uint64_t cacheHits = 0, trialAttempts = 0, tickFallbacks = 0, parityFallbacks = 0, previousStateFallbacks = 0;
+    uint64_t probeRestores = 0, newlyMeasured = 0;
+    bool nativeDisabled = false;
     uint64_t missedNativeTargets = 0, thinnedNativeStates = 0;
     std::array<uint64_t, 6> phaseCalls{};
     double resetSeconds = 0, restoreSeconds = 0;
@@ -517,11 +519,19 @@ void save(bool flushPredictions = false) {
     size_t measuredNow = 0;
     for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
         if (cf::counted(s.recording.inputs[i]) && s.recording.windows[i].measured) ++measuredNow;
-    report += fmt::format("Trial attempts (includes confirmations/audits/recovery): {}\nTests per measured event: {:.3f}\nCandidate physics callbacks per attempt: {:.3f}\nRestore ratio per attempt: {:.3f}\nTick-mismatch fallbacks: {}\nParity fallbacks: {}\nEarlier-state fallbacks: {}\nMissed checkpoint targets: {}\nThinned native states: {}\nReset seconds: {:.6f}\nRestore/reset seconds: {:.6f}\nExact repeat-cache hits: {}\nEarly passes: {}\nFull-start audits: {}\nAudit mismatches: {}\nLocal cuts disabled after audit: {}\n",
-        s.trialAttempts, measuredNow ? double(s.tests)/measuredNow : 0., s.trialAttempts ? double(s.phaseCalls[2]+s.phaseCalls[3]+s.phaseCalls[4]+s.phaseCalls[5])/s.trialAttempts : 0.,
-        s.trialAttempts ? double(s.restores)/s.trialAttempts : 0., s.tickFallbacks, s.parityFallbacks, s.previousStateFallbacks,
+    report += fmt::format("Trial attempts (includes confirmations/audits/recovery): {}\nTests per newly measured event: {:.3f}\nCandidate physics callbacks per attempt: {:.3f}\nRestore ratio per attempt: {:.3f}\nTick-mismatch fallbacks: {}\nParity fallbacks: {}\nEarlier-state fallbacks: {}\nMissed checkpoint targets: {}\nThinned native states: {}\nReset seconds: {:.6f}\nRestore/reset seconds: {:.6f}\nExact repeat-cache hits: {}\nEarly passes: {}\nFull-start audits: {}\nAudit mismatches: {}\nLocal cuts disabled after audit: {}\n",
+        s.trialAttempts, s.newlyMeasured ? double(s.tests)/s.newlyMeasured : 0., s.trialAttempts ? double(s.phaseCalls[2]+s.phaseCalls[3]+s.phaseCalls[4]+s.phaseCalls[5])/s.trialAttempts : 0.,
+        s.trialAttempts ? double(s.restores-std::min(s.restores,s.probeRestores))/s.trialAttempts : 0., s.tickFallbacks, s.parityFallbacks, s.previousStateFallbacks,
         s.missedNativeTargets, s.thinnedNativeStates, s.resetSeconds, s.restoreSeconds, s.cacheHits,
         s.auditGate.earlyPasses, s.auditGate.audits, s.auditGate.failures, s.auditGate.disabled);
+    report += fmt::format("Newly measured events: {}\nSaved measured events: {}\nProbe restores: {}\nNative cache disabled after branch disagreement: {}\n",
+        s.newlyMeasured, measuredNow, s.probeRestores, s.nativeDisabled);
+    report += "Profiling hints (not measured causes):\n";
+    if (s.batchDisabled) report += "- Batching fell back; inspect parity diagnostic before raising speed.\n";
+    if (s.trialAttempts && s.restores-s.probeRestores < s.trialAttempts/2) report += "- Most candidates use full starts; inspect checkpoint targets, memory limits and restore rejection.\n";
+    if (s.phaseCalls[1] > s.phaseCalls[2]+s.phaseCalls[3]) report += "- Original-continuation restore probes dominate physics work. Full probes remain intentional validation.\n";
+    if (s.trialAttempts && (s.phaseCalls[2]+s.phaseCalls[3])/s.trialAttempts > 100) report += "- Long candidate continuations; compare local exits and checkpoint distance.\n";
+    if (s.newlyMeasured && size_t(s.tests)/s.newlyMeasured > 15) report += "- Many offsets per event; inspect broad-window cap and configured radius.\n";
     std::ostringstream phases; phases << "phase,physics_callbacks\n";
     char const* phaseNames[] = {"reference", "restore-probe", "candidate", "confirmation", "audit", "flight-recovery"};
     for (size_t i = 0; i < 6; ++i) phases << phaseNames[i] << ',' << s.phaseCalls[i] << '\n';
@@ -728,6 +738,7 @@ void resetTrial() {
     if (s.state == State::Verify || s.state == State::Analyze) GameToolbox::fast_srand(s.initialSharedSeed);
     if (restoring) {
         ++s.restores;
+        if (s.validatingSnapshot) ++s.probeRestores;
         s.internalCheckpoint = true;
         s.owner->storeCheckpoint(s.snapshot.data());
         s.internalCheckpoint = false;
@@ -1048,6 +1059,7 @@ void beginAnalysis() {
     s.auditing = s.earlyAccepted = s.fromCache = false; s.auditGate = {}; s.probeCache.clear();
     s.causalHash = cf::hashStart; s.phaseCalls.fill(0); s.eventReport.clear();
     s.cacheHits = s.trialAttempts = s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = 0;
+    s.probeRestores = s.newlyMeasured = 0; s.nativeDisabled = false;
     s.missedNativeTargets = s.thinnedNativeStates = 0;
     s.resetSeconds = s.restoreSeconds = 0;
     s.nativeTargets = cf::checkpointTargets(s.recording.inputs, radius,
@@ -1065,7 +1077,7 @@ void beginAnalysis() {
 bool chooseNativeState() {
     s.snapshot = nullptr; s.snapshotChecked = false; s.validatingSnapshot = false; s.activeNative = -1;
     s.snapshotEngineState.reset(); s.snapshotCollisions = {};
-    int chosen = Mod::get()->getSettingValue<bool>("native-states") ?
+    int chosen = !s.nativeDisabled && Mod::get()->getSettingValue<bool>("native-states") ?
         cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 2) : -1;
     if (chosen < 0) return false;
     auto const& n = s.nativePool[chosen];
@@ -1101,6 +1113,7 @@ void nextEvent() {
         queueReturnToPause(); return;
     }
     int cap = s.recording.analysisPolicy == 2 ? int(Mod::get()->getSettingValue<int64_t>("wide-window-cap")) : 0;
+    if (cap > 0) cap = std::max(8, cap);
     s.search.reset(s.recording.radius, cap); s.offset = s.search.offset;
     s.eventStartCalls = s.physicsCalls; s.eventStartTests = s.tests; s.eventStartAttempts = s.trialAttempts; s.eventStartRestores = s.restores;
     s.measuredDone = 0;
@@ -1115,6 +1128,7 @@ void startCandidate() {
     if (s.state != State::Analyze) return;
     if (s.search.done && !s.validatingSnapshot) {
         s.recording.windows[s.target] = s.search.window();
+        ++s.newlyMeasured;
         auto const& w = s.recording.windows[s.target];
         s.eventReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.target, s.recording.inputs[s.target].tick,
             w.early, w.late, w.width(), w.lowerBound, s.physicsCalls-s.eventStartCalls, s.tests-s.eventStartTests,
@@ -1227,7 +1241,7 @@ void consume() {
                     log::warn("[CF] audit mismatch: event {} offset {}; clearing local results", s.target, s.offset);
                     s.parityDiagnostic = fmt::format("Audit mismatch: event={} offset={} {}. Local exits disabled; remeasuring full continuations.", s.target, s.offset, s.message);
                     s.recording.windows.assign(s.recording.inputs.size(), {}); s.predictions.clear(); s.probeCache.clear();
-                    s.target = 0; s.eventReport.clear(); nextEvent(); startCandidate(); return;
+                    s.target = 0; s.newlyMeasured = 0; s.eventReport.clear(); save(); nextEvent(); startCandidate(); return;
                 }
                 s.probeCache.put({s.target, s.offset, true}, {true, true});
             } else if (pass && s.earlyAccepted && !s.fromCache && !s.recoveringFlight && s.auditGate.consider()) {
@@ -1254,7 +1268,12 @@ void consume() {
             }
             if (s.fullRestartRetry && s.activeNative >= 0) {
                 s.nativePool[s.activeNative].failureConfirmed = !pass;
-                if (pass) { s.nativePool[s.activeNative].rejected = true; ++s.restoreFallbacks; s.snapshot = nullptr; s.snapshotChecked = false; }
+                if (pass) {
+                    ++s.restoreFallbacks; s.nativeDisabled = true; s.fullRestartRetry = false;
+                    s.parityDiagnostic = "Native candidate disagreed with full-start confirmation; cache disabled and windows invalidated";
+                    s.recording.windows.assign(s.recording.inputs.size(), {}); s.predictions.clear(); s.probeCache.clear();
+                    s.target = 0; s.newlyMeasured = 0; s.eventReport.clear(); save(); nextEvent(); startCandidate(); return;
+                }
             }
             if (!s.fromCache) s.probeCache.put({s.target, s.offset, s.auditGate.disabled || s.recording.analysisPolicy != 2},
                 {pass, s.fullRestartRetry || !s.snapshotChecked});
@@ -1662,7 +1681,8 @@ class $modify(CFPlay, PlayLayer) {
                             n.collisions = {captureCollisions(m_player1), captureCollisions(m_player2)};
                             n.engineState = std::move(engine);
                             n.step = m_currentStep; n.recordedSize = m_queuedRecordedButtonsSize; n.resumeTimer = m_resumeTimer;
-                            s.peakNativeStates = std::max(s.peakNativeStates, s.nativePool.size());
+                            size_t resident = std::count_if(s.nativePool.begin(), s.nativePool.end(), [](auto const& state) { return bool(state.checkpoint); });
+                            s.peakNativeStates = std::max(s.peakNativeStates, resident);
                         }
                     }
                 }

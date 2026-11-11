@@ -31,6 +31,32 @@ int main() {
         assert(metric.valid && std::isfinite(metric.lstar) && metric.sigmaMs() > 0);
     assert(result.prefixes.back().metrics[1].lstar >= result.prefixes.back().metrics[0].lstar);
     assert(result.prefixes.back().metrics[2].lstar >= result.prefixes.back().metrics[0].lstar);
+    // Independent std::erf + long-double oracle for all eight upstream weights.
+    constexpr bool nerve[] = {false,true,false,false,true,true,false,true};
+    constexpr bool fatigue[] = {false,false,true,false,true,false,true,true};
+    constexpr bool cps[] = {false,false,false,true,false,true,true,true};
+    for (size_t k = 0; k < 8; ++k) {
+        auto expected = [&](long double L) {
+            long double survival = 1, fails = 0, previous = 0;
+            for (auto const& click : clicks) {
+                long double t = p.respawn + click.time;
+                long double w = click.windowFrames / p.fps / (2*std::sqrt(2.L));
+                if (nerve[k]) w *= std::exp(-p.kT*t);
+                if (fatigue[k]) w *= std::exp(-p.kU*click.index);
+                if (cps[k]) w *= std::pow(4.L/std::max(1.L,2.L/(t-previous)),p.kC);
+                long double probability = std::erf(w*L);
+                fails += t*survival*(1-probability); survival *= probability; previous = t;
+            }
+            return (p.respawn+clicks.back().time) + fails/survival;
+        };
+        long double left = .001L, right = 1000000;
+        for (int iteration = 0; iteration < 100; ++iteration) {
+            auto mid = (left+right)/2;
+            if (expected(mid) > p.target) left = mid; else right = mid;
+        }
+        auto metric = solveL(clicks,Weighting(k),p);
+        assert(metric.valid && std::abs(metric.lstar-double((left+right)/2)) < 1e-5*metric.lstar);
+    }
     auto prepared = prepare(one, p);
     assert(expectedClear(prepared.times, prepared.weights[0], 100) > expectedClear(prepared.times, prepared.weights[0], 200));
     assert(expectedClear({}, {}, 1) == unresolved);

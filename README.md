@@ -16,6 +16,7 @@
 - Politica CF-ANALYSIS-4 con invalidacion por ajustes de reconvergencia/cap. Captura, playback y archivos Edit conservan sus formatos.
 - Reconvergencia local en suelo o aire exige igualdad exacta del estado fisico no visual, futuro de inputs sin cambios, RNG, historia causal, contactos/flags adicionales y mundo sin efectos dinamicos activos. No equivale a un snapshot universal.
 - Una de cada diez aceptaciones tempranas se audita desde cero hasta el final. Si no coincide, se borran las ventanas locales de la sesion y se recalcula con continuaciones completas y sin atajos.
+- Si un candidato desde checkpoint discrepa de su confirmacion desde cero, se desactiva la cache para esa sesion, se invalidan las ventanas afectadas y se recalcula desde el inicio.
 - La cache solo reutiliza el mismo evento/offset/alcance en la misma sesion. No equipara aterrizajes parecidos ni usa galope que pueda ocultar un hueco.
 
 -Implementaciones:
