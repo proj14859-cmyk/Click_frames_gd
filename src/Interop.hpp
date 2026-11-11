@@ -8,7 +8,7 @@ inline std::vector<size_t> closedWindows(Recording const& r) {
     std::vector<size_t> result;
     if (!r.ready()) return result;
     for (size_t i=0; i<r.inputs.size(); ++i)
-        if (counted(r.inputs[i]) && r.windows[i].measured && !r.windows[i].lowerBound) result.push_back(i);
+        if (counted(r.inputs[i]) && r.windows[i].measured && !r.windows[i].lowerBound && !r.windows[i].estimated) result.push_back(i);
     return result;
 }
 inline std::string fwcBytes(Recording const& r) {

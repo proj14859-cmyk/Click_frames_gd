@@ -19,14 +19,14 @@ inline std::string traceCsv(Recording const& r) {
 }
 inline std::string windowsCsv(Recording const& r) {
     std::ostringstream out;
-    out << "event,tick,measured,early,late,width,lower_bound,width_ms\n" << std::setprecision(9);
+    out << "event,tick,measured,early,late,width,lower_bound,width_ms,estimated,collision_bounded\n" << std::setprecision(9);
     for (size_t i = 0; i < r.inputs.size(); ++i) {
         auto w = i < r.windows.size() ? r.windows[i] : Window{};
         out << i << ',' << r.inputs[i].tick << ',' << w.measured << ',' << w.early << ',' << w.late << ',';
         if (w.measured) out << w.width();
         out << ',' << w.lowerBound << ',';
         if (w.measured) out << w.width() * 1000. / 240.;
-        out << '\n';
+        out << ',' << w.estimated << ',' << w.collisionBounded << '\n';
     }
     return out.str();
 }
@@ -57,7 +57,7 @@ inline std::string metadataJson(Recording const& r) {
     std::ostringstream out;
     out << "{\n  \"schema\": 1,\n  \"fingerprint\": \"" << key.str()
         << "\",\n  \"gd\": \"2.2081\",\n  \"geode\": \"5.11.2\",\n  \"tps\": 240,\n"
-        << "  \"storage_schema\": 2,\n  \"capture_format\": \"CFCAP 1\",\n  \"playback_format\": \"CFPLAY 1\",\n  \"backend\": " << std::quoted(r.backend)
+        << "  \"storage_schema\": 2,\n  \"capture_format\": \"CFCAP 1\",\n  \"playback_format\": \"CFPLAY 2\",\n  \"backend\": " << std::quoted(r.backend)
         << ",\n  \"analysis_policy\": " << r.analysisPolicy
         << ",\n  \"capture\": \"capture.flr\",\n  \"playback\": \"playback.flp\",\n  \"complete\": " << (r.complete ? "true" : "false")
         << ",\n  \"verified\": " << (r.verified ? "true" : "false") << ",\n  \"end_tick\": " << r.endTick << "\n}\n";

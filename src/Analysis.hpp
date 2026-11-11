@@ -36,6 +36,11 @@ inline bool sameCause(CausalEvent const& a, CausalEvent const& b, bool sameTick)
     return (!sameTick || a.tick == b.tick) && a.kind == b.kind && a.object == b.object &&
         a.player == b.player && a.detail == b.detail;
 }
+inline int causalTolerance(int offset){return 2+int(std::min<int64_t>(60,std::abs(int64_t(offset))));}
+inline bool timedCause(CausalEvent const& a,CausalEvent const& b,int offset){
+    return sameCause(a,b,false) && std::abs(int64_t(a.tick)-b.tick)<=causalTolerance(offset);
+}
+inline bool shiftedLaunch(int reference,int candidate,int offset){return reference>=0 && candidate==reference+offset;}
 inline std::string difference(Observation const& a, Observation const& b) {
     constexpr char const* names[] = {"p1.x", "p1.y", "p1.vy", "p2.x", "p2.y", "p2.vy",
         "p1.size", "p1.speed", "p2.size", "p2.speed", "visual.p1.rotation", "visual.p2.rotation", "step.dt"};

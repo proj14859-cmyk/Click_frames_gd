@@ -4,7 +4,8 @@
 #include <locale>
 
 namespace cf::training {
-constexpr char header[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
+constexpr char legacyHeader[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
+constexpr char header[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,en_suelo,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
 // Persist exact pre-handleButton values separately; never reconstruct old runs.
 struct Features {
     int mode=0, gravity=0, mini=0;
@@ -12,31 +13,35 @@ struct Features {
     int64_t delta=0;
     bool geometry=false;
     bool replayMatch=false;
+    int grounded=-1; // Legacy sidecars did not capture this; never infer it.
 };
 inline bool finite(Features const& f) {
     return f.mode>=0 && f.mode<=7 && (f.gravity==0 || f.gravity==1) && (f.mini==0 || f.mini==1) && f.delta>=0 &&
         std::isfinite(f.speed) && std::isfinite(f.vy) && std::isfinite(f.dx) && std::isfinite(f.dy);
 }
 inline std::string row(Features const& f, int width) {
-    if (!finite(f) || !f.geometry || width<1) return {};
+    if (!finite(f) || !f.geometry || f.grounded<0 || f.grounded>1 || width<1) return {};
     std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(std::numeric_limits<double>::max_digits10);
-    out << f.mode << ',' << f.speed << ',' << f.vy << ',' << f.gravity << ',' << f.mini << ',' << f.dx << ',' << f.dy << ',' << f.delta << ',' << width << '\n';
+    out << f.mode << ',' << f.speed << ',' << f.vy << ',' << f.gravity << ',' << f.mini << ',' << f.grounded << ',' << f.dx << ',' << f.dy << ',' << f.delta << ',' << width << '\n';
     return out.str();
 }
 inline std::string encode(std::string const& digest, std::vector<Features> const& features) {
-    std::ostringstream out; out.imbue(std::locale::classic()); out << "CFPHYS 1 " << digest << ' ' << features.size() << '\n' << std::setprecision(17);
-    for (auto const& f : features) out << f.mode << ' ' << f.gravity << ' ' << f.mini << ' ' << f.speed << ' ' << f.vy << ' ' << f.dx << ' ' << f.dy << ' ' << f.delta << ' ' << f.geometry << ' ' << f.replayMatch << '\n';
+    std::ostringstream out; out.imbue(std::locale::classic()); out << "CFPHYS 2 " << digest << ' ' << features.size() << '\n' << std::setprecision(17);
+    for (auto const& f : features) out << f.mode << ' ' << f.gravity << ' ' << f.mini << ' ' << f.speed << ' ' << f.vy << ' ' << f.dx << ' ' << f.dy << ' ' << f.delta << ' ' << f.geometry << ' ' << f.replayMatch << ' ' << f.grounded << '\n';
     return out.str();
 }
 inline bool decode(std::string const& bytes, std::string const& digest, std::vector<Features>& features) {
     std::istringstream in(bytes); in.imbue(std::locale::classic()); std::string magic, hash; int v; size_t count;
-    if (!(in>>magic>>v>>hash>>count) || magic!="CFPHYS" || v!=1 || hash!=digest || count>1000000) return false;
+    if (!(in>>magic>>v>>hash>>count) || magic!="CFPHYS" || (v!=1 && v!=2) || hash!=digest || count>1000000) return false;
     std::vector<Features> parsed(count);
-    for (auto& f:parsed) if (!(in>>f.mode>>f.gravity>>f.mini>>f.speed>>f.vy>>f.dx>>f.dy>>f.delta>>f.geometry>>f.replayMatch) || !finite(f)) return false;
+    for (auto& f:parsed) {
+        if (!(in>>f.mode>>f.gravity>>f.mini>>f.speed>>f.vy>>f.dx>>f.dy>>f.delta>>f.geometry>>f.replayMatch) || !finite(f)) return false;
+        if(v==2 && (!(in>>f.grounded) || f.grounded < -1 || f.grounded>1))return false;
+    }
     in>>std::ws; if (in.peek()!=std::char_traits<char>::eof()) return false;
     features=std::move(parsed); return true;
 }
-struct Totals { size_t evaluated=0, exported=0, open=0, geometry=0, missing=0; };
+struct Totals { size_t evaluated=0, exported=0, open=0, geometry=0, missing=0,uncertified=0; };
 inline std::string csv(Recording const& r, std::vector<Features> const& f, Totals& totals) {
     totals={}; std::string bytes=header;
     for(size_t i=0;i<r.inputs.size();++i) {
@@ -44,7 +49,8 @@ inline std::string csv(Recording const& r, std::vector<Features> const& f, Total
         ++totals.evaluated;
         if (i>=r.windows.size() || !r.windows[i].measured) { ++totals.missing; continue; }
         if (r.windows[i].lowerBound) { ++totals.open; continue; }
-        if (i>=f.size() || !finite(f[i]) || !f[i].replayMatch) { ++totals.missing; continue; }
+        if (r.windows[i].estimated || !r.windows[i].collisionBounded) {++totals.uncertified;continue;}
+        if (i>=f.size() || !finite(f[i]) || !f[i].replayMatch || f[i].grounded<0) { ++totals.missing; continue; }
         if (!f[i].geometry) { ++totals.geometry; continue; }
         if (!r.complete || !r.verified || r.analysisPolicy==2) continue;
         auto line=row(f[i],r.windows[i].width()); if (!line.empty()) { bytes+=line; ++totals.exported; }
@@ -61,7 +67,13 @@ inline bool aggregate(fs::path const& root) {
     if(ec) return false;
     std::sort(paths.begin(),paths.end()); std::string all=header;
     for(auto const& p:paths) {
-        auto bytes=readFile(p); if(!bytes.starts_with(header)) return false;
+        auto bytes=readFile(p);
+        if(bytes.starts_with(legacyHeader)) {
+            auto archived=p;archived+=".v105";
+            if(!fs::exists(archived,ec)){fs::rename(p,archived,ec);if(ec)return false;}
+            continue;
+        }
+        if(!bytes.starts_with(header)) return false;
         if(all.size()+bytes.size()>MAX_BUNDLE_BYTES) return false;
         all+=bytes.substr(sizeof(header)-1);
     }

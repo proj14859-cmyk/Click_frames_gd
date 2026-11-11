@@ -18,13 +18,14 @@ int main(){
     cur=base;cur.values[10]=90;assert(!cf::exactRejoin(base,cur));
     assert(cf::observationHash(base)!=cf::observationHash(cur));
     auto root=cf::fs::temp_directory_path()/"cf105-unit";cf::fs::remove_all(root);cf::fs::create_directories(root);
-    cf::training::Features f;f.mode=4;f.speed=double(.7f);f.vy=-8.450123456789123;f.geometry=true;f.replayMatch=true;f.delta=17;f.dx=0.000000000000000123;f.dy=-2.312534918;
+    cf::training::Features f;f.grounded=0;f.mode=4;f.speed=double(.7f);f.vy=-8.450123456789123;f.geometry=true;f.replayMatch=true;f.delta=17;f.dx=0.000000000000000123;f.dy=-2.312534918;
     std::vector<cf::training::Features> parsed;
     assert(cf::training::decode(cf::training::encode("123",{f}),"123",parsed));
     assert(parsed[0].vy==f.vy && parsed[0].dx==f.dx && parsed[0].speed==f.speed && parsed[0].replayMatch);
     assert(!cf::training::decode(cf::training::encode("123",{f}),"124",parsed));
     cf::Recording r;r.complete=r.verified=true;r.backend="vanilla240";r.endTick=40;
     r.inputs={{20,true,1,true},{22,false,1,true},{30,true,1,false}};r.windows={{1,1,true,false},{0,0,false,false},{3,4,true,true}};
+    r.windows[0].collisionBounded=true;
     cf::training::Totals totals;auto bytes=cf::training::csv(r,{f,f,f},totals);
     assert(totals.exported==1 && totals.open==1 && bytes.starts_with(cf::training::header));
     assert(std::count(bytes.begin(),bytes.end(),'\n')==2);

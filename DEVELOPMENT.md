@@ -1,4 +1,14 @@
-# Click Frames 1.0.5 — experimental
+# Click Frames 1.0.6 — experimental
+
+## 1.0.6 changes and device acceptance
+
+GroupedSearch is the active search. Exact mode first tests +/-1, then group headers/interiors without inferring untested successes. Fast estimated may infer an entire passing header group, but Window::estimated is persisted (CFPLAY 2 / CLICKFRAMES 6), shown in HUD/markers, and excluded from closed community exports and training. Header inference is not a physical proof; an open +/-20 range is width 41+, with eight search probes estimated or forty exact. Reference/probe/audit overhead is additional. The old AdaptiveSearch remains for historical regression tests, not live analysis.
+
+Causal candidate timestamps allow 2+abs(offset); differing prefix identity/order or completion history becomes FAIL for nonzero offsets. Baseline and checkpoint integrity checks remain separate. Failure provenance distinguishes collision, causal, buffered and policy boundaries. Only two actual collision bounds qualify a training label. Search caches retain the failure kind. Flight recovery evidence keeps the original boundary reason and never enlarges the fixed-macro window.
+
+Cube/robot updateJump ground-to-air transitions record per-input reference launch ticks. Early candidates must launch at referenceLaunch+offset; missing or unshifted launches fail instead of counting held-in-air slack. Non-ground orb interactions/flight modes with no identifiable reference launch keep ordinary simulation checks. Inspect launch-ticks.tsv and test both triple spikes and legitimate short/held jumps on device. Native snapshot/reset paths and hook coexistence still require GD tests.
+
+The live precision HUD reads window width directly (1000*width/240), labels open/estimated/manual data and reports the smallest exact width replayed. Statistical L* is optional offline CSV; no solver target affects the HUD. Training is now ten numeric columns with en_suelo plus delta_ticks, CFPHYS 2 supports legacy reads without inventing ground state. Old nine-column shards are archived as .v105; recordings/edits remain compatible. New data requires a fresh capture, Exact search, Full run, two collisions, exact raw-reference match and reliable geometry. Test repeated import/export/Analyze, new Record and partial resume for estimate/provenance retention.
 
 ## 1.0.5 validation and interfaces
 

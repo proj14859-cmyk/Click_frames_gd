@@ -29,6 +29,7 @@ struct Sample { int tick; float x, y, x2, y2; };
 struct Window {
     int early = 0, late = 0;
     bool measured = false, lowerBound = false;
+    bool estimated = false, collisionBounded = false;
     int width() const { return early + late + 1; }
 };
 struct Recording {
@@ -47,6 +48,7 @@ struct Recording {
         return true;
     }
 };
+inline bool hasEstimated(Recording const& r){return std::any_of(r.windows.begin(),r.windows.end(),[](auto const& w){return w.measured && w.estimated;});}
 // Counter rows span every width from the smallest measured value to the largest,
 // including empty intermediate widths. The last row groups wider values when capped.
 struct Row { int from, to; bool open; }; // widths from..to; open = shown as "from+"
@@ -124,7 +126,7 @@ inline Window measure(std::vector<bool> const& success, int radius) {
     return w;
 }
 inline void write(std::ostream& out, Recording const& r) {
-    out << "CLICKFRAMES " << (r.analysisPolicy == 2 ? 5 : 4) << ' ' << std::quoted(r.key) << ' ' << r.complete << ' ' << r.verified
+    out << "CLICKFRAMES 6 " << std::quoted(r.key) << ' ' << r.complete << ' ' << r.verified
         << ' ' << r.endTick << ' ' << r.radius << ' ' << r.inputs.size() << ' ' << r.trace.size()
         << ' ' << r.analysisPolicy << ' ' << std::quoted(r.backend) << '\n';
     out << std::setprecision(9);
@@ -132,16 +134,16 @@ inline void write(std::ostream& out, Recording const& r) {
         auto e = r.inputs[i]; auto w = i < r.windows.size() ? r.windows[i] : Window{};
         out << e.tick << ' ' << e.down << ' ' << e.button << ' ' << e.p1 << ' '
             << e.x << ' ' << e.y << ' ' << e.mode << ' '
-            << w.early << ' ' << w.late << ' ' << w.measured << ' ' << w.lowerBound << '\n';
+            << w.early << ' ' << w.late << ' ' << w.measured << ' ' << w.lowerBound << ' ' << w.estimated << ' ' << w.collisionBounded << '\n';
     }
     for (auto s : r.trace) out << s.tick << ' ' << s.x << ' ' << s.y << ' ' << s.x2 << ' ' << s.y2 << '\n';
 }
 inline bool read(std::istream& in, std::string const& key, Recording& result) {
     Recording r; std::string magic; int version; size_t count, samples;
     if (!(in >> magic >> version >> std::quoted(r.key) >> r.complete >> r.verified >> r.endTick >> r.radius >> count >> samples)
-        || magic != "CLICKFRAMES" || (version < 2 || version > 5) || r.key != key || r.radius < 1 || r.radius > 60
+        || magic != "CLICKFRAMES" || (version < 2 || version > 6) || r.key != key || r.radius < 1 || r.radius > 60
         || count > 1000000 || samples > 2000000 || r.endTick < 0) return false;
-    if (version >= 4 && (!(in >> r.analysisPolicy >> std::quoted(r.backend)) || r.analysisPolicy < 0 || r.analysisPolicy > (version == 5 ? 2 : 1) ||
+    if (version >= 4 && (!(in >> r.analysisPolicy >> std::quoted(r.backend)) || r.analysisPolicy < 0 || r.analysisPolicy > (version >= 5 ? 2 : 1) ||
         (r.backend != "vanilla240" && r.backend != "cos240"))) return false;
     int last = -1;
     for (size_t i = 0; i < count; ++i) {
@@ -151,6 +153,7 @@ inline bool read(std::istream& in, std::string const& key, Recording& result) {
         if (!(in >> w.early >> w.late >> w.measured >> w.lowerBound)
             || e.tick < 0 || e.tick < last || (r.complete && e.tick > r.endTick) || e.button < 1 || e.button > 3 || w.early < 0 || w.late < 0
             || w.early > r.radius || w.late > r.radius || !std::isfinite(e.x) || !std::isfinite(e.y)) return false;
+        if(version>=6 && !(in>>w.estimated>>w.collisionBounded))return false;
         last = e.tick; r.inputs.push_back(e); r.windows.push_back(w);
     }
     last = -1;

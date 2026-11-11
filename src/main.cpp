@@ -37,6 +37,7 @@ using namespace geode::prelude;
 namespace {
 enum class State { Idle, Record, Verify, Analyze, Ready, Playback };
 enum class Pending { None, Pass, Fail, Invalid };
+enum class ProbeFailure { None, Collision, Causal, Buffered, Policy, Exception };
 struct Checkpoint { size_t inputs, trace; std::array<bool, 6> held; };
 // GJGameState contains non-copyable binding unions. Preserve its typed dynamic
 // physics maps and clocks explicitly; native checkpoints retain other coverage.
@@ -162,7 +163,13 @@ struct Session {
     bool musicMutedByCf = false;
     float previousMusicVolume = 0.f;
     std::map<std::string, std::string> savedViews;
-    cf::AdaptiveSearch search;
+    cf::GroupedSearch search;
+    ProbeFailure failure=ProbeFailure::None;
+    std::array<ProbeFailure,41> failureReasons{};
+    std::vector<int> referenceLaunch;
+    bool targetLaunched=false;
+    bool approximateAnalysis=false;
+    uint64_t causalRejected=0,bufferRejected=0;
     std::vector<cf::Landing> referenceLandings;
     cf::TickTable<cf::PhysicsReference> referencePhysics;
     std::vector<cf::SegmentExit> segmentExits;
@@ -252,6 +259,7 @@ struct Session {
     bool precisionVisual = false;
     bool recoveringFlight = false;
     int recoveryChange = -1;
+    ProbeFailure recoveryOriginalFailure=ProbeFailure::None;
     size_t recoveryNeighbor = 0;
     std::string recoveryReport;
     uint64_t physicsCalls = 0, restores = 0, restoreFallbacks = 0;
@@ -323,10 +331,12 @@ void recordCause(int kind, GameObject* object, PlayerObject* player, int detail 
     for (auto value : {e.kind, e.object, e.player, e.detail}) s.causalHash = cf::hashWord(s.causalHash, uint64_t(value));
     if (s.state == State::Verify && s.baselinePass == 0) {
         if (s.causalTrace.size() >= 1000000) { s.message = "Causal trace exceeds memory limit"; s.pending = Pending::Invalid; return; }
-        s.causalTrace.push_back(e);
+        try{s.causalTrace.push_back(e);}catch(std::exception const& error){
+            diagnostic("CAUSAL_STORAGE",error.what());s.message="Could not retain causal reference";s.pending=Pending::Invalid;return;
+        }
     } else if (s.causalCursor >= s.causalTrace.size() ||
-        !cf::sameCause(s.causalTrace[s.causalCursor], e, s.validatingSnapshot) ||
-        (s.state == State::Verify && std::abs(s.causalTrace[s.causalCursor].tick-e.tick)>2)) {
+        (s.validatingSnapshot ? !cf::sameCause(s.causalTrace[s.causalCursor], e, true) :
+        !cf::timedCause(s.causalTrace[s.causalCursor],e,s.state==State::Analyze?s.offset:0))) {
         s.causalMismatch = true;
         if (s.state == State::Verify) {
             auto expected = s.causalCursor < s.causalTrace.size() ? &s.causalTrace[s.causalCursor] : nullptr;
@@ -340,6 +350,11 @@ void recordCause(int kind, GameObject* object, PlayerObject* player, int detail 
             }
         } else if (s.validatingSnapshot) {
             s.message = "Snapshot causal mismatch; using full replay"; s.pending = Pending::Fail;
+        } else if(s.state==State::Analyze && s.offset!=0) {
+            s.failure=ProbeFailure::Causal;++s.causalRejected;
+            auto expected=s.causalCursor<s.causalTrace.size()?&s.causalTrace[s.causalCursor]:nullptr;
+            s.message="Offset causal boundary: "+cf::causalDifference(expected,e,s.causalCursor);
+            diagnostic("CAUSAL_OFFSET",s.message);s.pending=Pending::Fail;
         }
     }
     if(s.state==State::Verify && s.baselinePass>0 && s.causalCursor<s.causalTrace.size() && s.causalTrace[s.causalCursor].tick!=e.tick) ++s.toleratedEventTicks;
@@ -353,6 +368,7 @@ cf::training::Features captureFeatures(PlayerObject* player, bool down) {
     cf::training::Features f;
     f.mode=playerMode(player); f.speed=player->m_playerSpeed; f.vy=player->m_yVelocity;
     f.gravity=player->m_isUpsideDown; f.mini=player->m_vehicleSize!=1.f;
+    f.grounded=player->m_isOnGround;
     f.delta=s.recording.inputs.empty()?tick():int64_t(tick())-s.recording.inputs.back().tick;
     // Native current hazard rects, in world units from player origin to nearest
     // rect edge. No trajectory inference, arbitrary sentinels or future state.
@@ -442,6 +458,21 @@ void observeLanding() {
         s.activeJump[p] = size_t(-1);
     }
 }
+void observeLaunch(PlayerObject* player) {
+    if(!hasLiveOwner() || s.resetting || s.pending!=Pending::None || (s.state!=State::Verify && s.state!=State::Analyze))return;
+    int p=player==s.owner->m_player1?0:player==s.owner->m_player2?1:-1;
+    if(p<0)return;
+    auto index=s.activeJump[p];if(index>=s.referenceLaunch.size())return;
+    if(s.state==State::Verify) {
+        if(s.referenceLaunch[index]<0)s.referenceLaunch[index]=tick();
+    } else if(!s.validatingSnapshot && index==s.target && s.offset<0 && s.referenceLaunch[index]>=0) {
+        s.targetLaunched=true;
+        if(!cf::shiftedLaunch(s.referenceLaunch[index],tick(),s.offset)) {
+            s.failure=ProbeFailure::Buffered;++s.bufferRejected;
+            s.message=fmt::format("Buffered launch rejected: expected tick {}, actual {}",s.referenceLaunch[index]+s.offset,tick());s.pending=Pending::Fail;
+        }
+    }
+}
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
 std::filesystem::path levelDir(std::string const& folder) { return Mod::get()->getSaveDir() / "recordings" / folder; }
 std::filesystem::path path() { return levelDir(s.folder) / s.recording.key / "capture.flr"; }
@@ -486,8 +517,8 @@ bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     return false;
 }
 std::string analysisPolicyToken() {
-    return fmt::format("CF-ANALYSIS-5\nair={}\nwide-cap={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
-        Mod::get()->getSettingValue<int64_t>("wide-window-cap"));
+    return fmt::format("CF-ANALYSIS-6\nair={}\nsearch={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
+        Mod::get()->getSettingValue<std::string>("search-mode"));
 }
 cf::precision::Params precisionParams() {
     cf::precision::Params p;
@@ -498,6 +529,29 @@ cf::precision::Params precisionParams() {
     p.kC = Mod::get()->getSettingValue<double>("precision-cps");
     return p;
 }
+void physicalPrecisionHud() {
+    if(s.state!=State::Playback || s.showcaseComplete)return;
+    double current=0,hardest=0;bool open=false,estimated=false;
+    auto accept=[&](cf::Window const& w){
+        if(!w.measured)return;
+        current=cf::precision::windowMs(w.width());open=w.lowerBound;estimated=w.estimated;
+        if(!open && !estimated && (hardest==0 || current<hardest))hardest=current;
+    };
+    if(s.visual.enabled){
+        for(auto const& marker:s.visual.markers)if(marker.tick<=tick() && marker.count)accept({marker.width-1,0,true,false});
+    }else{
+        for(size_t i=0;i<s.recording.inputs.size() && s.recording.inputs[i].tick<=tick();++i)
+            if(cf::counted(s.recording.inputs[i]) && i<s.recording.windows.size())accept(s.recording.windows[i]);
+    }
+    auto label=typeinfo_cast<CCLabelBMFont*>(s.owner->getChildByID("cf-precision"));
+    if(!label){label=CCLabelBMFont::create("","bigFont.fnt");label->setID("cf-precision");label->setAnchorPoint({0,0});s.owner->addChild(label,1000);}
+    auto margin=current>0?fmt::format("{}{}{:.2f} ms",estimated?"~":"",open?">=":"",current):std::string("--");
+    auto minimum=hardest>0?fmt::format("{:.2f} ms",hardest):std::string("--");
+    auto text=fmt::format("{}Margen: {}\nMas dificil: {}",s.visual.enabled?"Editado | ":"",margin,minimum);
+    label->setString(text.c_str());label->setScale(.35f*float(Mod::get()->getSettingValue<double>("counter-scale")));
+    auto win=CCDirector::get()->getWinSize();auto size=label->getScaledContentSize();
+    label->setPosition({float(Mod::get()->getSettingValue<double>("precision-x"))/100.f*std::max(0.f,win.width-size.width),float(Mod::get()->getSettingValue<double>("precision-y"))/100.f*std::max(0.f,win.height-size.height)});
+}
 void precisionTick() {
     bool enabled = Mod::get()->getSettingValue<bool>("precision-enabled");
     bool usable = s.visual.enabled ? s.recording.complete : s.recording.ready();
@@ -506,6 +560,8 @@ void precisionTick() {
         if (auto label = s.owner->getChildByID("cf-precision")) label->removeFromParent();
         return;
     }
+    physicalPrecisionHud();
+    if(!Mod::get()->getSettingValue<bool>("precision-statistics")){precisionJob.cancel();precisionJob.poll();s.precisionDirty=true;return;}
     auto params = precisionParams();
     if (s.precisionDirty || !s.precisionParams || *s.precisionParams != params || s.precisionVisual != s.visual.enabled) {
         s.precisionDirty = false; s.precisionParams = params; s.precisionVisual = s.visual.enabled;
@@ -519,6 +575,7 @@ void precisionTick() {
             if (e.down && e.button == 1) { if (previous >= 0) interval = (e.tick - previous) * 1000. / 240.; previous = e.tick; }
             if (!cf::counted(e) || i >= source.windows.size() || !source.windows[i].measured) continue;
             auto const& w = source.windows[i];
+            if(w.estimated)continue;
             s.precisionClicks.push_back({e.tick / 240., int64_t(s.precisionClicks.size() + 1), double(w.width()), 1, w.lowerBound});
             s.precisionIntervals.push_back(interval);
         }
@@ -550,34 +607,6 @@ void precisionTick() {
                 precisionJob.key(), params.fps, params.respawn, params.target, params.kT, params.kU, params.kC, result->error.empty() ? "computed" : result->error));
         }
     }
-    if (s.state != State::Playback || s.showcaseComplete) {
-        if (auto label = s.owner->getChildByID("cf-precision")) label->removeFromParent();
-        return;
-    }
-    auto label = typeinfo_cast<CCLabelBMFont*>(s.owner->getChildByID("cf-precision"));
-    if (!label) {
-        label = CCLabelBMFont::create("", "bigFont.fnt"); label->setID("cf-precision"); label->setAnchorPoint({0,0});
-        s.owner->addChild(label, 1000);
-    }
-    auto name = Mod::get()->getSettingValue<std::string>("precision-model");
-    size_t model = 0; for (size_t i = 0; i < cf::precision::names.size(); ++i) if (name == cf::precision::names[i]) model = i;
-    std::string text = precisionJob.busy() ? "Precision: calculating..." : "Precision: --";
-    if (auto result = precisionJob.result(); result && result->error.empty()) {
-        auto next = std::upper_bound(result->prefixes.begin(), result->prefixes.end(), tick() / 240.,
-            [](double time, auto const& prefix) { return time < prefix.time; });
-        if (next != result->prefixes.begin()) {
-            auto const& prefix = *std::prev(next); auto const& metric = prefix.metrics[model];
-            if (metric.valid) {
-                bool ms = Mod::get()->getSettingValue<std::string>("precision-unit") == "Milliseconds (sigma)";
-                text = fmt::format("{}{} {}: {:.3f} {}", s.precisionVisual ? "Edited " : "", prefix.conservative ? "Precision ~" : "Precision",
-                    cf::precision::names[model], ms ? metric.sigmaMs() : metric.lstar, ms ? "ms" : "L*");
-            }
-        }
-    }
-    label->setString(text.c_str()); label->setScale(.35f * float(Mod::get()->getSettingValue<double>("counter-scale")));
-    auto win = CCDirector::get()->getWinSize(); auto size = label->getScaledContentSize();
-    label->setPosition({float(Mod::get()->getSettingValue<double>("precision-x")) / 100.f * std::max(0.f,win.width-size.width),
-        float(Mod::get()->getSettingValue<double>("precision-y")) / 100.f * std::max(0.f,win.height-size.height)});
 }
 void save(bool flushPredictions = false) {
     if (s.storageBlocked) return;
@@ -596,7 +625,7 @@ void save(bool flushPredictions = false) {
         auto root=Mod::get()->getSaveDir();
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
             diagnostic("DATASET_WRITE","No se pudo actualizar el dataset de entrenamiento");
-        auto provenance=fmt::format("CF_TRAINING 1\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-5\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nCoordinates: world units, origin-to-native-hazard-rect edge; <=600 forward; rotated/circular/sideways omitted\n",
+        auto provenance=fmt::format("CF_TRAINING 2\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-6\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nCoordinates: world units, origin-to-native-hazard-rect edge; <=600 forward; rotated/circular/sideways omitted\n",
             s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
     }
@@ -618,7 +647,7 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-5\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+    report += fmt::format("Analysis policy: CF-ANALYSIS-6\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     size_t measuredNow = 0;
     for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
@@ -638,6 +667,8 @@ void save(bool flushPredictions = false) {
     if (s.newlyMeasured && size_t(s.tests)/s.newlyMeasured > 15) report += "- Many offsets per event; inspect broad-window cap and configured radius.\n";
     report+=fmt::format("Causal time shifts accepted: {}\nCausal count recoveries: {}\nDataset evaluated presses: {}\nDataset exported rows: {}\nDataset omitted open: {}\nDataset omitted geometry: {}\nDataset omitted missing physics/window: {}\nDataset scope: Full run only; native world-unit hazard-rect edge distances; raw pre-input values\n",
         s.toleratedEventTicks,s.causalParity.recovered,s.trainingTotals.evaluated,s.trainingTotals.exported,s.trainingTotals.open,s.trainingTotals.geometry,s.trainingTotals.missing);
+    report+=fmt::format("Search: {}\nCausal offset failures: {}\nBuffered launch failures: {}\nDataset omitted estimated/policy-only bounds: {}\nDataset columns: 10 (includes en_suelo and delta_ticks)\n",
+        cf::hasEstimated(s.recording)?"Fast estimated":"Exact",s.causalRejected,s.bufferRejected,s.trainingTotals.uncertified);
     std::ostringstream phases; phases << "phase,physics_callbacks,batch_retained,batch_drop_reason,batch_callbacks,cadence_callbacks\n";
     char const* phaseNames[] = {"reference", "restore-probe", "candidate", "confirmation", "audit", "flight-recovery"};
     for (size_t i = 0; i < 6; ++i) phases << phaseNames[i] << ',' << s.phaseCalls[i] << ',' << (s.cadenceCalls[i]==0 && s.batchCalls[i]>0) << ','
@@ -655,6 +686,11 @@ void save(bool flushPredictions = false) {
     // Windows are checkpointed per event, but large derived predictions only at
     // Stop/completion/exit rather than repeatedly rewriting them while scanning.
     if (flushPredictions || (s.state != State::Analyze && s.state != State::Verify)) {
+        if(!s.referenceLaunch.empty()){
+            std::ostringstream launches;launches<<"event\tinput_tick\tlaunch_tick\n";
+            for(size_t i=0;i<s.referenceLaunch.size() && i<s.recording.inputs.size();++i)if(s.referenceLaunch[i]>=0)launches<<i<<'\t'<<s.recording.inputs[i].tick<<'\t'<<s.referenceLaunch[i]<<'\n';
+            view("launch-ticks.tsv",launches.str());
+        }
         if (!s.causalTrace.empty()) {
             std::ostringstream causes; causes << "tick\tkind\tobject\tplayer\tdetail\n";
             for (auto const& e : s.causalTrace) causes << e.tick << '\t' << e.kind << '\t' << e.object << '\t' << e.player << '\t' << e.detail << '\n';
@@ -834,7 +870,7 @@ void stop(std::string message) {
     s.precisionDirty = true;
     applyBackground(false);
 }
-void resetTrial() {
+void resetTrialImpl() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
     auto resetStart = std::chrono::steady_clock::now();
     bool scanningReset = s.state == State::Verify || s.state == State::Analyze;
@@ -850,6 +886,7 @@ void resetTrial() {
     s.scheduleCursor = restoring ? s.snapshotScheduleCursor : 0;
     s.causalCursor = restoring ? s.snapshotCausalCursor : 0; s.causalMismatch = false;
     s.causalHash = restoring ? s.snapshotCausalHash : cf::hashStart;
+    s.failure=ProbeFailure::None;s.targetLaunched=false;
     s.causalParity.opened=-1;
     if (s.state == State::Verify || s.state == State::Analyze) GameToolbox::fast_srand(s.initialSharedSeed);
     if (restoring) {
@@ -900,6 +937,7 @@ void resetTrial() {
         s.rawSignalCount = 0;
         if (s.baselinePass == 0) { s.baseline.clear(); s.updateSchedule.clear(); s.causalTrace.clear(); }
         s.referenceLandings.assign(s.recording.inputs.size(), {});
+        s.referenceLaunch.assign(s.recording.inputs.size(),-1);
         s.referencePhysics.clear(); s.referenceTrace.clear(); s.nativePool.clear();
         s.referenceEvidence.clear();
         s.nativeObjectStates = 0;
@@ -913,6 +951,21 @@ void resetTrial() {
     fixPracticeTouchPriority();
     double resetTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - resetStart).count();
     if (scanningReset) { s.resetSeconds += resetTime; if (restoring) s.restoreSeconds += resetTime; }
+}
+void resetTrial() {
+    try{resetTrialImpl();}
+    catch(std::exception const& error){
+        diagnostic("CHECKPOINT_EXCEPTION",error.what());
+        Loader::get()->queueInMainThread([]{Notification::create("Checkpoint descartado. Detalles en CF Logs",NotificationIcon::Info)->show();});
+        s.snapshot=nullptr;s.snapshotChecked=false;s.validatingSnapshot=false;s.fullRestartRetry=true;s.nativeDisabled=true;
+        if(s.activeNative>=0 && size_t(s.activeNative)<s.nativePool.size())s.nativePool[s.activeNative].rejected=true;
+        ++s.restoreFallbacks;
+        try{resetTrialImpl();}
+        catch(std::exception const& second){
+            diagnostic("ROOT_RESTART_EXCEPTION",second.what());s.resetting=false;s.injecting=false;
+            s.message="Could not restore or restart; see Diagnostics";s.pending=Pending::Invalid;
+        }
+    }
 }
 // Verify/Analyze run the level behind a cover: objects hidden (nothing to draw) and the
 // game sped up (setting "scan-speed"; 1 = normal). Called every frame, so it undoes itself.
@@ -996,7 +1049,7 @@ void hud() {
         }
         for (size_t i = 0; i < s.rows.size() && i < s.tally.size(); ++i)
             if (auto line = typeinfo_cast<CCLabelBMFont*>(rowsNode->getChildByTag(static_cast<int>(i))))
-                line->setString(fmt::format("{}: {}", cf::label(s.rows[i]), s.tally[i]).c_str());
+                line->setString(fmt::format("{}{}: {}",std::any_of(s.recording.windows.begin(),s.recording.windows.end(),[](auto const& w){return w.estimated;})?"~":"", cf::label(s.rows[i]), s.tally[i]).c_str());
     }
     if (auto cover = pl->getChildByID("cf-cover"))
         if (auto big = typeinfo_cast<CCLabelBMFont*>(cover->getChildByID("cf-cover-label")))
@@ -1083,7 +1136,7 @@ void marker(size_t index) {
         ccColor4F fill{0, 0, 0, 0};
         auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, fill, 2.f, border, 48);
         node->addChild(circle);
-        auto label = CCLabelBMFont::create(fmt::format("{}{} F", w.width(), w.lowerBound ? "+" : "").c_str(), "bigFont.fnt");
+        auto label = CCLabelBMFont::create(fmt::format("{}{}{} F",w.estimated?"~":"", w.width(), w.lowerBound ? "+" : "").c_str(), "bigFont.fnt");
         label->setAlignment(kCCTextAlignmentCenter); label->setScale(.28f * scale);
         label->setColor(color3); label->setPosition({0, 27.f * scale}); node->addChild(label, 1);
         root->addChild(node);
@@ -1158,7 +1211,7 @@ void beginAnalysis() {
         }
         s.recording.inputs = std::move(original.inputs); s.recording.endTick = original.endTick;
     }
-    int radius = static_cast<int>(Mod::get()->getSettingValue<int64_t>("scan-radius"));
+    int radius = std::clamp(int(Mod::get()->getSettingValue<int64_t>("scan-radius")),1,20);
     int policy = selectedPolicy();
     if (s.recording.backend != inputBackend()) { s.message = "Input mode changed. Restore the recording's vanilla/CoS mode first."; return; }
     bool havePreview = std::any_of(s.predictions.begin(), s.predictions.end(), [](auto const& pair) {
@@ -1180,6 +1233,7 @@ void beginAnalysis() {
     for(auto& f:s.features) f.replayMatch=false;
     s.featuresDirty=!s.features.empty();
     s.causalParity={}; s.toleratedEventTicks=0; s.batchCalls.fill(0); s.cadenceCalls.fill(0);
+    s.causalRejected=s.bufferRejected=0;s.approximateAnalysis=Mod::get()->getSettingValue<std::string>("search-mode")=="Fast estimated";
     s.cadenceReasons.fill("");
     s.lastDiagnostic.clear();
     s.rawSignals.clear(); s.rawSignalCount = 0; s.baselineRetryPending = false;
@@ -1241,9 +1295,8 @@ void nextEvent() {
         stop("Analysis complete. Pause > Frames > Play");
         queueReturnToPause(); return;
     }
-    int cap = s.recording.analysisPolicy == 2 ? int(Mod::get()->getSettingValue<int64_t>("wide-window-cap")) : 0;
-    if (cap > 0) cap = std::max(8, cap);
-    s.search.reset(s.recording.radius, cap); s.offset = s.search.offset;
+    s.search.approximate=s.approximateAnalysis;
+    s.search.reset(s.recording.radius); s.offset = s.search.offset;s.failureReasons.fill(ProbeFailure::None);
     s.eventStartCalls = s.physicsCalls; s.eventStartTests = s.tests; s.eventStartAttempts = s.trialAttempts; s.eventStartRestores = s.restores;
     s.measuredDone = 0;
     for (size_t i = 0; i < s.recording.inputs.size(); ++i)
@@ -1257,6 +1310,9 @@ void startCandidate() {
     if (s.state != State::Analyze) return;
     if (s.search.done && !s.validatingSnapshot) {
         s.recording.windows[s.target] = s.search.window();
+        auto& complete=s.recording.windows[s.target];
+        complete.collisionBounded=!complete.lowerBound && !complete.estimated &&
+            s.failureReasons[20-complete.early-1]==ProbeFailure::Collision && s.failureReasons[20+complete.late+1]==ProbeFailure::Collision;
         ++s.newlyMeasured;
         auto const& w = s.recording.windows[s.target];
         s.eventReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.target, s.recording.inputs[s.target].tick,
@@ -1278,6 +1334,7 @@ void startCandidate() {
     bool prepared = s.recoveringFlight ? cf::recoveryTrial(s.recording.inputs, s.target, s.offset,
         s.recoveryNeighbor, s.recoveryChange, s.trial) : cf::candidateTrial(s.recording.inputs, s.target, s.offset, s.trial);
     if (!prepared) {
+        s.failure=ProbeFailure::Policy;
         s.pending = Pending::Fail; return;
     }
     s.changedUntil = cf::lastChangedTick(s.recording.inputs, s.trial);
@@ -1285,6 +1342,7 @@ void startCandidate() {
         cf::ProbeKey key{s.target, s.offset, s.auditGate.disabled || s.recording.analysisPolicy != 2};
         if (auto cached = s.probeCache.get(key, s.fullRestartRetry || s.confirmingBoundary)) {
             ++s.cacheHits; s.fromCache = true; s.earlyAccepted = false;
+            s.failure=ProbeFailure(cached->failure);
             s.pending = cached->pass ? Pending::Pass : Pending::Fail; return;
         }
     }
@@ -1388,7 +1446,7 @@ void consume() {
                 s.confirmingBoundary = false; s.fullRestartRetry = false;
                 // Recovery is evidence of another route; keep the original
                 // fixed-macro boundary failed regardless of recovery outcome.
-                ++s.tests; s.search.accept(false); s.offset = s.search.offset; startCandidate(); return;
+                ++s.tests;s.failureReasons[20+s.offset]=s.recoveryOriginalFailure; s.search.accept(false); s.offset = s.search.offset; startCandidate(); return;
             }
             if (!pass && !s.fromCache && s.search.window().width() <= 3 && !s.confirmingBoundary && !s.batchDisabled &&
                 Mod::get()->getSettingValue<bool>("batch-analysis")) {
@@ -1411,7 +1469,7 @@ void consume() {
                 }
             }
             if (!s.fromCache) s.probeCache.put({s.target, s.offset, s.auditGate.disabled || s.recording.analysisPolicy != 2},
-                {pass, s.fullRestartRetry || !s.snapshotChecked});
+                {pass, s.fullRestartRetry || !s.snapshotChecked,int(s.failure)});
             s.fullRestartRetry = false;
             int mode = s.recording.inputs[s.target].mode;
             if (!pass && (mode == 1 || mode == 3 || mode == 4 || mode == 7) && Mod::get()->getSettingValue<bool>("flight-recovery")) {
@@ -1419,6 +1477,7 @@ void consume() {
                 while (next < s.recording.inputs.size() && s.recording.inputs[next].p1 != s.recording.inputs[s.target].p1) ++next;
                 if (next < s.recording.inputs.size() && s.recording.inputs[next].tick - s.recording.inputs[s.target].tick <= 240) {
                     s.recoveringFlight = true; s.recoveryNeighbor = next; s.recoveryChange = -1;
+                    s.recoveryOriginalFailure=s.failure;
                     s.fullRestartRetry = true; startCandidate(); return;
                 }
             }
@@ -1430,6 +1489,7 @@ void consume() {
             for (auto const& [event, values] : s.predictions) for (auto const& b : values) points += b.points.size();
             if (!exists && !s.candidateTrace.empty() && points + s.candidateTrace.size() <= cf::MAX_PREDICTION_POINTS)
                 branches.push_back({s.offset, tick(), pass, s.candidateTrace});
+            s.failureReasons[20+s.offset]=pass?ProbeFailure::None:s.failure;
             s.search.accept(pass);
         }
         s.offset = s.search.offset; startCandidate();
@@ -1446,6 +1506,7 @@ void consume() {
 // call this hook or directly bypass PlayLayer's update chain.
 void captureTargetCheckpoint(bool safePhase=false, float dt=0) {
     if(s.state!=State::Verify || s.baselinePass!=2 || s.pending!=Pending::None)return;
+    try {
     int now=tick();
     auto& next=safePhase?s.nextSafeNativeTarget:s.nextNativeTarget;
     int lead=safePhase?std::clamp(int(std::ceil(dt*240.f)),4,64):0;
@@ -1484,6 +1545,7 @@ void captureTargetCheckpoint(bool safePhase=false, float dt=0) {
                         }
                     }
                 }
+    }catch(std::exception const& error){diagnostic("CHECKPOINT_CAPTURE",error.what());s.nativePoolLimited=true;s.nativeDisabled=true;}
 }
 class $modify(CFScanScheduler, cocos2d::CCScheduler) {
     void update(float dt) {
@@ -1536,6 +1598,11 @@ class $modify(CFAudio, FMODAudioEngine) {
 #endif
 
 class $modify(CFPlayer, PlayerObject) {
+    void updateJump(float dt) {
+        bool grounded=m_isOnGround;int mode=playerMode(this);
+        PlayerObject::updateJump(dt);
+        if(grounded && !m_isOnGround && (mode==0 || mode==5))observeLaunch(this);
+    }
     void ringJump(RingObject* object, bool skipCheck) {
         PlayerObject::ringJump(object, skipCheck);
         recordCause(1, object, this);
@@ -1632,6 +1699,10 @@ class $modify(CFBase, GJBaseGameLayer) {
                 return;
             }
             int now = tick();
+            if(s.state==State::Analyze && !s.validatingSnapshot && s.targetExecuted && s.offset<0 &&
+                s.target<s.referenceLaunch.size() && s.referenceLaunch[s.target]>=0 && !s.targetLaunched && now>s.referenceLaunch[s.target]+s.offset) {
+                s.failure=ProbeFailure::Buffered;++s.bufferRejected;s.message="Buffered input did not launch at shifted tick";s.pending=Pending::Fail;return;
+            }
             auto current = s.state == State::Playback ? cf::Observation{} : observation(dt);
             if (s.state == State::Verify) {
                 if (s.baselinePass == 0) {
@@ -1723,7 +1794,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 if(s.state==State::Verify && s.baselinePass==2 && identity<s.features.size() && e.down && e.button==1) {
                     auto p=e.p1?s.owner->m_player1:s.owner->m_player2; auto actual=captureFeatures(p,true);auto& original=s.features[identity];
                     original.replayMatch=actual.mode==original.mode && actual.speed==original.speed && actual.vy==original.vy &&
-                        actual.gravity==original.gravity && actual.mini==original.mini && actual.geometry==original.geometry &&
+                        actual.gravity==original.gravity && actual.mini==original.mini && actual.grounded==original.grounded && actual.geometry==original.geometry &&
                         actual.dx==original.dx && actual.dy==original.dy && p->getPositionX()==e.x && p->getPositionY()==e.y;
                     s.featuresDirty=true;
                 }
@@ -1830,7 +1901,7 @@ class $modify(CFPlay, PlayLayer) {
         }
         if (s.pending != Pending::None) consume();
         hud();
-        if (s.state == State::Playback && s.lastIntervalMs >= 0) showMs(s.lastIntervalMs);
+        if (s.state == State::Playback && s.lastIntervalMs >= 0 && Mod::get()->getSettingValue<bool>("interval-hud")) showMs(s.lastIntervalMs);
         if (s.state == State::Playback) predictionPreview();
     }
     void pauseGame(bool unfocused) {
@@ -1962,6 +2033,7 @@ class $modify(CFPlay, PlayLayer) {
                 s.recording.inputs[s.target].tick + std::min(0, s.offset) : 0;
             s.pending = s.state == State::Analyze && !s.validatingSnapshot && tick() < firstChanged ?
                 Pending::Invalid : Pending::Fail;
+            if(s.state==State::Analyze && s.pending==Pending::Fail)s.failure=ProbeFailure::Collision;
             log::info("[CF] actual death: tick {}, player {}, first input {}", tick(),
                 player == m_player1 ? 1 : 2, s.trial.empty() ? -1 : s.trial.front().tick);
         }
@@ -1989,7 +2061,8 @@ class $modify(CFPlay, PlayLayer) {
             if (s.pending == Pending::None) {
                 if (s.state == State::Analyze && (s.causalMismatch || s.causalCursor != s.causalTrace.size()) && !s.recoveringFlight) {
                     s.message = "Candidate changed the recorded causal route; window not certified";
-                    s.pending = s.validatingSnapshot ? Pending::Fail : Pending::Invalid; return;
+                    s.failure=ProbeFailure::Causal;++s.causalRejected;
+                    s.pending = s.validatingSnapshot || s.offset!=0 ? Pending::Fail : Pending::Invalid; return;
                 }
                 auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
                 bool valid = s.next == events.size();
@@ -2340,7 +2413,7 @@ class CFPopup : public Popup {
             onClose(nullptr);
             resumeAndRun([] {
                 s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
-                s.message = "Showcase - valid windows at 240 TPS"; resetTrial();
+                s.message = cf::hasEstimated(s.recording)?"Showcase - ESTIMATED windows at 240 TPS":"Showcase - exact measured windows at 240 TPS"; resetTrial();
             });
         });
         add("STOP / SAVE", "Keep partial analysis", {215, 115}, active, [this] {
@@ -2369,7 +2442,7 @@ class CFPopup : public Popup {
         auto panel = CCScale9Sprite::create("square02b_001.png");
         panel->setContentSize({118, 160}); panel->setColor({20, 30, 47});
         panel->setOpacity(240); panel->setPosition({351, 115}); m_mainLayer->addChild(panel);
-        label(s.visual.enabled ? "VISUAL WINDOWS" : s.recording.analysisPolicy == 2 ? "LOCAL WINDOWS" : "FULL RUN WINDOWS", {351, 181}, .48f, {111, 219, 235});
+        label(s.visual.enabled ? "VISUAL WINDOWS" :cf::hasEstimated(s.recording)?"ESTIMATED WINDOWS": s.recording.analysisPolicy == 2 ? "LOCAL WINDOWS" : "FULL RUN WINDOWS", {351, 181}, .48f, {111, 219, 235});
         cf::Recording visual;
         if (s.visual.enabled) visual = cf::visualCounter(s.visual);
         auto const& panelRecording = s.visual.enabled ? visual : s.recording;
@@ -2400,7 +2473,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.5", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.6", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

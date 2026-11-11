@@ -31,6 +31,8 @@ jobs:
           /tmp/scan-support-tests
           g++ -std=c++20 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined tests/v105.cpp -o /tmp/v105-tests
           /tmp/v105-tests
+          g++ -std=c++20 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined tests/v106.cpp -o /tmp/v106-tests
+          /tmp/v106-tests
       - name: Release algorithm benchmarks (not GD runtime)
         run: |
           g++ -O2 -std=c++20 -Wall -Wextra -Werror -pthread tests/benchmark.cpp -o /tmp/scan-benchmark
