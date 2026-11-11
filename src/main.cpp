@@ -15,6 +15,7 @@
 #include "Editor.hpp"
 #include "Bundle.hpp"
 #include "RetainedDictionary.hpp"
+#include "PrecisionJob.hpp"
 #include <chrono>
 #include <array>
 #include <cmath>
@@ -22,6 +23,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <bit>
 using namespace geode::prelude;
 
 namespace {
@@ -48,6 +50,13 @@ struct EngineState {
     double levelTime = 0, totalTime = 0;
     float timeWarp = 1, queuedTimeWarp = 1;
     unsigned int commandIndex = 0;
+    size_t units() const {
+        size_t count = tweens.size() + physics.size() + activated.size() + channels.size() + channelFlags.size();
+        #define CF_COUNT_STATE(name) count += name.size();
+        CF_DYNAMIC_STATE(CF_COUNT_STATE)
+        #undef CF_COUNT_STATE
+        return count;
+    }
     void capture(GJGameState const& g) {
         #define CF_CAPTURE_STATE(name) name = g.name;
         CF_DYNAMIC_STATE(CF_CAPTURE_STATE)
@@ -107,6 +116,8 @@ struct NativeState {
     uint64_t sharedSeed = 0;
     size_t scheduleCursor = 0;
     size_t causalCursor = 0;
+    uint64_t causalHash = cf::hashStart;
+    size_t units = 0;
     std::array<CollisionState, 2> collisions;
     std::shared_ptr<EngineState> engineState;
     double extraDelta = 0;
@@ -143,16 +154,16 @@ struct Session {
     bool musicMutedByCf = false;
     float previousMusicVolume = 0.f;
     std::map<std::string, std::string> savedViews;
-    cf::ContinuousSearch search;
+    cf::AdaptiveSearch search;
     std::vector<cf::Landing> referenceLandings;
-    std::map<int, cf::PhysicsReference> referencePhysics;
+    cf::TickTable<cf::PhysicsReference> referencePhysics;
     std::vector<cf::SegmentExit> segmentExits;
     bool targetExecuted = false, segmentMissed = false;
     size_t localFallbackEvents = 0;
     size_t localFallbackTrials = 0, localPasses = 0;
     size_t measurableTotal = 0, measuredDone = 0;
     std::vector<NativeState> nativePool;
-    std::map<int, cf::Sample> referenceTrace;
+    cf::TickTable<cf::Sample> referenceTrace;
     int activeNative = -1, nextNativeTick = 24;
     bool nativePoolLimited = false;
     size_t peakNativeStates = 0;
@@ -181,7 +192,8 @@ struct Session {
     int baselinePass = 0, baselineEnd = 0;
     bool batchDisabled = false, confirmingBoundary = false;
     bool baselineRetryPending = false;
-    std::map<int, cf::Observation> baseline;
+    cf::TickTable<cf::Observation> baseline;
+    cf::TickTable<cf::RejoinEvidence> referenceEvidence;
     size_t baselineCompared = 0;
     uint64_t batchUpdates = 0;
     size_t nativeObjectStates = 0;
@@ -199,6 +211,25 @@ struct Session {
     std::vector<cf::CausalEvent> causalTrace;
     size_t causalCursor = 0, snapshotCausalCursor = 0;
     bool causalMismatch = false;
+    uint64_t causalHash = cf::hashStart, snapshotCausalHash = cf::hashStart;
+    std::vector<int> nativeTargets;
+    size_t nextNativeTarget = 0;
+    bool auditing = false, earlyAccepted = false, fromCache = false;
+    int changedUntil = -1;
+    cf::AuditGate auditGate;
+    cf::ProbeCache probeCache;
+    uint64_t cacheHits = 0, trialAttempts = 0, tickFallbacks = 0, parityFallbacks = 0, previousStateFallbacks = 0;
+    uint64_t missedNativeTargets = 0, thinnedNativeStates = 0;
+    std::array<uint64_t, 6> phaseCalls{};
+    double resetSeconds = 0, restoreSeconds = 0;
+    std::string eventReport;
+    uint64_t eventStartCalls = 0, eventStartAttempts = 0, eventStartRestores = 0;
+    int eventStartTests = 0;
+    bool precisionDirty = true;
+    std::optional<cf::precision::Params> precisionParams;
+    std::vector<cf::precision::Click> precisionClicks;
+    std::vector<double> precisionIntervals;
+    bool precisionVisual = false;
     bool recoveringFlight = false;
     int recoveryChange = -1;
     size_t recoveryNeighbor = 0;
@@ -214,6 +245,7 @@ constexpr int VERIFY_SHIFTS[] = {0, 1, -1, 2, -2};
 constexpr int VERIFY_SHIFT_COUNT = 5;
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
+cf::precision::Job precisionJob;
 bool scanBatchActive = false;
 bool hasLiveOwner() {
     auto current = PlayLayer::get();
@@ -227,6 +259,7 @@ void recordCause(int kind, GameObject* object, PlayerObject* player, int detail 
     if (player && player != s.owner->m_player1 && player != s.owner->m_player2) return;
     cf::CausalEvent e{tick(), kind, object ? object->m_uniqueID : 0,
         player == s.owner->m_player1 ? 1 : player == s.owner->m_player2 ? 2 : 0, detail};
+    for (auto value : {e.kind, e.object, e.player, e.detail}) s.causalHash = cf::hashWord(s.causalHash, uint64_t(value));
     if (s.state == State::Verify && s.baselinePass == 0) {
         if (s.causalTrace.size() >= 1000000) { s.message = "Causal trace exceeds memory limit"; s.pending = Pending::Invalid; return; }
         s.causalTrace.push_back(e);
@@ -264,6 +297,44 @@ cf::Observation observation(float dt) {
     o.flags = {playerMode(a), playerMode(b), a->m_isUpsideDown, b->m_isUpsideDown,
         a->m_isOnGround, b->m_isOnGround, s.owner->m_gameState.m_isDualMode, held, int(s.next), int(s.causalCursor)};
     return o;
+}
+cf::RejoinEvidence rejoinEvidence() {
+    auto const& g = s.owner->m_gameState;
+    cf::RejoinEvidence evidence;
+    evidence.rng = s.owner->m_randomSeed; evidence.replayRng = s.owner->m_replayRandSeed;
+    evidence.sharedRng = GameToolbox::getfast_srand(); evidence.causalHash = s.causalHash;
+    evidence.quietWorld = g.m_gameObjectPhysics.empty() && g.m_tweenActions.empty() && g.m_stateObjects.empty() &&
+        g.m_moveEffectInstances.empty() && g.m_rotateEffectInstances.empty() && g.m_scaleEffectInstances.empty() &&
+        g.m_dynamicMoveActions.empty() && g.m_dynamicRotateActions.empty() && g.m_advanceFollowInstances.empty();
+    uint64_t hash = cf::hashStart;
+    auto number = [&](double v) { if (!std::isfinite(v)) evidence.quietWorld = false; hash = cf::hashWord(hash, std::bit_cast<uint64_t>(v)); };
+    for (auto player : {s.owner->m_player1, g.m_isDualMode ? s.owner->m_player2 : nullptr}) {
+        if (!player) continue;
+        number(player->m_gravityMod);
+        for (bool flag : {player->m_jumpBuffered, player->m_isDashing, player->m_isOnSlope, player->m_isSideways}) hash = cf::hashWord(hash, flag);
+        if (player->m_isDashing) { number(player->m_dashX); number(player->m_dashY); number(player->m_dashAngle); number(player->m_dashStartTime); }
+        if (player->m_touchingRings && player->m_touchingRings->count()) evidence.quietWorld = false;
+        hash = cf::hashWord(hash, reinterpret_cast<uintptr_t>(player->m_lastGroundObject));
+        for (auto log : {player->m_collisionLogTop, player->m_collisionLogBottom, player->m_collisionLogLeft, player->m_collisionLogRight}) {
+            uint64_t contacts = 0;
+            if (log) EnumerateCollisionLog{}(log, [&](auto const& key, auto* value) {
+                uint64_t h = cf::hashStart;
+                if constexpr (std::is_integral_v<std::decay_t<decltype(key)>>) h = cf::hashWord(h, uint64_t(key));
+                else for (unsigned char c : key) h = cf::hashWord(h, c);
+                contacts ^= cf::hashWord(h, reinterpret_cast<uintptr_t>(value));
+            });
+            hash = cf::hashWord(hash, contacts);
+        }
+    }
+    number(g.m_timeWarp); number(g.m_queuedTimeWarp);
+    hash = cf::hashWord(hash, g.m_commandIndex); evidence.actorHash = hash;
+    hash = cf::hashStart;
+    for (auto const& item : g.m_activatedObjectIDs) {
+        hash = cf::hashWord(hash, uint64_t(item.first.first)); hash = cf::hashWord(hash, uint64_t(item.first.second));
+        hash = cf::hashWord(hash, uint64_t(item.second));
+    }
+    evidence.activatedHash = hash;
+    return evidence;
 }
 void observeLanding() {
     for (int p = 0; p < 2; ++p) {
@@ -323,6 +394,99 @@ void fixPracticeTouchPriority() {
 bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     return cf::replaceFile(file, text);
 }
+std::string analysisPolicyToken() {
+    return fmt::format("CF-ANALYSIS-4\nair={}\nwide-cap={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
+        Mod::get()->getSettingValue<int64_t>("wide-window-cap"));
+}
+cf::precision::Params precisionParams() {
+    cf::precision::Params p;
+    p.respawn = Mod::get()->getSettingValue<double>("precision-respawn");
+    p.target = Mod::get()->getSettingValue<double>("precision-target");
+    p.kT = Mod::get()->getSettingValue<double>("precision-nerve");
+    p.kU = Mod::get()->getSettingValue<double>("precision-fatigue");
+    p.kC = Mod::get()->getSettingValue<double>("precision-cps");
+    return p;
+}
+void precisionTick() {
+    bool enabled = Mod::get()->getSettingValue<bool>("precision-enabled");
+    bool usable = s.visual.enabled ? s.recording.complete : s.recording.ready();
+    if (!enabled || !usable || s.state == State::Verify || s.state == State::Analyze || s.state == State::Record) {
+        precisionJob.cancel(); precisionJob.poll(); s.precisionDirty = true;
+        if (auto label = s.owner->getChildByID("cf-precision")) label->removeFromParent();
+        return;
+    }
+    auto params = precisionParams();
+    if (s.precisionDirty || !s.precisionParams || *s.precisionParams != params || s.precisionVisual != s.visual.enabled) {
+        s.precisionDirty = false; s.precisionParams = params; s.precisionVisual = s.visual.enabled;
+        s.precisionClicks.clear(); s.precisionIntervals.clear();
+        cf::Recording visual;
+        if (s.visual.enabled) visual = cf::visualCounter(s.visual);
+        auto const& source = s.visual.enabled ? visual : s.recording;
+        int previous = -1; double interval = -1;
+        for (size_t i = 0; i < source.inputs.size(); ++i) {
+            auto const& e = source.inputs[i];
+            if (e.down && e.button == 1) { if (previous >= 0) interval = (e.tick - previous) * 1000. / 240.; previous = e.tick; }
+            if (!cf::counted(e) || i >= source.windows.size() || !source.windows[i].measured) continue;
+            auto const& w = source.windows[i];
+            s.precisionClicks.push_back({e.tick / 240., int64_t(s.precisionClicks.size() + 1), double(w.width()), 1, w.lowerBound});
+            s.precisionIntervals.push_back(interval);
+        }
+        std::ostringstream identity;
+        identity << s.recording.key << ' ' << s.visual.enabled << ' ' << std::setprecision(17) << params.fps << ' ' << params.respawn
+            << ' ' << params.target << ' ' << params.kT << ' ' << params.kU << ' ' << params.kC;
+        for (auto const& click : s.precisionClicks) identity << ' ' << click.time << ':' << click.windowFrames << ':' << click.lowerBound;
+        precisionJob.request(cf::fingerprint(identity.str()), s.precisionClicks, params);
+    }
+    if (precisionJob.poll()) {
+        if (auto result = precisionJob.result()) {
+            std::ostringstream csv;
+            csv << "time_seconds,existing_press_interval_ms,window_ms,conservative";
+            for (auto name : cf::precision::names) csv << ',' << name << "_Lstar," << name << "_sigma_ms";
+            csv << '\n' << std::setprecision(12);
+            for (size_t i = 0; i < result->prefixes.size(); ++i) {
+                auto const& prefix = result->prefixes[i];
+                csv << prefix.time << ',';
+                if (s.precisionIntervals[i] >= 0) csv << s.precisionIntervals[i];
+                csv << ',' << s.precisionClicks[i].windowFrames * 1000. / params.fps << ',' << prefix.conservative;
+                for (auto const& metric : prefix.metrics) { csv << ','; if (metric.valid) csv << metric.lstar; csv << ','; if (metric.valid) csv << metric.sigmaMs(); }
+                csv << '\n';
+            }
+            writeSafe(path().parent_path() / (s.precisionVisual ? "precision-visual.csv" : "precision.csv"), csv.str());
+            writeSafe(path().parent_path() / "precision-report.txt", fmt::format(
+                "Model: hyper-5 Frame Window Counter (MIT), adapted pure mathematics\nSource: {}\nScope: {}\nJob: {}\nFPS: {}\nRespawn: {}\nTarget seconds: {}\nkT: {:.17g}\nkU: {:.17g}\nkC: {:.17g}\nStatus: {}\nSigma ms = 1000/L*. This is a statistical timing-dispersion estimate, not click interval or device latency. N+ windows use their minimum width conservatively.\n",
+                s.precisionVisual ? "EDITED visual values" : "measured windows", s.recording.analysisPolicy == 2 ? "local" : "full route",
+                precisionJob.key(), params.fps, params.respawn, params.target, params.kT, params.kU, params.kC, result->error.empty() ? "computed" : result->error));
+        }
+    }
+    if (s.state != State::Playback || s.showcaseComplete) {
+        if (auto label = s.owner->getChildByID("cf-precision")) label->removeFromParent();
+        return;
+    }
+    auto label = typeinfo_cast<CCLabelBMFont*>(s.owner->getChildByID("cf-precision"));
+    if (!label) {
+        label = CCLabelBMFont::create("", "bigFont.fnt"); label->setID("cf-precision"); label->setAnchorPoint({0,0});
+        s.owner->addChild(label, 1000);
+    }
+    auto name = Mod::get()->getSettingValue<std::string>("precision-model");
+    size_t model = 0; for (size_t i = 0; i < cf::precision::names.size(); ++i) if (name == cf::precision::names[i]) model = i;
+    std::string text = precisionJob.busy() ? "Precision: calculating..." : "Precision: --";
+    if (auto result = precisionJob.result(); result && result->error.empty()) {
+        auto next = std::upper_bound(result->prefixes.begin(), result->prefixes.end(), tick() / 240.,
+            [](double time, auto const& prefix) { return time < prefix.time; });
+        if (next != result->prefixes.begin()) {
+            auto const& prefix = *std::prev(next); auto const& metric = prefix.metrics[model];
+            if (metric.valid) {
+                bool ms = Mod::get()->getSettingValue<std::string>("precision-unit") == "Milliseconds (sigma)";
+                text = fmt::format("{}{} {}: {:.3f} {}", s.precisionVisual ? "Edited " : "", prefix.conservative ? "Precision ~" : "Precision",
+                    cf::precision::names[model], ms ? metric.sigmaMs() : metric.lstar, ms ? "ms" : "L*");
+            }
+        }
+    }
+    label->setString(text.c_str()); label->setScale(.35f * float(Mod::get()->getSettingValue<double>("counter-scale")));
+    auto win = CCDirector::get()->getWinSize(); auto size = label->getScaledContentSize();
+    label->setPosition({float(Mod::get()->getSettingValue<double>("precision-x")) / 100.f * std::max(0.f,win.width-size.width),
+        float(Mod::get()->getSettingValue<double>("precision-y")) / 100.f * std::max(0.f,win.height-size.height)});
+}
 void save(bool flushPredictions = false) {
     if (s.storageBlocked) return;
     bool changedCapture = s.captureDirty;
@@ -348,8 +512,21 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-3\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+    report += fmt::format("Analysis policy: CF-ANALYSIS-4\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
+    size_t measuredNow = 0;
+    for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
+        if (cf::counted(s.recording.inputs[i]) && s.recording.windows[i].measured) ++measuredNow;
+    report += fmt::format("Trial attempts (includes confirmations/audits/recovery): {}\nTests per measured event: {:.3f}\nCandidate physics callbacks per attempt: {:.3f}\nRestore ratio per attempt: {:.3f}\nTick-mismatch fallbacks: {}\nParity fallbacks: {}\nEarlier-state fallbacks: {}\nMissed checkpoint targets: {}\nThinned native states: {}\nReset seconds: {:.6f}\nRestore/reset seconds: {:.6f}\nExact repeat-cache hits: {}\nEarly passes: {}\nFull-start audits: {}\nAudit mismatches: {}\nLocal cuts disabled after audit: {}\n",
+        s.trialAttempts, measuredNow ? double(s.tests)/measuredNow : 0., s.trialAttempts ? double(s.phaseCalls[2]+s.phaseCalls[3]+s.phaseCalls[4]+s.phaseCalls[5])/s.trialAttempts : 0.,
+        s.trialAttempts ? double(s.restores)/s.trialAttempts : 0., s.tickFallbacks, s.parityFallbacks, s.previousStateFallbacks,
+        s.missedNativeTargets, s.thinnedNativeStates, s.resetSeconds, s.restoreSeconds, s.cacheHits,
+        s.auditGate.earlyPasses, s.auditGate.audits, s.auditGate.failures, s.auditGate.disabled);
+    std::ostringstream phases; phases << "phase,physics_callbacks\n";
+    char const* phaseNames[] = {"reference", "restore-probe", "candidate", "confirmation", "audit", "flight-recovery"};
+    for (size_t i = 0; i < 6; ++i) phases << phaseNames[i] << ',' << s.phaseCalls[i] << '\n';
+    view("scan-phases.csv", phases.str());
+    if (!s.eventReport.empty()) view("scan-events.tsv", "event\ttick\tearly\tlate\twidth\tlower_bound\tphysics_calls\ttest_outcomes\ttrial_attempts\trestores\n" + s.eventReport);
     report += "Parity diagnostic: " + s.parityDiagnostic + "\n";
     if (!s.parityDiagnostic.empty()) view("baseline-difference.txt", s.parityDiagnostic + "\n");
     if (!s.rawSignals.empty() && (flushPredictions || (s.state != State::Analyze && s.state != State::Verify)))
@@ -528,11 +705,15 @@ void stop(std::string message) {
     s.fullRestartRetry = false;
     s.nativePool.clear(); s.referenceTrace.clear(); s.activeNative = -1;
     s.referencePhysics.clear(); s.segmentExits.clear(); s.referenceLandings.clear();
+    s.referenceEvidence.release(); s.baseline.release();
     s.pending = Pending::None; releaseInjected(); s.message = std::move(message); save();
+    s.precisionDirty = true;
     applyBackground(false);
 }
 void resetTrial() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
+    auto resetStart = std::chrono::steady_clock::now();
+    if (s.state == State::Analyze && !s.validatingSnapshot) ++s.trialAttempts;
     s.showcaseComplete = false;
     s.resetting = true; releaseInjected(); clearMarkers();
     if (s.state == State::Verify || s.state == State::Analyze) applyBackground(true);
@@ -543,6 +724,7 @@ void resetTrial() {
     bool restoring = s.snapshot && (s.validatingSnapshot || s.snapshotChecked) && !s.fullRestartRetry;
     s.scheduleCursor = restoring ? s.snapshotScheduleCursor : 0;
     s.causalCursor = restoring ? s.snapshotCausalCursor : 0; s.causalMismatch = false;
+    s.causalHash = restoring ? s.snapshotCausalHash : cf::hashStart;
     if (s.state == State::Verify || s.state == State::Analyze) GameToolbox::fast_srand(s.initialSharedSeed);
     if (restoring) {
         ++s.restores;
@@ -557,9 +739,11 @@ void resetTrial() {
         if (tick() != s.snapshotTick) {
             log::warn("[CF] snapshot restore tick mismatch; disabling native cache");
             ++s.restoreFallbacks;
+            ++s.tickFallbacks;
             if (s.activeNative >= 0) s.nativePool[s.activeNative].rejected = true;
             s.snapshot = nullptr; s.snapshotChecked = false;
             s.scheduleCursor = 0; s.causalCursor = 0;
+            s.causalHash = cf::hashStart;
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
         } else {
             s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld;
@@ -578,17 +762,23 @@ void resetTrial() {
     s.watchdogTick = -1; s.stalledSeconds = 0;
     s.comparedSamples = 0; s.lastPressTick = -1; s.lastIntervalMs = -1.f; s.divergences = 0;
     s.activeJump.fill(size_t(-1)); s.airborne.fill(false); s.localLandingPassed = false;
-    s.targetExecuted = false; s.segmentMissed = false; s.rejoinStreak = 0;
+    s.targetExecuted = false; s.segmentMissed = false; s.rejoinStreak = 0; s.earlyAccepted = false;
     if (s.state == State::Verify) {
         s.rawSignalCount = 0;
         if (s.baselinePass == 0) { s.baseline.clear(); s.updateSchedule.clear(); s.causalTrace.clear(); }
         s.referenceLandings.assign(s.recording.inputs.size(), {});
         s.referencePhysics.clear(); s.referenceTrace.clear(); s.nativePool.clear();
+        s.referenceEvidence.clear();
         s.nativeObjectStates = 0;
         s.nextNativeTick = 24; s.nativePoolLimited = false; s.activeNative = -1;
+        s.nextNativeTarget = 0;
+        s.nativeTargets = cf::checkpointTargets(s.trial, s.recording.radius,
+            size_t(Mod::get()->getSettingValue<int64_t>("checkpoint-budget")));
     }
     s.candidateTrace.clear(); s.snapshotCompared = 0;
     fixPracticeTouchPriority();
+    double resetTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - resetStart).count();
+    s.resetSeconds += resetTime; if (restoring) s.restoreSeconds += resetTime;
 }
 // Verify/Analyze run the level behind a cover: objects hidden (nothing to draw) and the
 // game sped up (setting "scan-speed"; 1 = normal). Called every frame, so it undoes itself.
@@ -640,7 +830,7 @@ void hud() {
     if (scanBatchActive) return;
     auto pl = s.owner;
     if (s.showcaseComplete) {
-        for (char const* id : {"cf-hud", "cf-rows", "cf-ms"})
+        for (char const* id : {"cf-hud", "cf-rows", "cf-ms", "cf-precision"})
             if (auto node = pl->getChildByID(id)) node->removeFromParent();
         return;
     }
@@ -696,6 +886,7 @@ void showMs(float ms) {
 }
 void clearMarkers() {
     if (!hasLiveOwner()) return;
+    if (auto precision = s.owner->getChildByID("cf-precision")) precision->removeFromParent();
     if (auto ms = s.owner->getChildByID("cf-ms")) ms->removeFromParent();
     if (!s.owner->m_objectLayer) return;
     if (auto node = s.owner->m_objectLayer->getChildByID("cf-markers")) node->removeFromParent();
@@ -821,6 +1012,7 @@ bool supported() {
 }
 void beginAnalysis() {
     if (!s.recording.complete || s.recording.inputs.empty() || !supported()) return;
+    precisionJob.cancel(); s.precisionDirty = true;
     // Always align from the immutable capture, never from last Verify's shift.
     s.previousPlaybackTicks.clear();
     for (auto const& e : s.recording.inputs) s.previousPlaybackTicks.push_back(e.tick);
@@ -840,7 +1032,7 @@ void beginAnalysis() {
     });
     bool regenerate = s.recording.ready() && !havePreview && Mod::get()->getSettingValue<bool>("trajectory-preview");
     bool changed = s.recording.radius != radius || s.recording.analysisPolicy != policy || regenerate ||
-        cf::readFile(path().parent_path() / "analysis-policy.txt") != "CF-ANALYSIS-3\n";
+        cf::readFile(path().parent_path() / "analysis-policy.txt") != analysisPolicyToken();
     if (changed) { s.recording.windows.clear(); s.predictions.clear(); }
     s.recording.analysisPolicy = policy;
     s.snapshot = nullptr; s.snapshotChecked = false;
@@ -853,15 +1045,53 @@ void beginAnalysis() {
     s.initialSharedSeed = GameToolbox::getfast_srand(); s.parityDiagnostic.clear();
     s.rawSignals.clear(); s.rawSignalCount = 0; s.baselineRetryPending = false;
     s.recoveringFlight = false; s.recoveryReport.clear();
+    s.auditing = s.earlyAccepted = s.fromCache = false; s.auditGate = {}; s.probeCache.clear();
+    s.causalHash = cf::hashStart; s.phaseCalls.fill(0); s.eventReport.clear();
+    s.cacheHits = s.trialAttempts = s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = 0;
+    s.missedNativeTargets = s.thinnedNativeStates = 0;
+    s.resetSeconds = s.restoreSeconds = 0;
+    s.nativeTargets = cf::checkpointTargets(s.recording.inputs, radius,
+        size_t(Mod::get()->getSettingValue<int64_t>("checkpoint-budget")));
     s.batchDisabled = false; s.confirmingBoundary = false; s.batchUpdates = 0;
     s.trial = s.recording.inputs; s.shiftIndex = 0; s.noRetry = false; s.firstFail.clear(); s.alert.clear();
     s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
     s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
     s.reportDirty = true;
-    cf::replaceChanged(path().parent_path() / "analysis-policy.txt", "CF-ANALYSIS-3\n");
+    cf::replaceChanged(path().parent_path() / "analysis-policy.txt", analysisPolicyToken());
     s.measurableTotal = std::count_if(s.recording.inputs.begin(), s.recording.inputs.end(), cf::counted); analysisClock(true);
     log::info("[CF] verify start: {} inputs, end tick {}", s.recording.inputs.size(), s.recording.endTick);
     s.message = "Verifying original run (240 TPS)"; resetTrial();
+}
+bool chooseNativeState() {
+    s.snapshot = nullptr; s.snapshotChecked = false; s.validatingSnapshot = false; s.activeNative = -1;
+    s.snapshotEngineState.reset(); s.snapshotCollisions = {};
+    int chosen = Mod::get()->getSettingValue<bool>("native-states") ?
+        cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 2) : -1;
+    if (chosen < 0) return false;
+    auto const& n = s.nativePool[chosen];
+    s.activeNative = chosen; s.snapshot = n.checkpoint; s.snapshotTick = n.tick; s.snapshotNext = n.next; s.snapshotHeld = n.held;
+    s.snapshotButtons = n.buttons; s.snapshotRecordedButtons = n.recorded; s.snapshotReplayButtons = n.replay;
+    s.snapshotRandomSeed = n.randomSeed; s.snapshotReplaySeed = n.replaySeed; s.snapshotExtraDelta = n.extraDelta;
+    s.snapshotSharedSeed = n.sharedSeed; s.snapshotScheduleCursor = n.scheduleCursor;
+    s.snapshotCausalCursor = n.causalCursor; s.snapshotCausalHash = n.causalHash;
+    s.snapshotCollisions = n.collisions; s.snapshotEngineState = n.engineState;
+    s.snapshotStep = n.step; s.snapshotRecordedSize = n.recordedSize; s.snapshotResumeTimer = n.resumeTimer;
+    s.snapshotChecked = n.checked; s.snapshotEndTick = s.recording.endTick;
+    if (!n.checked) { s.validatingSnapshot = true; s.offset = 0; }
+    return true;
+}
+void retireOldStates() {
+    if (s.activeNative < 0 || !s.snapshotChecked) return;
+    int previous = -1;
+    for (size_t i = 0; i < s.nativePool.size(); ++i) {
+        auto const& n = s.nativePool[i];
+        if (!n.rejected && n.tick < s.snapshotTick && (previous < 0 || n.tick > s.nativePool[previous].tick)) previous = int(i);
+    }
+    if (previous < 0) return;
+    for (auto& n : s.nativePool) if (n.tick < s.nativePool[previous].tick && n.checkpoint) {
+        n.checkpoint = nullptr; n.engineState.reset(); n.collisions = {}; n.rejected = true;
+        s.nativeObjectStates -= std::min(s.nativeObjectStates, n.units);
+    }
 }
 void nextEvent() {
     while (s.target < s.recording.inputs.size() &&
@@ -870,29 +1100,14 @@ void nextEvent() {
         stop("Analysis complete. Pause > Frames > Play");
         queueReturnToPause(); return;
     }
-    s.search.reset(s.recording.radius); s.offset = s.search.offset;
+    int cap = s.recording.analysisPolicy == 2 ? int(Mod::get()->getSettingValue<int64_t>("wide-window-cap")) : 0;
+    s.search.reset(s.recording.radius, cap); s.offset = s.search.offset;
+    s.eventStartCalls = s.physicsCalls; s.eventStartTests = s.tests; s.eventStartAttempts = s.trialAttempts; s.eventStartRestores = s.restores;
     s.measuredDone = 0;
     for (size_t i = 0; i < s.recording.inputs.size(); ++i)
         if (cf::counted(s.recording.inputs[i]) && s.recording.windows[i].measured) ++s.measuredDone;
-    s.snapshot = nullptr; s.snapshotChecked = false;
     s.fullRestartRetry = false;
-    s.validatingSnapshot = false;
-    s.activeNative = -1;
-    int chosen = Mod::get()->getSettingValue<bool>("native-states") ?
-        cf::snapshotBefore(s.nativePool, s.recording.inputs[s.target].tick - s.recording.radius - 2) : -1;
-    if (chosen >= 0) {
-        int i = chosen;
-        auto const& n = s.nativePool[i];
-        s.activeNative = i; s.snapshot = n.checkpoint; s.snapshotTick = n.tick; s.snapshotNext = n.next; s.snapshotHeld = n.held;
-        s.snapshotButtons = n.buttons; s.snapshotRecordedButtons = n.recorded; s.snapshotReplayButtons = n.replay;
-        s.snapshotRandomSeed = n.randomSeed; s.snapshotReplaySeed = n.replaySeed; s.snapshotExtraDelta = n.extraDelta;
-        s.snapshotSharedSeed = n.sharedSeed; s.snapshotScheduleCursor = n.scheduleCursor;
-        s.snapshotCausalCursor = n.causalCursor;
-        s.snapshotCollisions = n.collisions; s.snapshotEngineState = n.engineState;
-        s.snapshotStep = n.step; s.snapshotRecordedSize = n.recordedSize; s.snapshotResumeTimer = n.resumeTimer;
-        s.snapshotChecked = n.checked; s.snapshotEndTick = s.recording.endTick;
-        if (!n.checked) { s.validatingSnapshot = true; s.offset = 0; }
-    }
+    chooseNativeState(); retireOldStates();
     if (s.recording.analysisPolicy == 2 && !s.referenceLandings[s.target].known &&
         (s.target >= s.segmentExits.size() || !s.segmentExits[s.target].known)) ++s.localFallbackEvents;
 }
@@ -900,10 +1115,16 @@ void startCandidate() {
     if (s.state != State::Analyze) return;
     if (s.search.done && !s.validatingSnapshot) {
         s.recording.windows[s.target] = s.search.window();
+        auto const& w = s.recording.windows[s.target];
+        s.eventReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.target, s.recording.inputs[s.target].tick,
+            w.early, w.late, w.width(), w.lowerBound, s.physicsCalls-s.eventStartCalls, s.tests-s.eventStartTests,
+            s.trialAttempts-s.eventStartAttempts, s.restores-s.eventStartRestores);
         save(); ++s.target; nextEvent();
         if (s.state != State::Analyze) return;
     }
     s.candidateTrace.clear();
+    s.fromCache = false;
+    if (!s.fullRestartRetry && s.activeNative >= 0 && s.nativePool[s.activeNative].rejected) chooseNativeState();
     if (s.validatingSnapshot) {
         s.trial = s.recording.inputs;
         s.message = "Validating shared native-state round trip";
@@ -916,10 +1137,19 @@ void startCandidate() {
     if (!prepared) {
         s.pending = Pending::Fail; return;
     }
+    s.changedUntil = cf::lastChangedTick(s.recording.inputs, s.trial);
+    if (!s.auditing && !s.recoveringFlight) {
+        cf::ProbeKey key{s.target, s.offset, s.auditGate.disabled || s.recording.analysisPolicy != 2};
+        if (auto cached = s.probeCache.get(key, s.fullRestartRetry || s.confirmingBoundary)) {
+            ++s.cacheHits; s.fromCache = true; s.earlyAccepted = false;
+            s.pending = cached->pass ? Pending::Pass : Pending::Fail; return;
+        }
+    }
     resetTrial();
 }
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
+    if (result == Pending::Invalid && s.state == State::Analyze && s.auditing) result = Pending::Fail;
     if (result == Pending::Invalid) {
         s.alert = s.message; stop(s.message); queueReturnToPause(); return;
     }
@@ -983,9 +1213,26 @@ void consume() {
                 s.nativePool[s.activeNative].checked = s.snapshotChecked;
                 s.nativePool[s.activeNative].rejected = !s.snapshotChecked;
             }
-            if (!s.snapshotChecked) { ++s.restoreFallbacks; s.snapshot = nullptr; log::warn("[CF] native-state validation failed; full restart fallback"); }
+            if (!s.snapshotChecked) {
+                ++s.restoreFallbacks; ++s.parityFallbacks; s.snapshot = nullptr;
+                if (chooseNativeState()) ++s.previousStateFallbacks;
+                log::warn("[CF] native-state validation failed; trying earlier state or full replay");
+            } else retireOldStates();
         } else {
             bool pass = result == Pending::Pass;
+            if (s.auditing) {
+                s.auditing = false; s.auditGate.observed(pass);
+                s.fullRestartRetry = false;
+                if (!pass) {
+                    log::warn("[CF] audit mismatch: event {} offset {}; clearing local results", s.target, s.offset);
+                    s.parityDiagnostic = fmt::format("Audit mismatch: event={} offset={} {}. Local exits disabled; remeasuring full continuations.", s.target, s.offset, s.message);
+                    s.recording.windows.assign(s.recording.inputs.size(), {}); s.predictions.clear(); s.probeCache.clear();
+                    s.target = 0; s.eventReport.clear(); nextEvent(); startCandidate(); return;
+                }
+                s.probeCache.put({s.target, s.offset, true}, {true, true});
+            } else if (pass && s.earlyAccepted && !s.fromCache && !s.recoveringFlight && s.auditGate.consider()) {
+                s.auditing = true; s.fullRestartRetry = true; startCandidate(); return;
+            }
             if (s.recoveringFlight) {
                 s.recoveryReport += fmt::format("{}\t{}\t{}\t{}\t{}\n", s.target, s.offset, s.recoveryNeighbor, s.recoveryChange, pass);
                 if (!pass && s.recoveryChange == -1) { s.recoveryChange = 1; startCandidate(); return; }
@@ -995,7 +1242,7 @@ void consume() {
                 // fixed-macro boundary failed regardless of recovery outcome.
                 ++s.tests; s.search.accept(false); s.offset = s.search.offset; startCandidate(); return;
             }
-            if (!pass && s.search.window().width() <= 3 && !s.confirmingBoundary && !s.batchDisabled &&
+            if (!pass && !s.fromCache && s.search.window().width() <= 3 && !s.confirmingBoundary && !s.batchDisabled &&
                 Mod::get()->getSettingValue<bool>("batch-analysis")) {
                 s.confirmingBoundary = true; s.fullRestartRetry = true;
                 startCandidate(); return;
@@ -1009,6 +1256,8 @@ void consume() {
                 s.nativePool[s.activeNative].failureConfirmed = !pass;
                 if (pass) { s.nativePool[s.activeNative].rejected = true; ++s.restoreFallbacks; s.snapshot = nullptr; s.snapshotChecked = false; }
             }
+            if (!s.fromCache) s.probeCache.put({s.target, s.offset, s.auditGate.disabled || s.recording.analysisPolicy != 2},
+                {pass, s.fullRestartRetry || !s.snapshotChecked});
             s.fullRestartRetry = false;
             int mode = s.recording.inputs[s.target].mode;
             if (!pass && (mode == 1 || mode == 3 || mode == 4 || mode == 7) && Mod::get()->getSettingValue<bool>("flight-recovery")) {
@@ -1052,10 +1301,10 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
         inside = true;
         scanBatchActive = true;
         auto owner = s.owner;
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8);
-        bool fast = !s.batchDisabled && !s.confirmingBoundary &&
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Mod::get()->getSettingValue<int64_t>("scan-budget-ms"));
+        bool fast = !s.batchDisabled &&
             !(s.state == State::Verify && s.baselinePass == 0);
-        int limit = fast ? 256 : 1;
+        int limit = fast ? 1024 : 1;
         for (int i = 0; i < limit; ++i) {
             if (s.pending != Pending::None) consume();
             if (!scanning() || s.owner != owner) break;
@@ -1170,7 +1419,11 @@ class $modify(CFBase, GJBaseGameLayer) {
     }
     void processCommands(float dt, bool half, bool last) {
         if (static_cast<GJBaseGameLayer*>(s.owner) == this && running() && s.pending == Pending::None) {
-            if (s.state != State::Playback) ++s.physicsCalls;
+            if (s.state != State::Playback) {
+                ++s.physicsCalls;
+                size_t phase = s.state == State::Verify ? 0 : s.validatingSnapshot ? 1 : s.auditing ? 4 : s.recoveringFlight ? 5 : s.confirmingBoundary ? 3 : 2;
+                ++s.phaseCalls[phase];
+            }
             bool validStep = std::abs(dt - 1.f / 240.f) <= .0001f || std::abs(dt - .25f) <= .005f;
             if (dt > 0 && !validStep) {
                 s.message = "Unsupported physics step: use 240 TPS without CBF"; s.pending = Pending::Fail; s.noRetry = true;
@@ -1178,16 +1431,16 @@ class $modify(CFBase, GJBaseGameLayer) {
                 return;
             }
             int now = tick();
+            auto current = s.state == State::Playback ? cf::Observation{} : observation(dt);
             if (s.state == State::Verify) {
-                auto current = observation(dt);
                 if (s.baselinePass == 0) {
-                    if (s.baseline.size() >= 250000 && !s.baseline.contains(now)) {
+                    if (now < 0 || now >= cf::TickTable<cf::Observation>::limit) {
                         s.message = "Reference exceeds observation memory limit"; s.pending = Pending::Invalid; return;
                     }
-                    s.baseline.try_emplace(now, current);
+                    s.baseline.insert(now, current);
                 } else {
-                    auto it = s.baseline.find(now);
-                    if (it == s.baseline.end() || !cf::matches(it->second, current)) {
+                    auto reference = s.baseline.get(now);
+                    if (!reference || !cf::matches(*reference, current)) {
                         if (!s.batchDisabled) {
                             s.batchDisabled = true; s.baselinePass = 0;
                             s.baselineRetryPending = true;
@@ -1195,32 +1448,37 @@ class $modify(CFBase, GJBaseGameLayer) {
                             s.pending = Pending::Fail;
                         } else {
                             s.message = fmt::format("Unstable baseline at tick {}: {}", now,
-                                it == s.baseline.end() ? "missing reference tick" : cf::difference(it->second, current));
+                                !reference ? "missing reference tick" : cf::difference(*reference, current));
                             s.pending = Pending::Invalid;
                         }
                         s.parityDiagnostic = fmt::format("tick={} pass={} batching-disabled={} {}", now, s.baselinePass,
-                            s.batchDisabled, it == s.baseline.end() ? "missing tick" : cf::difference(it->second, current));
+                            s.batchDisabled, !reference ? "missing tick" : cf::difference(*reference, current));
                         return;
                     }
                     ++s.baselineCompared;
                 }
+                if (s.baselinePass == 2) { s.baseline.set(now, current); s.referenceEvidence.insert(now, rejoinEvidence()); }
             }
             if (s.state == State::Analyze && s.validatingSnapshot) {
-                auto it = s.baseline.find(now);
-                if (it == s.baseline.end() || !cf::matches(it->second, observation(dt))) {
+                auto reference = s.baseline.get(now);
+                if (!reference || !cf::matches(*reference, current)) {
                     s.message = "Snapshot physics parity failed; using full replay"; s.pending = Pending::Fail; return;
                 }
             }
-            if (s.state == State::Analyze && !s.validatingSnapshot && s.targetExecuted &&
+            if (s.state == State::Analyze && !s.validatingSnapshot && !s.auditing && !s.recoveringFlight &&
+                !s.auditGate.disabled && s.targetExecuted &&
                 s.recording.analysisPolicy == 2 && now > s.recording.inputs[s.target].tick) {
-                auto it = s.baseline.find(now);
+                auto reference = s.baseline.get(now);
+                auto evidence = s.referenceEvidence.get(now);
                 bool grounded = s.owner->m_player1->m_isOnGround &&
                     (!s.owner->m_gameState.m_isDualMode || s.owner->m_player2->m_isOnGround);
-                bool same = grounded && !s.causalMismatch && it != s.baseline.end() && cf::matches(it->second, observation(dt));
+                bool same = !s.causalMismatch && reference && evidence &&
+                    (grounded || Mod::get()->getSettingValue<bool>("air-rejoin")) &&
+                    cf::canRejoin(*reference, current, *evidence, rejoinEvidence(), now, s.changedUntil);
                 s.rejoinStreak = same ? s.rejoinStreak + 1 : 0;
-                if (s.rejoinStreak >= 4) {
-                    s.message = "Observable physics rejoined (local window)";
-                    s.pending = Pending::Pass; ++s.localPasses; return;
+                if (s.rejoinStreak >= (grounded ? 4 : 3)) {
+                    s.message = "Physics evidence rejoined (audited local window)";
+                    s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses; return;
                 }
             }
             if (s.state == State::Verify || s.state == State::Analyze) {
@@ -1229,26 +1487,26 @@ class $modify(CFBase, GJBaseGameLayer) {
             }
             if (s.state == State::Verify && s.referencePhysics.size() < 250000) {
                 auto p1 = s.owner->m_player1, p2 = s.owner->m_player2;
-                s.referencePhysics.try_emplace(now, cf::PhysicsReference{
+                s.referencePhysics.insert(now, cf::PhysicsReference{
                     {now, p1->getPositionX(), p1->getPositionY(), p2->getPositionX(), p2->getPositionY()},
                     playerMode(p1), playerMode(p2), p1->m_isUpsideDown, p2->m_isUpsideDown});
             }
-            if (s.state == State::Analyze && s.recording.analysisPolicy == 2 && !s.validatingSnapshot &&
+            if (s.state == State::Analyze && s.recording.analysisPolicy == 2 && !s.validatingSnapshot && !s.auditing && !s.auditGate.disabled &&
                 !s.segmentMissed && s.target < s.segmentExits.size() && s.segmentExits[s.target].known) {
                 auto const& exit = s.segmentExits[s.target];
                 if (now > exit.tick) { s.segmentMissed = true; ++s.localFallbackTrials; }
                 else if (now == exit.tick) {
                     auto player = s.recording.inputs[s.target].p1 ? s.owner->m_player1 : s.owner->m_player2;
                     bool landingRequired = s.referenceLandings[s.target].known;
-                    auto causalReference = s.baseline.find(now);
-                    bool sameCauses = !s.causalMismatch && causalReference != s.baseline.end() &&
-                        s.causalCursor == size_t(causalReference->second.flags[9]);
+                    auto causalReference = s.baseline.get(now);
+                    bool sameCauses = !s.causalMismatch && causalReference &&
+                        s.causalCursor == size_t(causalReference->flags[9]);
                     bool pass = s.targetExecuted && sameCauses && (landingRequired ? s.localLandingPassed :
                         cf::atSegmentExit(exit, player->getPositionX(), player->getPositionY(), playerMode(player), player->m_isUpsideDown));
                     // A zone mismatch is not a collision. Continue the real run
                     // rather than turning a heuristic rejection into a narrow window.
                     if (pass) {
-                        s.pending = Pending::Pass; ++s.localPasses;
+                        s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses;
                         s.message = "Local horizon survived (not full-route certification)"; return;
                     }
                     s.segmentMissed = true; ++s.localFallbackTrials;
@@ -1286,6 +1544,7 @@ class $modify(CFBase, GJBaseGameLayer) {
 class $modify(CFPlay, PlayLayer) {
     static void bindSession(PlayLayer* layer) {
         applyBackground(false);
+        precisionJob.cancel();
         // Android's gd::vector has an explicit default constructor; use value
         // initialization rather than aggregate copy-list initialization.
         s = Session(); s.owner = layer;
@@ -1342,9 +1601,11 @@ class $modify(CFPlay, PlayLayer) {
     }
     void service(float dt) {
         if (s.owner != this || !hasLiveOwner()) return;
+        if (!scanBatchActive) precisionTick();
         analysisClock(!m_isPaused && (s.state == State::Verify || s.state == State::Analyze));
         if (m_isPaused) { applyBackground(false); hud(); return; }
-        applyBackground(s.state == State::Verify || s.state == State::Analyze);
+        bool scanning = s.state == State::Verify || s.state == State::Analyze;
+        if (!scanBatchActive || s.background != scanning) applyBackground(scanning);
         if (running() && !m_isPaused && s.pending == Pending::None) {
             if (inputBackend() != s.recording.backend) {
                 stop("Input mode changed during replay. Restore vanilla/CoS mode and retry."); queueReturnToPause(); return;
@@ -1369,12 +1630,25 @@ class $modify(CFPlay, PlayLayer) {
         if (s.state == State::Verify || s.state == State::Analyze) {
             auto point = cf::Sample{now, m_player1->getPositionX(), m_player1->getPositionY(), m_player2->getPositionX(), m_player2->getPositionY()};
             if (s.state == State::Verify) {
-                if (s.referenceTrace.size() < 100000) s.referenceTrace[now] = point;
-                if (Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited && s.nativePool.size() < 64 && now >= s.nextNativeTick) {
-                    s.nextNativeTick = now + std::max(24, s.recording.endTick / 64);
+                if (s.referenceTrace.size() < 100000) s.referenceTrace.set(now, point);
+                while (s.baselinePass == 2 && s.nextNativeTarget < s.nativeTargets.size() && s.nativeTargets[s.nextNativeTarget] < now) {
+                    ++s.nextNativeTarget; ++s.missedNativeTargets;
+                }
+                int lead = std::clamp(int(std::ceil(dt * 240.f)), 4, 64);
+                if (s.baselinePass == 2 && Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited &&
+                    s.nextNativeTarget < s.nativeTargets.size() && now >= s.nativeTargets[s.nextNativeTarget] - lead) {
+                    while (s.nextNativeTarget < s.nativeTargets.size() && s.nativeTargets[s.nextNativeTarget] <= now + lead) ++s.nextNativeTarget;
                     auto cp = createCheckpoint();
                     if (cp) {
                         size_t states = cp->m_vectorSavedObjectStateRef.size() + cp->m_vectorActiveSaveObjectState.size() + cp->m_vectorSpecialSaveObjectState.size();
+                        auto engine = std::make_shared<EngineState>(); engine->capture(m_gameState);
+                        states += engine->units();
+                        for (size_t i = 1; s.nativeObjectStates + states > 100000 && i + 1 < s.nativePool.size(); i += 2) {
+                            auto& old = s.nativePool[i];
+                            if (!old.checkpoint) continue;
+                            old.checkpoint = nullptr; old.engineState.reset(); old.collisions = {}; old.rejected = true;
+                            s.nativeObjectStates -= std::min(s.nativeObjectStates, old.units); ++s.thinnedNativeStates;
+                        }
                         if (states > 25000 || s.nativeObjectStates + states > 100000) { s.nativePoolLimited = true; log::warn("[CF] native state cache limited by object-state count"); }
                         else {
                             s.nativeObjectStates += states;
@@ -1384,8 +1658,9 @@ class $modify(CFPlay, PlayLayer) {
                             n.randomSeed = m_randomSeed; n.replaySeed = m_replayRandSeed; n.extraDelta = m_extraDelta;
                             n.sharedSeed = GameToolbox::getfast_srand(); n.scheduleCursor = s.scheduleCursor;
                             n.causalCursor = s.causalCursor;
+                            n.causalHash = s.causalHash; n.units = states;
                             n.collisions = {captureCollisions(m_player1), captureCollisions(m_player2)};
-                            n.engineState = std::make_shared<EngineState>(); n.engineState->capture(m_gameState);
+                            n.engineState = std::move(engine);
                             n.step = m_currentStep; n.recordedSize = m_queuedRecordedButtonsSize; n.resumeTimer = m_resumeTimer;
                             s.peakNativeStates = std::max(s.peakNativeStates, s.nativePool.size());
                         }
@@ -1394,14 +1669,14 @@ class $modify(CFPlay, PlayLayer) {
             }
             if (s.state == State::Analyze) {
                 int eventTick = s.recording.inputs[s.target].tick;
-                if (!s.validatingSnapshot && now >= eventTick - 240 && now <= eventTick + 480 &&
+                if (Mod::get()->getSettingValue<bool>("trajectory-preview") && !s.validatingSnapshot && !s.auditing && now >= eventTick - 240 && now <= eventTick + 480 &&
                     s.candidateTrace.size() < 256 && (s.candidateTrace.empty() || now > s.candidateTrace.back().tick))
                     s.candidateTrace.push_back(point);
                 if (s.validatingSnapshot) {
-                    auto it = s.referenceTrace.find(now);
-                    if (it != s.referenceTrace.end()) {
+                    auto saved = s.referenceTrace.get(now);
+                    if (saved) {
                         ++s.snapshotCompared;
-                        auto reference = it->second;
+                        auto reference = *saved;
                         if (std::abs(reference.x - point.x) > .5f || std::abs(reference.y - point.y) > .5f ||
                             std::abs(reference.x2 - point.x2) > .5f || std::abs(reference.y2 - point.y2) > .5f) {
                             s.message = "Native state diverged; using full restart"; s.pending = Pending::Fail;
@@ -1550,6 +1825,7 @@ class $modify(CFPlay, PlayLayer) {
         // onExit is a scene lifecycle notification, not destruction. Reparenting
         // and scene overlays must not erase the current recording/session.
         if (s.owner == this) {
+            precisionJob.cancel(); s.precisionDirty = true;
             analysisClock(false);
             applyBackground(false);
             if (!s.recording.key.empty()) save(true);
@@ -1638,7 +1914,8 @@ class CFEditor : public Popup {
         if (!writeSafe(visualPath(), text.str())) {
             FLAlertLayer::create("Error", "No se pudo guardar la presentacion. La captura original no se ha cambiado.", "OK")->show(); return;
         }
-        s.visual = std::move(doc); s.message = s.visual.enabled ? "Edited showcase saved. Frames > Play" : "Original measured showcase selected";
+        s.visual = std::move(doc); s.precisionDirty = true;
+        s.message = s.visual.enabled ? "Edited showcase saved. Frames > Play" : "Original measured showcase selected";
         onClose(nullptr);
     }
     void refresh() {
@@ -1804,7 +2081,7 @@ class CFPopup : public Popup {
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.recording.backend = inputBackend(); s.predictions.clear(); s.snapshot = nullptr;
-            s.visual = {};
+            s.visual = {}; precisionJob.cancel(); s.precisionDirty = true;
             s.captureDirty = true; s.viewsDirty = true; s.captureDigest.clear(); s.traceDigest.clear(); s.storageBlocked = false;
             s.reportDirty = true;
             s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0; s.tests = 0;
@@ -1879,7 +2156,7 @@ class CFPopup : public Popup {
         }
         if (panelRows.empty()) label("Analyze to fill this in", {351, 120}, .43f, {175, 192, 211});
         label(s.visual.enabled ? fmt::format("{} visuales", measured) : fmt::format("{} / {} measured", measured, s.recording.inputs.size()), {351, 58}, .43f, {175, 192, 211});
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.3", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.4", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

@@ -1,4 +1,35 @@
-# Click Frames 1.0.3 — experimental
+# Click Frames 1.0.4 — experimental
+
+## Safe application of the attached fast-analysis plan
+
+ScanSupport.hpp adds bounded dense tick tables with explicit holes, a staged
+contiguous search (initial radius four), lower-bound stopping and an epoch-local
+exact event/offset/scope cache. Every narrow boundary is still visited; no
+cross-offset state cache or galloping assumes a complete universal snapshot.
+Rejoin uses bit-exact nonvisual physical observations plus RNG/causal/actor and
+activation evidence, only after all perturbed input times and in a quiet world.
+Three matching airborne ticks or four grounded ticks may end a LOCAL candidate.
+The existing full-route policies remain full certification. Delta-y/mode distance
+alone is never a failure. Sampled full-start audits invalidate and remeasure all
+local windows if a shortcut disagrees; this is empirical auditing, not a proof
+of hidden engine-state equivalence. Dense references are released at stop.
+
+Checkpoints target click-radius-3 with the nearest preceding postUpdate boundary;
+only the final reference captures them. Targets are sampled across the run when
+over budget. Native checkpoint and typed dynamic-map units share bounded budgets.
+Older states are thinned/released while one earlier fallback is retained. Direct
+checkpoint loading remains unenabled until the measured reset costs justify it.
+Cadence preserves the reference dt sequence and may batch confirmations after
+parity; automatic fallback is unchanged. Phase and event reports support actual
+device profiling. No runtime performance or three-level parity is fabricated.
+
+Precision.hpp ports only the MIT statistical model, with safe bracketing and no
+engine dependencies. erfc LUT is heap-backed for Android worker stack size.
+PrecisionJob.hpp owns one std::async worker, cancels superseded jobs and publishes
+only matching immutable job keys on the main thread. Edited inputs are a
+separate labeled source; measured captures are never rewritten by the model.
+The original interval HUD is retained. Sigma=1000/L* ms is a model conversion,
+not latency or an observed click-window error. Open widths are conservative.
 
 ## Event broadcast versus trigger dispatch
 
