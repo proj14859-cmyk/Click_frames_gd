@@ -29,6 +29,7 @@ int main(){
     assert(totals.exported==1 && totals.open==1 && bytes.starts_with(cf::training::header));
     assert(std::count(bytes.begin(),bytes.end(),'\n')==2);
     r.analysisPolicy=2;cf::training::csv(r,{f,f,f},totals);assert(totals.exported==0);r.analysisPolicy=0;
+    r.complete=false;cf::training::csv(r,{f,f,f},totals);assert(totals.exported==0);r.complete=true;
     auto no=f;no.geometry=false;cf::training::csv(r,{no,f,f},totals);assert(totals.exported==0 && totals.geometry==1);
     no=f;no.replayMatch=false;cf::training::csv(r,{no,f,f},totals);assert(totals.exported==0 && totals.missing==1);
     no=f;no.vy=std::numeric_limits<double>::quiet_NaN();assert(cf::training::row(no,3).empty());

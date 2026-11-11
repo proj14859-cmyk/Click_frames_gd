@@ -46,7 +46,7 @@ inline std::string csv(Recording const& r, std::vector<Features> const& f, Total
         if (r.windows[i].lowerBound) { ++totals.open; continue; }
         if (i>=f.size() || !finite(f[i]) || !f[i].replayMatch) { ++totals.missing; continue; }
         if (!f[i].geometry) { ++totals.geometry; continue; }
-        if (!r.verified || r.analysisPolicy==2) continue;
+        if (!r.complete || !r.verified || r.analysisPolicy==2) continue;
         auto line=row(f[i],r.windows[i].width()); if (!line.empty()) { bytes+=line; ++totals.exported; }
     }
     return bytes;

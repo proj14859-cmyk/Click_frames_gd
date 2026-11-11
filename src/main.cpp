@@ -1181,6 +1181,7 @@ void beginAnalysis() {
     s.featuresDirty=!s.features.empty();
     s.causalParity={}; s.toleratedEventTicks=0; s.batchCalls.fill(0); s.cadenceCalls.fill(0);
     s.cadenceReasons.fill("");
+    s.lastDiagnostic.clear();
     s.rawSignals.clear(); s.rawSignalCount = 0; s.baselineRetryPending = false;
     s.recoveringFlight = false; s.recoveryReport.clear();
     s.auditing = s.earlyAccepted = s.fromCache = false; s.auditGate = {}; s.probeCache.clear();
@@ -2308,6 +2309,7 @@ class CFPopup : public Popup {
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.features.clear(); s.featuresDirty=true;
+            s.causalParity={};s.toleratedEventTicks=0;s.batchCalls.fill(0);s.cadenceCalls.fill(0);s.cadenceReasons.fill("");s.lastDiagnostic.clear();
             s.recording.backend = inputBackend(); s.predictions.clear(); s.snapshot = nullptr;
             s.visual = {}; precisionJob.cancel(); s.precisionDirty = true;
             s.captureDirty = true; s.viewsDirty = true; s.captureDigest.clear(); s.traceDigest.clear(); s.storageBlocked = false;
