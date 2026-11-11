@@ -60,7 +60,7 @@ struct AdaptiveSearch {
 };
 inline std::vector<int> checkpointTargets(std::span<Input const> inputs, int radius, size_t budget) {
     std::vector<int> targets;
-    for (auto const& e : inputs) if (counted(e) && e.tick > radius + 3) targets.push_back(e.tick - radius - 3);
+    for (auto const& e : inputs) if (counted(e) && e.tick > radius + 2) targets.push_back(e.tick - radius - 2);
     std::sort(targets.begin(), targets.end()); targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
     if (!budget) return {};
     if (targets.size() <= budget) return targets;

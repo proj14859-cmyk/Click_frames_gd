@@ -2,6 +2,7 @@
 #include "Timing.hpp"
 #include "ScanSupport.hpp"
 #include <map>
+#include <bit>
 
 namespace cf {
 // Compare engine observations at the same pre-command physics tick, not at
@@ -53,6 +54,30 @@ inline std::string difference(Observation const& a, Observation const& b) {
     return {};
 }
 inline bool matches(Observation const& a, Observation const& b) { return difference(a, b).empty(); }
+// Only a single pending causal event can be amortized. Identity and order are
+// checked independently by recordCause; this never hides a changed input/mode.
+struct CausalParity {
+    int opened = -1;
+    size_t recovered = 0;
+    bool compare(Observation const& reference, Observation const& observed, int now) {
+        int delta = observed.flags[9] - reference.flags[9];
+        if (std::abs(delta)>1) return false;
+        if (delta && opened<0) opened=now;
+        if (opened>=0) {
+            if (now-opened>2 || (now-opened==2 && delta)) return false;
+            auto a=reference, b=observed; a.flags[9]=b.flags[9];
+            for(size_t i : {size_t(0),size_t(1),size_t(3),size_t(4)}) {
+                if(i>=3 && !a.flags[6] && !b.flags[6]) continue;
+                if(!std::isfinite(a.values[i]) || !std::isfinite(b.values[i]) || std::abs(a.values[i]-b.values[i])>=.05) return false;
+                a.values[i]=b.values[i];
+            }
+            if(!matches(a,b)) return false;
+            if(!delta) {opened=-1; ++recovered;}
+            return true;
+        }
+        return matches(reference,observed);
+    }
+};
 inline bool exactRejoin(Observation const& a, Observation const& b) {
     bool dual = a.flags[6] || b.flags[6];
     for (size_t i = 0; i < a.flags.size(); ++i) {
@@ -60,7 +85,7 @@ inline bool exactRejoin(Observation const& a, Observation const& b) {
         if (a.flags[i] != b.flags[i]) return false;
     }
     for (size_t i = 0; i < a.values.size(); ++i) {
-        if (i == 10 || i == 11 || (!dual && (i == 3 || i == 4 || i == 5 || i == 8 || i == 9))) continue;
+        if ((!dual && (i == 3 || i == 4 || i == 5 || i == 8 || i == 9 || i == 11))) continue;
         if (!std::isfinite(a.values[i]) || !std::isfinite(b.values[i]) || a.values[i] != b.values[i]) return false;
     }
     return true;
@@ -70,6 +95,18 @@ inline uint64_t hashWord(uint64_t hash, uint64_t word) {
     return hash;
 }
 constexpr uint64_t hashStart = 14695981039346656037ull;
+inline uint64_t observationHash(Observation const& o) {
+    auto hash=hashStart;bool dual=o.flags[6];
+    for(size_t i=0;i<o.flags.size();++i) {
+        if(!dual && (i==1 || i==3 || i==5))continue;
+        hash=hashWord(hash,uint64_t(o.flags[i]));
+    }
+    for(size_t i=0;i<o.values.size();++i) {
+        if(!dual && (i==3 || i==4 || i==5 || i==8 || i==9 || i==11))continue;
+        hash=hashWord(hash,std::bit_cast<uint64_t>(o.values[i]==0?0.:o.values[i]));
+    }
+    return hash;
+}
 struct RejoinEvidence {
     uint64_t rng = 0, replayRng = 0, sharedRng = 0, causalHash = 0, actorHash = 0, activatedHash = 0;
     bool quietWorld = false;
@@ -77,7 +114,8 @@ struct RejoinEvidence {
 };
 inline bool canRejoin(Observation const& reference, Observation const& current,
     RejoinEvidence const& a, RejoinEvidence const& b, int now, int changedUntil) {
-    return now > changedUntil && a.quietWorld && b.quietWorld && a == b && exactRejoin(reference, current);
+    return now > changedUntil && a.quietWorld && b.quietWorld && a == b &&
+        observationHash(reference)==observationHash(current) && exactRejoin(reference, current);
 }
 inline bool candidateTrial(std::vector<Input> const& source, size_t index, int offset, std::vector<Input>& out) {
     if (index >= source.size()) return false;

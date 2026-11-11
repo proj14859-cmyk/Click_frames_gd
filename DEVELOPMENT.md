@@ -1,4 +1,16 @@
-# Click Frames 1.0.4 — experimental
+# Click Frames 1.0.5 — experimental
+
+## 1.0.5 validation and interfaces
+
+Diagnostics.hpp owns bounded, noexcept error logging and bounded crashlog reads. The independent Diagnostics popup never requires PlayLayer; errors, crashlog, and Geode log are selected separately. No signal handlers are installed. Only IO/parser boundaries catch exceptions.
+
+Training.hpp persists CFPHYS 1 raw pre-input physics keyed to immutable capture digest. Dataset rows use the existing mode enum (3 UFO, 4 Wave), raw playerSpeed/yVelocity, gravity/mini flags, native hazard-rect signed edge distances in world units, and ticks since previous recorded input (including releases). Native size must be 1.0 or 0.6, sideways/circular/rotated geometry is omitted; hazard discovery uses current active object rectangles within 600 units ahead. A final-reference exact physics/geometry/position match is required. Missing legacy physics is never reconstructed. Training shards are replaced rather than appended, aggregate has exactly nine numeric columns; no visual edits feed it. Full-route certification and closed borders are mandatory, but this is still conditional on the recorded input environment, not universal collision truth.
+
+CausalParity amortizes only one event for <=2 physical ticks. recordCause independently checks event kind/object/player/detail/order and <=2 tick displacement. Physical fields other than transient position remain strict. Three baseline runs and completion checks stay. Rejoin adds exact rotation and an FNV observation hash plus value comparison, retaining RNG/world guards and full-start audits. Full-run mode never shortcuts to PASS. Event checkpoints are captured at pre-command physics boundaries, with existing continuation probes rejecting unsupported mid-slice restorations before use. Such checkpoints can fall back and remain a device-validation risk; no universal state claim.
+
+Interop.hpp serializes FWC2 explicitly little-endian and NANDL v1 in ticks (timeUnit frames, gameFps/windowFps 240), omitting open windows. Audio.hpp validates PCM WAV chunks and removes only measured digital-zero frames; cached samples use a dedicated FMOD group, with up to one voice per width. Hardware audio latency is not inferred from a WAV header.
+
+Device checks required: trigger-heavy baseline with <=2 tick transient vs real mismatch; native checkpoint probes across scheduler slices; full-run 1/3/wide margins; repeated Analyze/Stop/Record and practice rewind; 9-column exact dataset with exclusions and no duplicate shards; all three diagnostic sources, scrolling/copy on Android; measured and Edit showcases, native level-complete and sound timing. Compare phase callbacks and wall-clock seconds to 1.0.4 on the same phone/level/mod settings.
 
 ## Safe application of the attached fast-analysis plan
 
