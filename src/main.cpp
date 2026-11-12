@@ -189,6 +189,7 @@ struct Session {
     Ref<CheckpointObject> snapshot;
     bool internalCheckpoint = false, validatingSnapshot = false, snapshotChecked = false;
     bool fullRestartRetry = false;
+    bool diagnosticRetryUsed = false;
     int snapshotTick = -1, snapshotEndTick = 0;
     size_t snapshotNext = 0, snapshotCompared = 0;
     std::array<bool, 6> snapshotHeld{};
@@ -1358,6 +1359,14 @@ void startCandidate() {
 }
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
+    if(result==Pending::Invalid && s.state==State::Analyze && !s.auditing && !s.diagnosticRetryUsed &&
+        (s.causalMismatch || s.message.find("Replay stalled")!=std::string::npos)) {
+        diagnostic("SAFE_RETRY",s.message);
+        s.diagnosticRetryUsed=true;s.batchDisabled=true;s.fullRestartRetry=true;
+        s.snapshot=nullptr;s.snapshotChecked=false;s.validatingSnapshot=false;
+        s.stalledSeconds=0;
+        resetTrial();return;
+    }
     if (result == Pending::Invalid && s.state == State::Analyze && s.auditing) result = Pending::Fail;
     if (result == Pending::Invalid) {
         diagnostic("ANALYSIS_INVALID",s.message);
