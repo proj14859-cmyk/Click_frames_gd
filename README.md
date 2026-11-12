@@ -8,6 +8,7 @@
 - En dual, el estado secundario corresponde al otro jugador respecto del input capturado, incluso cuando el input pertenece a P2.
 - El reintento seguro por divergencia causal o bloqueo se restablece en cada evento; no queda consumido por el primer fallo de toda la sesion.
 - Tras dos fallos de paridad de checkpoints en una sesion se desactiva esa cache y se evitan nuevas validaciones costosas; los candidatos continúan desde el inicio.
+- En niveles two-player, un toque marcado como P2 cuando dual ya esta apagado se normaliza al P1 activo. Capturas CFPHYS3 existentes se reparan en memoria y la referencia actualiza el modo derivado; las capturas nuevas guardan jugador, posicion y modo correctos desde Record.
 
 -Mejoras:
 - El dataset conserva dual, modo2, y2, vy2 y gravedad2; la paridad compara estos datos cuando fueron capturados.
@@ -19,12 +20,13 @@
 - CFPHYS 3 conserva el contexto dual; los formatos anteriores se leen con contexto desconocido.
 - CSV de 26 columnas; shards anteriores se archivan con .v107. Las ventanas abiertas permanecen en dataset_abiertas.csv.
 - input-routing.tsv conserva jugador solicitado/efectivo, modo de dos jugadores y dual activo para diagnosticar rutas de entrada.
-- La politica CF-ANALYSIS-7 invalida resultados parciales anteriores. Audita desde cero la primera reconvergencia y despues una muestra dispersa; una discrepancia borra las ventanas de la sesion y desactiva el atajo.
+- La politica CF-ANALYSIS-8 invalida resultados parciales anteriores. Audita desde cero la primera reconvergencia y despues una muestra dispersa; una discrepancia borra las ventanas de la sesion y desactiva el atajo.
 
 -Implementaciones:
 - Contadores independientes para captura incompleta, referencia no verificada y politica local.
 - dataset_manifest.json y dataset-report.txt resumen filas cerradas/abiertas, niveles unicos, modos, anchos y preparacion minima para entrenamiento.
 - El reporte cuenta comprobaciones de reconvergencia, bloqueos por mundo dinamico, diferencias de estado y aceptaciones. La primera medicion Android recibida encontro 774207 callbacks de candidatos, 98% posteriores al clic y cuatro fallos de paridad; esta optimizacion responde a esos datos.
+- La segunda medicion termino un nivel de cinco eventos en 22.49 s con 12 reconvergencias y una auditoria. Stalemate revelo 428 inputs P2 fuera de dual; el informe ahora cuenta cuantos fueron normalizados y los fallos de Verify identifican P1/P2.
 - Verificacion pendiente en dispositivo: ganancia real de CF-ANALYSIS-7, Stalemate, Denouement y Que-Hollowero. Estos cambios no certifican esos niveles ni la geometria de colision completa hasta recibir sus reportes.
 
 ## v1.0.7 / 2026-11-12 / 02:18 UTC / GD 2.2081 / Geode 5.11.2

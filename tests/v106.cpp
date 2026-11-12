@@ -25,6 +25,10 @@ int main(){
     auto playback=cf::playbackBytes("123",r);auto cap=r;std::istringstream play(playback);assert(cf::readPlayback(play,"123",cap) && cap.windows[0].estimated);
     assert(cf::closedWindows(r).empty());
     cf::training::Features f;f.mode=0;f.speed=.9f;f.vy=8.450123456789;f.geometry=f.replayMatch=true;f.grounded=1;
+    auto dual=f,solo=f,unknown=f;dual.dual=1;solo.dual=0;unknown.dual=-1;
+    std::vector<cf::Input> routed{{1,true,1,false},{2,true,1,false},{3,true,1,false}};
+    assert(cf::training::normalizeInactiveDualRouting(routed,{dual,solo,unknown})==1);
+    assert(!routed[0].p1 && routed[1].p1 && !routed[2].p1);
     cf::training::Totals totals;cf::training::csv(r,{f},totals);assert(totals.exported==0 && totals.uncertified==1);
     r.windows[0].estimated=false;r.windows[0].collisionBounded=true;auto csv=cf::training::csv(r,{f},totals);assert(totals.exported==1);
     auto line=csv.substr(csv.find('\n')+1);assert(std::count(line.begin(),line.end(),',')==25);
