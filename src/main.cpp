@@ -621,11 +621,15 @@ void save(bool flushPredictions = false) {
     }
     // Replacing a capture's shard removes stale labels after policy changes,
     // failed certification or audit invalidation. CSV itself keeps nine columns.
-    auto training=cf::training::csv(s.recording,s.features,s.trainingTotals);
+    auto training=cf::training::csv(s.recording,s.features,s.trainingTotals,s.captureDigest);
     if(!s.captureDigest.empty()) {
         auto root=Mod::get()->getSaveDir();
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
             diagnostic("DATASET_WRITE","No se pudo actualizar el dataset de entrenamiento");
+        cf::training::Totals openTotals;
+        auto openData=cf::training::csv(s.recording,s.features,openTotals,s.captureDigest,true);
+        if(!cf::replaceChanged(root/"training-open"/(s.captureDigest+".csv"),openData) || !cf::training::aggregate(root,true))
+            diagnostic("DATASET_OPEN_WRITE","No se pudo actualizar el dataset de ventanas abiertas");
         auto provenance=fmt::format("CF_TRAINING 2\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-6\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nCoordinates: world units, origin-to-native-hazard-rect edge; <=600 forward; rotated/circular/sideways omitted\n",
             s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
@@ -668,7 +672,7 @@ void save(bool flushPredictions = false) {
     if (s.newlyMeasured && size_t(s.tests)/s.newlyMeasured > 15) report += "- Many offsets per event; inspect broad-window cap and configured radius.\n";
     report+=fmt::format("Causal time shifts accepted: {}\nCausal count recoveries: {}\nDataset evaluated presses: {}\nDataset exported rows: {}\nDataset omitted open: {}\nDataset omitted geometry: {}\nDataset omitted missing physics/window: {}\nDataset scope: Full run only; native world-unit hazard-rect edge distances; raw pre-input values\n",
         s.toleratedEventTicks,s.causalParity.recovered,s.trainingTotals.evaluated,s.trainingTotals.exported,s.trainingTotals.open,s.trainingTotals.geometry,s.trainingTotals.missing);
-    report+=fmt::format("Search: {}\nCausal offset failures: {}\nBuffered launch failures: {}\nDataset omitted estimated/policy-only bounds: {}\nDataset columns: 10 (includes en_suelo and delta_ticks)\n",
+    report+=fmt::format("Search: {}\nCausal offset failures: {}\nBuffered launch failures: {}\nDataset omitted estimated/policy-only bounds: {}\nDataset schema: 3\n",
         cf::hasEstimated(s.recording)?"Fast estimated":"Exact",s.causalRejected,s.bufferRejected,s.trainingTotals.uncertified);
     std::ostringstream phases; phases << "phase,physics_callbacks,batch_retained,batch_drop_reason,batch_callbacks,cadence_callbacks\n";
     char const* phaseNames[] = {"reference", "restore-probe", "candidate", "confirmation", "audit", "flight-recovery"};
@@ -1716,6 +1720,9 @@ class $modify(CFBase, GJBaseGameLayer) {
                 } else {
                     auto reference = s.baseline.get(now);
                     if (!reference || !s.causalParity.compare(*reference, current, now)) {
+                        auto failedPass = s.baselinePass + 1;
+                        auto failedBatching = !s.batchDisabled;
+                        auto expectedCause = s.causalCursor < s.causalTrace.size() ? cf::describeCause(s.causalTrace[s.causalCursor]) : std::string("<end of reference>");
                         if (!s.batchDisabled) {
                             s.batchDisabled = true; s.baselinePass = 0;
                             s.baselineRetryPending = true;
@@ -1726,8 +1733,8 @@ class $modify(CFBase, GJBaseGameLayer) {
                                 !reference ? "missing reference tick" : cf::difference(*reference, current));
                             s.pending = Pending::Invalid;
                         }
-                        s.parityDiagnostic = fmt::format("tick={} pass={} batching-disabled={} {}", now, s.baselinePass,
-                            s.batchDisabled, !reference ? "missing tick" : cf::difference(*reference, current));
+                        s.parityDiagnostic = fmt::format("tick={} pass={} batching={} dt={} causal-cursor={}/{} next-expected={} {}", now, failedPass,
+                            failedBatching, dt, s.causalCursor, s.causalTrace.size(), expectedCause, !reference ? "missing tick" : cf::difference(*reference, current));
                         diagnostic("PARITY_FAILURE",s.parityDiagnostic);
                         return;
                     }
@@ -2067,7 +2074,9 @@ class $modify(CFPlay, PlayLayer) {
         if (running()) {
             if (s.pending == Pending::None) {
                 if (s.state == State::Analyze && (s.causalMismatch || s.causalCursor != s.causalTrace.size()) && !s.recoveringFlight) {
-                    s.message = "Candidate changed the recorded causal route; window not certified";
+                    auto expected = s.causalCursor < s.causalTrace.size() ? cf::describeCause(s.causalTrace[s.causalCursor]) : std::string("<end of reference>");
+                    s.message = fmt::format("Causal end mismatch: tick={} event={} offset={:+} cursor={}/{} start={} expected={} observed=<end>; {}", tick(), s.target, s.offset, s.causalCursor, s.causalTrace.size(), s.snapshotChecked ? "checkpoint" : "start", expected, s.parityDiagnostic);
+                    diagnostic("CAUSAL_END", s.message);
                     s.failure=ProbeFailure::Causal;++s.causalRejected;
                     s.pending = s.validatingSnapshot || s.offset!=0 ? Pending::Fail : Pending::Invalid; return;
                 }

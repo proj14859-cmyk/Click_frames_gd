@@ -28,6 +28,9 @@ int main(){
     r.windows[0].collisionBounded=true;
     cf::training::Totals totals;auto bytes=cf::training::csv(r,{f,f,f},totals);
     assert(totals.exported==1 && totals.open==1 && bytes.starts_with(cf::training::header));
+    cf::training::Totals openTotals; auto openBytes=cf::training::csv(r,{f,f,f},openTotals,"123",true);
+    assert(openTotals.exported==1 && openTotals.open==1 && std::count(openBytes.begin(),openBytes.end(),'\n')==2);
+    assert(openBytes.find(",3,4,1,")!=std::string::npos);
     assert(std::count(bytes.begin(),bytes.end(),'\n')==2);
     r.analysisPolicy=2;cf::training::csv(r,{f,f,f},totals);assert(totals.exported==0);r.analysisPolicy=0;
     r.complete=false;cf::training::csv(r,{f,f,f},totals);assert(totals.exported==0);r.complete=true;
