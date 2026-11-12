@@ -43,20 +43,21 @@ inline bool decode(std::string const& bytes, std::string const& digest, std::vec
     features=std::move(parsed); return true;
 }
 struct Totals { size_t evaluated=0, exported=0, open=0, geometry=0, missing=0,uncertified=0; };
-inline std::string csv(Recording const& r, std::vector<Features> const& f, Totals& totals, std::string const& captureDigest = {}) {
+inline std::string csv(Recording const& r, std::vector<Features> const& f, Totals& totals, std::string const& captureDigest = {}, bool openOnly = false) {
     totals={}; std::string bytes=header;
     for(size_t i=0;i<r.inputs.size();++i) {
         if (!r.inputs[i].down || r.inputs[i].button!=1) continue;
         ++totals.evaluated;
         if (i>=r.windows.size() || !r.windows[i].measured) { ++totals.missing; continue; }
-        if (r.windows[i].lowerBound) { ++totals.open; continue; }
-        if (r.windows[i].estimated || !r.windows[i].collisionBounded) {++totals.uncertified;continue;}
+        if (r.windows[i].lowerBound) { ++totals.open; if (!openOnly) continue; }
+        else if (openOnly) continue;
+        if (r.windows[i].estimated || (!openOnly && !r.windows[i].collisionBounded)) {++totals.uncertified;continue;}
         if (i>=f.size() || !finite(f[i]) || !f[i].replayMatch || f[i].grounded<0) { ++totals.missing; continue; }
         if (!f[i].geometry) { ++totals.geometry; continue; }
         if (!r.complete || !r.verified || r.analysisPolicy==2) continue;
         auto line=row(f[i],r.windows[i].width()); if (!line.empty()) {
             line.pop_back(); auto const& w=r.windows[i];
-            bytes+=line+","+std::to_string(w.early)+","+std::to_string(w.late)+",0,"+std::to_string(r.radius)+","+cf::fingerprint(r.key)+","+captureDigest+","+std::to_string(i)+","+std::to_string(r.inputs[i].tick)+","+std::to_string(r.analysisPolicy)+",240\n";
+            bytes+=line+","+std::to_string(w.early)+","+std::to_string(w.late)+","+std::to_string(w.lowerBound)+","+std::to_string(r.radius)+","+cf::fingerprint(r.key)+","+captureDigest+","+std::to_string(i)+","+std::to_string(r.inputs[i].tick)+","+std::to_string(r.analysisPolicy)+",240\n";
             ++totals.exported;
         }
     }
@@ -64,10 +65,11 @@ inline std::string csv(Recording const& r, std::vector<Features> const& f, Total
 }
 // One authoritative shard per capture; rebuilding the aggregate makes retries
 // idempotent and invalidation removes old labels instead of appending duplicates.
-inline bool aggregate(fs::path const& root) {
-    std::error_code ec; fs::create_directories(root/"training",ec); if(ec) return false;
+inline bool aggregate(fs::path const& root, bool openOnly = false) {
+    auto directory = root/(openOnly ? "training-open" : "training");
+    std::error_code ec; fs::create_directories(directory,ec); if(ec) return false;
     std::vector<fs::path> paths;
-    for(fs::directory_iterator it(root/"training",ec),end;!ec && it!=end;it.increment(ec))
+    for(fs::directory_iterator it(directory,ec),end;!ec && it!=end;it.increment(ec))
         if(it->path().extension()==".csv") paths.push_back(it->path());
     if(ec) return false;
     std::sort(paths.begin(),paths.end()); std::string all=header;
@@ -82,6 +84,6 @@ inline bool aggregate(fs::path const& root) {
         if(all.size()+bytes.size()>MAX_BUNDLE_BYTES) return false;
         all+=bytes.substr(sizeof(header)-1);
     }
-    return replaceChanged(root/"dataset_entrenamiento.csv",all);
+    return replaceChanged(root/(openOnly ? "dataset_abiertas.csv" : "dataset_entrenamiento.csv"),all);
 }
 }

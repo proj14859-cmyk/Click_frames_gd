@@ -626,6 +626,10 @@ void save(bool flushPredictions = false) {
         auto root=Mod::get()->getSaveDir();
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
             diagnostic("DATASET_WRITE","No se pudo actualizar el dataset de entrenamiento");
+        cf::training::Totals openTotals;
+        auto openData=cf::training::csv(s.recording,s.features,openTotals,s.captureDigest,true);
+        if(!cf::replaceChanged(root/"training-open"/(s.captureDigest+".csv"),openData) || !cf::training::aggregate(root,true))
+            diagnostic("DATASET_OPEN_WRITE","No se pudo actualizar el dataset de ventanas abiertas");
         auto provenance=fmt::format("CF_TRAINING 2\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-6\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nCoordinates: world units, origin-to-native-hazard-rect edge; <=600 forward; rotated/circular/sideways omitted\n",
             s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
