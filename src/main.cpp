@@ -621,7 +621,7 @@ void save(bool flushPredictions = false) {
     }
     // Replacing a capture's shard removes stale labels after policy changes,
     // failed certification or audit invalidation. CSV itself keeps nine columns.
-    auto training=cf::training::csv(s.recording,s.features,s.trainingTotals);
+    auto training=cf::training::csv(s.recording,s.features,s.trainingTotals,s.captureDigest);
     if(!s.captureDigest.empty()) {
         auto root=Mod::get()->getSaveDir();
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
@@ -668,7 +668,7 @@ void save(bool flushPredictions = false) {
     if (s.newlyMeasured && size_t(s.tests)/s.newlyMeasured > 15) report += "- Many offsets per event; inspect broad-window cap and configured radius.\n";
     report+=fmt::format("Causal time shifts accepted: {}\nCausal count recoveries: {}\nDataset evaluated presses: {}\nDataset exported rows: {}\nDataset omitted open: {}\nDataset omitted geometry: {}\nDataset omitted missing physics/window: {}\nDataset scope: Full run only; native world-unit hazard-rect edge distances; raw pre-input values\n",
         s.toleratedEventTicks,s.causalParity.recovered,s.trainingTotals.evaluated,s.trainingTotals.exported,s.trainingTotals.open,s.trainingTotals.geometry,s.trainingTotals.missing);
-    report+=fmt::format("Search: {}\nCausal offset failures: {}\nBuffered launch failures: {}\nDataset omitted estimated/policy-only bounds: {}\nDataset columns: 10 (includes en_suelo and delta_ticks)\n",
+    report+=fmt::format("Search: {}\nCausal offset failures: {}\nBuffered launch failures: {}\nDataset omitted estimated/policy-only bounds: {}\nDataset schema: 3\n",
         cf::hasEstimated(s.recording)?"Fast estimated":"Exact",s.causalRejected,s.bufferRejected,s.trainingTotals.uncertified);
     std::ostringstream phases; phases << "phase,physics_callbacks,batch_retained,batch_drop_reason,batch_callbacks,cadence_callbacks\n";
     char const* phaseNames[] = {"reference", "restore-probe", "candidate", "confirmation", "audit", "flight-recovery"};

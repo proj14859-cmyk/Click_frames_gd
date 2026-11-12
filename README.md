@@ -1,5 +1,21 @@
 # Click Frames GD
 
+## v1.0.7 / 2026-11-12 / 02:18 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La verificacion prueba desplazamientos globales hasta +/-6 ticks y registra cada fallo.
+- El diagnostico causal identifica el evento esperado, tick, offset y origen del ensayo; el baseline conserva la pasada y cadencia que fallaron.
+
+-Mejoras:
+- El dataset incluye bordes early y late, radio, identificadores de nivel y captura, evento, tick, politica y TPS.
+
+-Cambios:
+- Los shards del esquema anterior se conservan con sufijo .v106 al reconstruir el agregado.
+
+-Implementaciones:
+- Esquema de dataset ampliado para separar niveles y analizar ventanas asimetricas. Los resultados estimados y abiertos siguen excluidos.
+- Pendiente de implementacion y verificacion en dispositivo: datos del segundo jugador, ventanas abiertas, geometria ampliada, costes detallados por ensayo y correcciones confirmadas de Stalemate y otros niveles.
+
 ## v1.0.6 / 2026-11-11 / 23:38 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

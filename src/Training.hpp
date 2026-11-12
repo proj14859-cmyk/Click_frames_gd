@@ -5,7 +5,8 @@
 
 namespace cf::training {
 constexpr char legacyHeader[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
-constexpr char header[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,en_suelo,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
+constexpr char v106Header[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,en_suelo,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
+constexpr char header[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,en_suelo,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames,early,late,abierta,radio,digest_nivel,digest_captura,indice_evento,tick,politica,tps\n";
 // Persist exact pre-handleButton values separately; never reconstruct old runs.
 struct Features {
     int mode=0, gravity=0, mini=0;
@@ -42,7 +43,7 @@ inline bool decode(std::string const& bytes, std::string const& digest, std::vec
     features=std::move(parsed); return true;
 }
 struct Totals { size_t evaluated=0, exported=0, open=0, geometry=0, missing=0,uncertified=0; };
-inline std::string csv(Recording const& r, std::vector<Features> const& f, Totals& totals) {
+inline std::string csv(Recording const& r, std::vector<Features> const& f, Totals& totals, std::string const& captureDigest = {}) {
     totals={}; std::string bytes=header;
     for(size_t i=0;i<r.inputs.size();++i) {
         if (!r.inputs[i].down || r.inputs[i].button!=1) continue;
@@ -53,7 +54,11 @@ inline std::string csv(Recording const& r, std::vector<Features> const& f, Total
         if (i>=f.size() || !finite(f[i]) || !f[i].replayMatch || f[i].grounded<0) { ++totals.missing; continue; }
         if (!f[i].geometry) { ++totals.geometry; continue; }
         if (!r.complete || !r.verified || r.analysisPolicy==2) continue;
-        auto line=row(f[i],r.windows[i].width()); if (!line.empty()) { bytes+=line; ++totals.exported; }
+        auto line=row(f[i],r.windows[i].width()); if (!line.empty()) {
+            line.pop_back(); auto const& w=r.windows[i];
+            bytes+=line+","+std::to_string(w.early)+","+std::to_string(w.late)+",0,"+std::to_string(r.radius)+","+cf::fingerprint(r.key)+","+captureDigest+","+std::to_string(i)+","+std::to_string(r.inputs[i].tick)+","+std::to_string(r.analysisPolicy)+",240\n";
+            ++totals.exported;
+        }
     }
     return bytes;
 }
@@ -68,8 +73,8 @@ inline bool aggregate(fs::path const& root) {
     std::sort(paths.begin(),paths.end()); std::string all=header;
     for(auto const& p:paths) {
         auto bytes=readFile(p);
-        if(bytes.starts_with(legacyHeader)) {
-            auto archived=p;archived+=".v105";
+        if(bytes.starts_with(legacyHeader) || bytes.starts_with(v106Header)) {
+            auto archived=p;archived+=bytes.starts_with(legacyHeader)?".v105":".v106";
             if(!fs::exists(archived,ec)){fs::rename(p,archived,ec);if(ec)return false;}
             continue;
         }
