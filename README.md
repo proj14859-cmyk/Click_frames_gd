@@ -1,5 +1,22 @@
 # Click Frames GD
 
+## v1.0.8 / 2026-11-12 / UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La ausencia de geometria ya no elimina una ventana certificada: distancias vacias y geometria=0.
+- Se protege captureFeatures frente a jugadores nulos.
+
+-Mejoras:
+- El dataset conserva dual, modo2, y2, vy2 y gravedad2; la paridad compara estos datos cuando fueron capturados.
+
+-Cambios:
+- CFPHYS 3 conserva el contexto dual; los formatos anteriores se leen con contexto desconocido.
+- CSV de 26 columnas; shards anteriores se archivan con .v107. Las ventanas abiertas permanecen en dataset_abiertas.csv.
+
+-Implementaciones:
+- Contadores independientes para captura incompleta, referencia no verificada y politica local.
+- Estos cambios no certifican los fallos de niveles concretos ni la geometria de colision completa.
+
 ## v1.0.7 / 2026-11-12 / 02:18 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:

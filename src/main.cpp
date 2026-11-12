@@ -367,6 +367,9 @@ int playerMode(PlayerObject* p) {
 }
 cf::training::Features captureFeatures(PlayerObject* player, bool down) {
     cf::training::Features f;
+    if(!player || !hasLiveOwner()) {f.mode=-1;return f;}
+    f.dual=s.owner->m_gameState.m_isDualMode;
+    if(f.dual && s.owner->m_player2){auto other=s.owner->m_player2;f.mode2=playerMode(other);f.y2=other->getPositionY();f.vy2=other->m_yVelocity;f.gravity2=other->m_isUpsideDown;}
     f.mode=playerMode(player); f.speed=player->m_playerSpeed; f.vy=player->m_yVelocity;
     f.gravity=player->m_isUpsideDown; f.mini=player->m_vehicleSize!=1.f;
     f.grounded=player->m_isOnGround;
@@ -1803,7 +1806,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 auto identity = e.sourceIndex == size_t(-1) ? index : e.sourceIndex;
                 if(s.state==State::Verify && s.baselinePass==2 && identity<s.features.size() && e.down && e.button==1) {
                     auto p=e.p1?s.owner->m_player1:s.owner->m_player2; auto actual=captureFeatures(p,true);auto& original=s.features[identity];
-                    original.replayMatch=actual.mode==original.mode && actual.speed==original.speed && actual.vy==original.vy &&
+                    original.replayMatch=p && (original.dual<0 || (actual.dual==original.dual && actual.mode2==original.mode2 && actual.y2==original.y2 && actual.vy2==original.vy2 && actual.gravity2==original.gravity2)) && actual.mode==original.mode && actual.speed==original.speed && actual.vy==original.vy &&
                         actual.gravity==original.gravity && actual.mini==original.mini && actual.grounded==original.grounded && actual.geometry==original.geometry &&
                         actual.dx==original.dx && actual.dy==original.dy && p->getPositionX()==e.x && p->getPositionY()==e.y;
                     s.featuresDirty=true;
