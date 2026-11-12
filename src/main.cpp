@@ -1716,6 +1716,9 @@ class $modify(CFBase, GJBaseGameLayer) {
                 } else {
                     auto reference = s.baseline.get(now);
                     if (!reference || !s.causalParity.compare(*reference, current, now)) {
+                        auto failedPass = s.baselinePass + 1;
+                        auto failedBatching = !s.batchDisabled;
+                        auto expectedCause = s.causalCursor < s.causalTrace.size() ? cf::describeCause(s.causalTrace[s.causalCursor]) : std::string("<end of reference>");
                         if (!s.batchDisabled) {
                             s.batchDisabled = true; s.baselinePass = 0;
                             s.baselineRetryPending = true;
@@ -1726,8 +1729,8 @@ class $modify(CFBase, GJBaseGameLayer) {
                                 !reference ? "missing reference tick" : cf::difference(*reference, current));
                             s.pending = Pending::Invalid;
                         }
-                        s.parityDiagnostic = fmt::format("tick={} pass={} batching-disabled={} {}", now, s.baselinePass,
-                            s.batchDisabled, !reference ? "missing tick" : cf::difference(*reference, current));
+                        s.parityDiagnostic = fmt::format("tick={} pass={} batching={} dt={} causal-cursor={}/{} next-expected={} {}", now, failedPass,
+                            failedBatching, dt, s.causalCursor, s.causalTrace.size(), expectedCause, !reference ? "missing tick" : cf::difference(*reference, current));
                         diagnostic("PARITY_FAILURE",s.parityDiagnostic);
                         return;
                     }
