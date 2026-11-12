@@ -43,17 +43,27 @@ struct Checkpoint { size_t inputs, trace; std::array<bool, 6> held; };
 // GJGameState contains non-copyable binding unions. Preserve its typed dynamic
 // physics maps and clocks explicitly; native checkpoints retain other coverage.
 #define CF_DYNAMIC_STATE(X) \
-    X(m_stateObjects) X(m_unkMapPairGJGameEventIntVectorEventTriggerInstance) X(m_unkMapPairGJGameEventIntInt) \
+    X(m_stateObjects) X(m_gameEventTriggers) X(m_gameEventCounts) \
     X(m_enterEffectInstanceVectors) X(m_exitEffectInstanceVectors) X(m_enterChannelMap) X(m_exitChannelMap) \
     X(m_moveEffectInstances) X(m_rotateEffectInstances) X(m_scaleEffectInstances) X(m_fadeEffectInstances) X(m_tintEffectInstances) \
     X(m_unsortedAreaEffects) X(m_advanceFollowInstances) X(m_dynamicMoveActions) X(m_dynamicRotateActions) \
     X(m_songChannelStates) X(m_songTriggerStateVectors) X(m_sfxTriggerStates) X(m_proximityVolumeRelated)
 struct EngineState {
+    struct PhysicsState {
+        GameObject* gameObject = nullptr;
+        CCPoint velocity{};
+        CCPoint direction{};
+        float targetAngle = 0;
+        float turnSpeed = 0;
+        int unused = 0;
+        int lastUpdateStep = 0;
+        int exclusiveStep = 0;
+    };
     #define CF_DECLARE_STATE(name) decltype(GJGameState::name) name;
     CF_DYNAMIC_STATE(CF_DECLARE_STATE)
     #undef CF_DECLARE_STATE
     decltype(GJGameState::m_tweenActions) tweens;
-    decltype(GJGameState::m_gameObjectPhysics) physics;
+    std::unordered_map<int, PhysicsState> physics;
     decltype(GJGameState::m_activatedObjectIDs) activated;
     decltype(GJGameState::m_spawnChannelRelated0) channels;
     decltype(GJGameState::m_spawnChannelRelated1) channelFlags;
@@ -71,7 +81,13 @@ struct EngineState {
         #define CF_CAPTURE_STATE(name) name = g.name;
         CF_DYNAMIC_STATE(CF_CAPTURE_STATE)
         #undef CF_CAPTURE_STATE
-        tweens = g.m_tweenActions; physics = g.m_gameObjectPhysics; activated = g.m_activatedObjectIDs;
+        tweens = g.m_tweenActions;
+        physics.clear();
+        for (auto const& [id, value] : g.m_gameObjectPhysics) {
+            physics.emplace(id, PhysicsState{value.m_gameObject, value.m_velocity, value.m_direction,
+                value.m_targetAngle, value.m_turnSpeed, value.m_unkInt1, value.m_lastUpdateStep, value.m_exclusiveStep});
+        }
+        activated = g.m_activatedObjectIDs;
         channels = g.m_spawnChannelRelated0; channelFlags = g.m_spawnChannelRelated1;
         levelTime = g.m_levelTime; totalTime = g.m_totalTime;
         timeWarp = g.m_timeWarp; queuedTimeWarp = g.m_queuedTimeWarp; commandIndex = g.m_commandIndex;
@@ -80,7 +96,15 @@ struct EngineState {
         #define CF_RESTORE_STATE(name) g.name = name;
         CF_DYNAMIC_STATE(CF_RESTORE_STATE)
         #undef CF_RESTORE_STATE
-        g.m_tweenActions = tweens; g.m_gameObjectPhysics = physics; g.m_activatedObjectIDs = activated;
+        g.m_tweenActions = tweens;
+        g.m_gameObjectPhysics.clear();
+        for (auto const& [id, value] : physics) {
+            auto& target = g.m_gameObjectPhysics[id];
+            target.m_gameObject = value.gameObject; target.m_velocity = value.velocity; target.m_direction = value.direction;
+            target.m_targetAngle = value.targetAngle; target.m_turnSpeed = value.turnSpeed; target.m_unkInt1 = value.unused;
+            target.m_lastUpdateStep = value.lastUpdateStep; target.m_exclusiveStep = value.exclusiveStep;
+        }
+        g.m_activatedObjectIDs = activated;
         g.m_spawnChannelRelated0 = channels; g.m_spawnChannelRelated1 = channelFlags;
         g.m_levelTime = levelTime; g.m_totalTime = totalTime;
         g.m_timeWarp = timeWarp; g.m_queuedTimeWarp = queuedTimeWarp; g.m_commandIndex = commandIndex;
@@ -120,8 +144,8 @@ struct NativeState {
     Ref<CheckpointObject> checkpoint;
     int tick = 0; size_t next = 0;
     std::array<bool, 6> held{};
-    gd::vector<PlayerButtonCommand> buttons;
-    gd::vector<RecordButtonCommand> recorded, replay;
+    std::vector<PlayerButtonCommand> buttons;
+    std::vector<RecordButtonCommand> recorded, replay;
     uint64_t randomSeed = 0, replaySeed = 0;
     uint64_t sharedSeed = 0;
     size_t scheduleCursor = 0;
@@ -195,8 +219,8 @@ struct Session {
     int snapshotTick = -1, snapshotEndTick = 0;
     size_t snapshotNext = 0, snapshotCompared = 0;
     std::array<bool, 6> snapshotHeld{};
-    gd::vector<PlayerButtonCommand> snapshotButtons;
-    gd::vector<RecordButtonCommand> snapshotRecordedButtons, snapshotReplayButtons;
+    std::vector<PlayerButtonCommand> snapshotButtons;
+    std::vector<RecordButtonCommand> snapshotRecordedButtons, snapshotReplayButtons;
     uint64_t snapshotRandomSeed = 0, snapshotReplaySeed = 0;
     double snapshotExtraDelta = 0;
     int snapshotStep = 0, snapshotRecordedSize = 0, snapshotResumeTimer = 0;
@@ -1711,7 +1735,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             ++s.rawSignalCount;
         }
     }
-    void activateEventTrigger(EventLinkTrigger* object, gd::vector<int> const& remapKeys) {
+    void activateEventTrigger(EventLinkTrigger* object, std::vector<int> const& remapKeys) {
         GJBaseGameLayer::activateEventTrigger(object, remapKeys);
         if (static_cast<GJBaseGameLayer*>(s.owner) == this) recordCause(8, object, nullptr);
     }
@@ -1941,8 +1965,7 @@ class $modify(CFPlay, PlayLayer) {
     static void bindSession(PlayLayer* layer) {
         applyBackground(false);
         precisionJob.cancel();
-        // Android's gd::vector has an explicit default constructor; use value
-        // initialization rather than aggregate copy-list initialization.
+        // Reinitialize all per-level state before binding the live layer.
         s = Session(); s.owner = layer;
         auto level = layer->m_level;
         s.folder = fmt::format("{}-{}", cf::slug(std::string(level->m_levelName)), level->m_levelID.value());
@@ -1995,10 +2018,10 @@ class $modify(CFPlay, PlayLayer) {
         layer->unschedule(schedule_selector(CFPlay::service));
         layer->schedule(schedule_selector(CFPlay::service));
     }
-    bool init(GJGameLevel* level, bool replay, bool objects) {
+    bool init(GJGameLevel* level, bool dontCreateObjects) {
         // Other hooks may create/exit temporary layers during the original init.
         // Bind only after the actual level has finished initializing.
-        if (!PlayLayer::init(level, replay, objects)) return false;
+        if (!PlayLayer::init(level, dontCreateObjects)) return false;
         bindSession(this);
         return true;
     }
