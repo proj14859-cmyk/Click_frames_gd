@@ -244,6 +244,7 @@ struct Session {
     std::array<uint64_t, 6> phaseCalls{};
     double resetSeconds = 0, restoreSeconds = 0;
     std::string eventReport;
+    std::string inputRoutingReport;
     cf::CausalParity causalParity;
     size_t toleratedEventTicks = 0;
     std::vector<cf::training::Features> features;
@@ -253,6 +254,10 @@ struct Session {
     cf::training::Totals trainingTotals;
     std::string lastDiagnostic;
     uint64_t eventStartCalls = 0, eventStartAttempts = 0, eventStartRestores = 0;
+    uint64_t eventStartRestoreFallbacks = 0, eventStartCausalRejected = 0, eventStartAudits = 0;
+    uint64_t eventPreTargetCalls = 0, eventPostTargetCalls = 0, eventAvoidedTicks = 0;
+    uint64_t trialStartCalls = 0, trialTargetCall = 0;
+    bool trialCostActive = false, trialTargetCostSeen = false;
     int eventStartTests = 0;
     bool precisionDirty = true;
     std::optional<cf::precision::Params> precisionParams;
@@ -370,7 +375,10 @@ cf::training::Features captureFeatures(PlayerObject* player, bool down) {
     cf::training::Features f;
     if(!player || !hasLiveOwner()) {f.mode=-1;return f;}
     f.dual=s.owner->m_gameState.m_isDualMode;
-    if(f.dual && s.owner->m_player2){auto other=s.owner->m_player2;f.mode2=playerMode(other);f.y2=other->getPositionY();f.vy2=other->m_yVelocity;f.gravity2=other->m_isUpsideDown;}
+    if(f.dual) {
+        auto other=player==s.owner->m_player1?s.owner->m_player2:s.owner->m_player1;
+        if(other){f.mode2=playerMode(other);f.y2=other->getPositionY();f.vy2=other->m_yVelocity;f.gravity2=other->m_isUpsideDown;}
+    }
     f.mode=playerMode(player); f.speed=player->m_playerSpeed; f.vy=player->m_yVelocity;
     f.gravity=player->m_isUpsideDown; f.mini=player->m_vehicleSize!=1.f;
     f.grounded=player->m_isOnGround;
@@ -522,8 +530,8 @@ bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     return false;
 }
 std::string analysisPolicyToken() {
-    return fmt::format("CF-ANALYSIS-6\nair={}\nsearch={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
-        Mod::get()->getSettingValue<std::string>("search-mode"));
+    return fmt::format("CF-ANALYSIS-6\nair={}\nsearch={}\ndataset={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
+        Mod::get()->getSettingValue<std::string>("search-mode"),Mod::get()->getSettingValue<bool>("dataset-mode"));
 }
 cf::precision::Params precisionParams() {
     cf::precision::Params p;
@@ -634,7 +642,8 @@ void save(bool flushPredictions = false) {
         auto openData=cf::training::csv(s.recording,s.features,openTotals,s.captureDigest,true);
         if(!cf::replaceChanged(root/"training-open"/(s.captureDigest+".csv"),openData) || !cf::training::aggregate(root,true))
             diagnostic("DATASET_OPEN_WRITE","No se pudo actualizar el dataset de ventanas abiertas");
-        auto provenance=fmt::format("CF_TRAINING 2\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-6\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nCoordinates: world units, origin-to-native-hazard-rect edge; <=600 forward; rotated/circular/sideways omitted\n",
+        if(!cf::training::refreshMetadata(root)) diagnostic("DATASET_METADATA","No se pudo actualizar el manifiesto del dataset");
+        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-6\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
             s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
     }
@@ -676,15 +685,17 @@ void save(bool flushPredictions = false) {
     if (s.newlyMeasured && size_t(s.tests)/s.newlyMeasured > 15) report += "- Many offsets per event; inspect broad-window cap and configured radius.\n";
     report+=fmt::format("Causal time shifts accepted: {}\nCausal count recoveries: {}\nDataset evaluated presses: {}\nDataset exported rows: {}\nDataset omitted open: {}\nDataset omitted geometry: {}\nDataset omitted missing physics/window: {}\nDataset scope: Full run only; native world-unit hazard-rect edge distances; raw pre-input values\n",
         s.toleratedEventTicks,s.causalParity.recovered,s.trainingTotals.evaluated,s.trainingTotals.exported,s.trainingTotals.open,s.trainingTotals.geometry,s.trainingTotals.missing);
-    report+=fmt::format("Search: {}\nCausal offset failures: {}\nBuffered launch failures: {}\nDataset omitted estimated/policy-only bounds: {}\nDataset schema: 3\n",
-        cf::hasEstimated(s.recording)?"Fast estimated":"Exact",s.causalRejected,s.bufferRejected,s.trainingTotals.uncertified);
+    report+=fmt::format("Search: {}\nCausal offset failures: {}\nBuffered launch failures: {}\nDataset omitted estimated/policy-only bounds: {}\nDataset omitted incomplete captures: {}\nDataset omitted unverified captures: {}\nDataset omitted local-policy captures: {}\nDataset schema: 3\n",
+        cf::hasEstimated(s.recording)?"Fast estimated":"Exact",s.causalRejected,s.bufferRejected,s.trainingTotals.uncertified,
+        s.trainingTotals.incomplete,s.trainingTotals.unverified,s.trainingTotals.local);
     std::ostringstream phases; phases << "phase,physics_callbacks,batch_retained,batch_drop_reason,batch_callbacks,cadence_callbacks\n";
     char const* phaseNames[] = {"reference", "restore-probe", "candidate", "confirmation", "audit", "flight-recovery"};
     for (size_t i = 0; i < 6; ++i) phases << phaseNames[i] << ',' << s.phaseCalls[i] << ',' << (s.cadenceCalls[i]==0 && s.batchCalls[i]>0) << ','
         << s.cadenceReasons[i]
         << ',' << s.batchCalls[i] << ',' << s.cadenceCalls[i] << '\n';
     view("scan-phases.csv", phases.str());
-    if (!s.eventReport.empty()) view("scan-events.tsv", "event\ttick\tearly\tlate\twidth\tlower_bound\tphysics_calls\ttest_outcomes\ttrial_attempts\trestores\n" + s.eventReport);
+    if (!s.eventReport.empty()) view("scan-events.tsv", "event\ttick\tearly\tlate\twidth\tlower_bound\tphysics_calls\ttest_outcomes\ttrial_attempts\trestores\tpre_target_calls\tpost_target_calls\tticks_avoided_by_restore\trestore_fallbacks\tcausal_failures\taudits\n" + s.eventReport);
+    if (!s.inputRoutingReport.empty()) view("input-routing.tsv", "tick\tbutton\tdown\trequested_player\teffective_player\ttwo_player_level\tdual_active\tplayer_dead\n" + s.inputRoutingReport);
     report += "Parity diagnostic: " + s.parityDiagnostic + "\n";
     if (!s.parityDiagnostic.empty()) view("baseline-difference.txt", s.parityDiagnostic + "\n");
     if (!s.rawSignals.empty() && (flushPredictions || (s.state != State::Analyze && s.state != State::Verify)))
@@ -957,6 +968,16 @@ void resetTrialImpl() {
             size_t(Mod::get()->getSettingValue<int64_t>("checkpoint-budget")));
     }
     s.candidateTrace.clear(); s.snapshotCompared = 0;
+    if (s.state == State::Analyze && !s.validatingSnapshot) {
+        s.trialStartCalls = s.physicsCalls;
+        s.trialTargetCall = s.physicsCalls;
+        s.trialCostActive = true;
+        s.trialTargetCostSeen = false;
+        // A successful restore avoids replaying the prefix from tick zero. This
+        // is an observed lower bound in physics ticks, not a wall-time estimate.
+        if (restoring && s.snapshot && tick() == s.snapshotTick && s.snapshotTick > 0)
+            s.eventAvoidedTicks += uint64_t(s.snapshotTick);
+    }
     fixPracticeTouchPriority();
     double resetTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - resetStart).count();
     if (scanningReset) { s.resetSeconds += resetTime; if (restoring) s.restoreSeconds += resetTime; }
@@ -1220,7 +1241,9 @@ void beginAnalysis() {
         }
         s.recording.inputs = std::move(original.inputs); s.recording.endTick = original.endTick;
     }
+    bool datasetMode=Mod::get()->getSettingValue<bool>("dataset-mode");
     int radius = std::clamp(int(Mod::get()->getSettingValue<int64_t>("scan-radius")),1,20);
+    if(datasetMode) radius=std::max(radius,12);
     int policy = selectedPolicy();
     if (s.recording.backend != inputBackend()) { s.message = "Input mode changed. Restore the recording's vanilla/CoS mode first."; return; }
     bool havePreview = std::any_of(s.predictions.begin(), s.predictions.end(), [](auto const& pair) {
@@ -1242,7 +1265,7 @@ void beginAnalysis() {
     for(auto& f:s.features) f.replayMatch=false;
     s.featuresDirty=!s.features.empty();
     s.causalParity={}; s.toleratedEventTicks=0; s.batchCalls.fill(0); s.cadenceCalls.fill(0);
-    s.causalRejected=s.bufferRejected=0;s.approximateAnalysis=Mod::get()->getSettingValue<std::string>("search-mode")=="Fast estimated";
+    s.causalRejected=s.bufferRejected=0;s.approximateAnalysis=!datasetMode && Mod::get()->getSettingValue<std::string>("search-mode")=="Fast estimated";
     s.cadenceReasons.fill("");
     s.lastDiagnostic.clear();
     s.rawSignals.clear(); s.rawSignalCount = 0; s.baselineRetryPending = false;
@@ -1258,6 +1281,7 @@ void beginAnalysis() {
     s.batchDisabled = false; s.confirmingBoundary = false; s.batchUpdates = 0;
     s.trial = s.recording.inputs; s.shiftIndex = 0; s.shiftLog.clear(); s.noRetry = false; s.firstFail.clear(); s.alert.clear();
     s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
+    s.trialCostActive = s.trialTargetCostSeen = false;
     s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
     s.reportDirty = true;
     cf::replaceChanged(path().parent_path() / "analysis-policy.txt", analysisPolicyToken());
@@ -1307,6 +1331,11 @@ void nextEvent() {
     s.search.approximate=s.approximateAnalysis;
     s.search.reset(s.recording.radius); s.offset = s.search.offset;s.failureReasons.fill(ProbeFailure::None);
     s.eventStartCalls = s.physicsCalls; s.eventStartTests = s.tests; s.eventStartAttempts = s.trialAttempts; s.eventStartRestores = s.restores;
+    s.eventStartRestoreFallbacks = s.restoreFallbacks; s.eventStartCausalRejected = s.causalRejected;
+    s.eventStartAudits = s.auditGate.audits;
+    s.eventPreTargetCalls = s.eventPostTargetCalls = s.eventAvoidedTicks = 0;
+    s.trialCostActive = s.trialTargetCostSeen = false;
+    s.diagnosticRetryUsed = false;
     s.measuredDone = 0;
     for (size_t i = 0; i < s.recording.inputs.size(); ++i)
         if (cf::counted(s.recording.inputs[i]) && s.recording.windows[i].measured) ++s.measuredDone;
@@ -1324,9 +1353,11 @@ void startCandidate() {
             s.failureReasons[20-complete.early-1]==ProbeFailure::Collision && s.failureReasons[20+complete.late+1]==ProbeFailure::Collision;
         ++s.newlyMeasured;
         auto const& w = s.recording.windows[s.target];
-        s.eventReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.target, s.recording.inputs[s.target].tick,
+        s.eventReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.target, s.recording.inputs[s.target].tick,
             w.early, w.late, w.width(), w.lowerBound, s.physicsCalls-s.eventStartCalls, s.tests-s.eventStartTests,
-            s.trialAttempts-s.eventStartAttempts, s.restores-s.eventStartRestores);
+            s.trialAttempts-s.eventStartAttempts, s.restores-s.eventStartRestores, s.eventPreTargetCalls,
+            s.eventPostTargetCalls, s.eventAvoidedTicks, s.restoreFallbacks-s.eventStartRestoreFallbacks,
+            s.causalRejected-s.eventStartCausalRejected, s.auditGate.audits-s.eventStartAudits);
         save(); ++s.target; nextEvent();
         if (s.state != State::Analyze) return;
     }
@@ -1359,6 +1390,11 @@ void startCandidate() {
 }
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
+    if (s.state == State::Analyze && s.trialCostActive) {
+        if (s.trialTargetCostSeen) s.eventPostTargetCalls += s.physicsCalls - s.trialTargetCall;
+        else s.eventPreTargetCalls += s.physicsCalls - s.trialStartCalls;
+        s.trialCostActive = false;
+    }
     if(result==Pending::Invalid && s.state==State::Analyze && !s.auditing && !s.diagnosticRetryUsed &&
         (s.causalMismatch || s.message.find("Replay stalled")!=std::string::npos)) {
         diagnostic("SAFE_RETRY",s.message);
@@ -1678,6 +1714,7 @@ class $modify(CFBase, GJBaseGameLayer) {
     }
     void handleButton(bool down, int button, bool p1) {
         if (static_cast<GJBaseGameLayer*>(s.owner) != this) return GJBaseGameLayer::handleButton(down, button, p1);
+        bool requestedP1 = p1;
         if (button >= 1 && button <= 3 && (!m_level || !m_level->m_twoPlayerMode)) p1 = true;
         if (button >= 1 && button <= 3 && !s.injecting && !s.resetting)
             s.physicalHeld[slot(button, p1)] = down;
@@ -1693,6 +1730,9 @@ class $modify(CFBase, GJBaseGameLayer) {
                 int mode = playerMode(player);
                 s.features.push_back(captureFeatures(player,down)); s.featuresDirty=true;
                 s.recording.inputs.push_back({tick(), down, button, p1, position.x, position.y, mode});
+                s.inputRoutingReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", tick(), button, down,
+                    requestedP1 ? 1 : 2, p1 ? 1 : 2, m_level && m_level->m_twoPlayerMode,
+                    m_gameState.m_isDualMode, player ? player->m_isDead : true);
                 s.captureDirty = true;
                 s.recordedHeld[i] = down;
             }
@@ -1820,7 +1860,14 @@ class $modify(CFBase, GJBaseGameLayer) {
                         actual.dx==original.dx && actual.dy==original.dy && p->getPositionX()==e.x && p->getPositionY()==e.y;
                     s.featuresDirty=true;
                 }
-                if (s.state == State::Analyze && identity == s.target) s.targetExecuted = true;
+                if (s.state == State::Analyze && identity == s.target) {
+                    if (s.trialCostActive && !s.trialTargetCostSeen) {
+                        s.eventPreTargetCalls += s.physicsCalls - s.trialStartCalls;
+                        s.trialTargetCall = s.physicsCalls;
+                        s.trialTargetCostSeen = true;
+                    }
+                    s.targetExecuted = true;
+                }
                 if ((s.state == State::Verify || s.state == State::Analyze) && e.button == 1 && e.down) {
                     auto player = e.p1 ? s.owner->m_player1 : s.owner->m_player2;
                     int p = e.p1 ? 0 : 1;
@@ -2420,6 +2467,7 @@ class CFPopup : public Popup {
             s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = s.missedNativeTargets = s.thinnedNativeStates = 0;
             s.phaseCalls.fill(0); s.auditGate = {}; s.nativeDisabled = false;
             s.resetSeconds = s.restoreSeconds = 0; s.eventReport.clear(); s.parityDiagnostic.clear();
+            s.inputRoutingReport.clear();
             s.rawSignals.clear(); s.probeCache.clear();
             s.localFallbackEvents = s.localFallbackTrials = s.localPasses = s.peakNativeStates = 0;
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();

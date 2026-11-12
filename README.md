@@ -1,21 +1,27 @@
 # Click Frames GD
 
-## v1.0.8 / 2026-11-12 / UTC / GD 2.2081 / Geode 5.11.2
+## v1.0.8 / 2026-11-12 / 02:43 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
 - La ausencia de geometria ya no elimina una ventana certificada: distancias vacias y geometria=0.
 - Se protege captureFeatures frente a jugadores nulos.
+- En dual, el estado secundario corresponde al otro jugador respecto del input capturado, incluso cuando el input pertenece a P2.
+- El reintento seguro por divergencia causal o bloqueo se restablece en cada evento; no queda consumido por el primer fallo de toda la sesion.
 
 -Mejoras:
 - El dataset conserva dual, modo2, y2, vy2 y gravedad2; la paridad compara estos datos cuando fueron capturados.
+- scan-events.tsv separa callbacks antes y despues del input objetivo, ticks evitados por checkpoints, fallbacks, fallos causales y auditorias por evento.
+- Dataset capture mode fuerza busqueda Exact y un radio minimo de +/-12; las filas siguen exigiendo referencia verificada, Full run y bordes certificados.
 
 -Cambios:
 - CFPHYS 3 conserva el contexto dual; los formatos anteriores se leen con contexto desconocido.
 - CSV de 26 columnas; shards anteriores se archivan con .v107. Las ventanas abiertas permanecen en dataset_abiertas.csv.
+- input-routing.tsv conserva jugador solicitado/efectivo, modo de dos jugadores y dual activo para diagnosticar rutas de entrada.
 
 -Implementaciones:
 - Contadores independientes para captura incompleta, referencia no verificada y politica local.
-- Estos cambios no certifican los fallos de niveles concretos ni la geometria de colision completa.
+- dataset_manifest.json y dataset-report.txt resumen filas cerradas/abiertas, niveles unicos, modos, anchos y preparacion minima para entrenamiento.
+- Verificacion pendiente en dispositivo: Stalemate, Denouement y Que-Hollowero, tiempo real por evento y paridad de checkpoints. Estos cambios no certifican esos niveles ni la geometria de colision completa hasta recibir sus reportes.
 
 ## v1.0.7 / 2026-11-12 / 02:18 UTC / GD 2.2081 / Geode 5.11.2
 
