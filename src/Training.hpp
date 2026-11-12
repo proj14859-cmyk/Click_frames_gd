@@ -2,6 +2,7 @@
 #include "Bundle.hpp"
 #include <optional>
 #include <locale>
+#include <set>
 
 namespace cf::training {
 constexpr char legacyHeader[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
@@ -103,5 +104,52 @@ inline bool aggregate(fs::path const& root, bool openOnly = false) {
         all+=bytes.substr(sizeof(header)-1);
     }
     return replaceChanged(root/(openOnly ? "dataset_abiertas.csv" : "dataset_entrenamiento.csv"),all);
+}
+struct DatasetSummary {
+    size_t closed=0, open=0;
+    std::set<std::string> levels;
+    std::map<int,size_t> modes, widths;
+};
+inline std::vector<std::string> columns(std::string const& line) {
+    std::vector<std::string> result; size_t start=0;
+    for(size_t i=0;i<=line.size();++i) if(i==line.size() || line[i]==',') {
+        result.push_back(line.substr(start,i-start)); start=i+1;
+    }
+    return result;
+}
+inline void summarizeCsv(std::string const& bytes, bool opened, DatasetSummary& out) {
+    if(!bytes.starts_with(header)) return;
+    std::istringstream in(bytes); std::string line; std::getline(in,line);
+    while(std::getline(in,line)) {
+        if(line.empty()) continue;
+        auto c=columns(line); if(c.size()<20) continue;
+        try {
+            int mode=std::stoi(c[0]), width=std::stoi(c[9]);
+            (opened?out.open:out.closed)++; out.modes[mode]++; out.widths[width]++;
+            if(!c[14].empty()) out.levels.insert(c[14]);
+        } catch(...) { /* malformed rows remain visible in their shard; omit from summary */ }
+    }
+}
+inline bool refreshMetadata(fs::path const& root) {
+    DatasetSummary s;
+    summarizeCsv(readFile(root/"dataset_entrenamiento.csv"),false,s);
+    summarizeCsv(readFile(root/"dataset_abiertas.csv"),true,s);
+    std::ostringstream json;
+    json << "{\n  \"schema\": 3,\n  \"closed_rows\": " << s.closed
+         << ",\n  \"open_rows\": " << s.open << ",\n  \"unique_levels\": " << s.levels.size() << ",\n  \"modes\": {";
+    bool first=true; for(auto const& [mode,count]:s.modes){if(!first)json<<',';first=false;json<<"\n    \""<<mode<<"\": "<<count;}
+    if(!first) json<<'\n';
+    json << "  },\n  \"widths\": {";
+    first=true; for(auto const& [width,count]:s.widths){if(!first)json<<',';first=false;json<<"\n    \""<<width<<"\": "<<count;}
+    if(!first) json<<'\n';
+    json << "  }\n}\n";
+    std::ostringstream report;
+    report << "Dataset schema: 3\nClosed exact rows: " << s.closed << "\nOpen diagnostic rows: " << s.open
+           << "\nUnique levels: " << s.levels.size() << "\nTraining readiness: "
+           << (s.closed>=1000 && s.levels.size()>=10 ? "enough for an initial experiment" : "collect more exact rows from more levels") << "\n";
+    report << "Modes:"; for(auto const& [mode,count]:s.modes) report << ' ' << mode << '=' << count; report << "\nWidths:";
+    for(auto const& [width,count]:s.widths) report << ' ' << width << '=' << count;
+    report << '\n';
+    return replaceChanged(root/"dataset_manifest.json",json.str()) && replaceChanged(root/"dataset-report.txt",report.str());
 }
 }
