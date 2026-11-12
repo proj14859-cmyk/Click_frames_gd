@@ -532,7 +532,7 @@ bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     return false;
 }
 std::string analysisPolicyToken() {
-    return fmt::format("CF-ANALYSIS-9\nair={}\nsearch={}\ndataset={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
+    return fmt::format("CF-ANALYSIS-10\nair={}\nsearch={}\ndataset={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
         Mod::get()->getSettingValue<std::string>("search-mode"),Mod::get()->getSettingValue<bool>("dataset-mode"));
 }
 cf::precision::Params precisionParams() {
@@ -645,7 +645,7 @@ void save(bool flushPredictions = false) {
         if(!cf::replaceChanged(root/"training-open"/(s.captureDigest+".csv"),openData) || !cf::training::aggregate(root,true))
             diagnostic("DATASET_OPEN_WRITE","No se pudo actualizar el dataset de ventanas abiertas");
         if(!cf::training::refreshMetadata(root)) diagnostic("DATASET_METADATA","No se pudo actualizar el manifiesto del dataset");
-        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-9\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
+        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-10\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
             s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
     }
@@ -667,7 +667,7 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-9\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+    report += fmt::format("Analysis policy: CF-ANALYSIS-10\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     size_t measuredNow = 0;
     for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
@@ -1918,10 +1918,14 @@ class $modify(CFBase, GJBaseGameLayer) {
             if (int64_t(tick()) > int64_t(s.recording.endTick) + 2400) {
                 auto p1=s.owner->m_player1,p2=s.owner->m_player2;
                 auto const& expected=s.recording.trace.empty()?cf::Sample{}:s.recording.trace.back();
-                s.message = fmt::format("Replay timed out: tick={} next={}/{} P1=({:.2f},{:.2f}) expected=({:.2f},{:.2f}) P2=({:.2f},{:.2f}) expected=({:.2f},{:.2f})",
-                    tick(),s.next,events.size(),p1?p1->getPositionX():0.f,p1?p1->getPositionY():0.f,expected.x,expected.y,
+                s.message = fmt::format("Replay timed out: tick={} next={}/{} completed={} dual={} dead={}/{} causes={}/{} P1=({:.2f},{:.2f}) expected=({:.2f},{:.2f}) P2=({:.2f},{:.2f}) expected=({:.2f},{:.2f})",
+                    tick(),s.next,events.size(),m_hasCompletedLevel,m_gameState.m_isDualMode,
+                    p1&&p1->m_isDead,p2&&p2->m_isDead,s.causalCursor,s.causalTrace.size(),
+                    p1?p1->getPositionX():0.f,p1?p1->getPositionY():0.f,expected.x,expected.y,
                     p2?p2->getPositionX():0.f,p2?p2->getPositionY():0.f,expected.x2,expected.y2);
-                s.pending = Pending::Invalid;
+                // A non-completing initial alignment is a failed shift, not a
+                // fatal analyzer error. Let Verify try +1, -1, ... safely.
+                s.pending = s.state==State::Verify && s.baselinePass==0 ? Pending::Fail : Pending::Invalid;
             }
         }
         GJBaseGameLayer::processCommands(dt, half, last);
@@ -1965,7 +1969,7 @@ class $modify(CFPlay, PlayLayer) {
                 }
             }
             if (s.visual.enabled && s.recording.complete) s.message = "Edited showcase available (visual values)";
-            if(loaded.analysisLoaded && !cf::readFile(path().parent_path()/"analysis-policy.txt").starts_with("CF-ANALYSIS-9\n")) {
+            if(loaded.analysisLoaded && !cf::readFile(path().parent_path()/"analysis-policy.txt").starts_with("CF-ANALYSIS-10\n")) {
                 s.recording.windows.assign(s.recording.inputs.size(),{});s.recording.verified=false;s.predictions.clear();s.state=State::Idle;s.reportDirty=true;
                 s.message=s.visual.enabled?"Edited showcase available; Analyze to update measured windows":"v1.0.6: Analyze again to update saved windows";
             }
@@ -2027,8 +2031,9 @@ class $modify(CFPlay, PlayLayer) {
             auto current=cf::Sample{now,m_player1->getPositionX(),m_player1->getPositionY(),m_player2->getPositionX(),m_player2->getPositionY()};
             bool causalOk=s.state==State::Verify && s.baselinePass==0 ? true :
                 !s.causalMismatch && s.causalCursor==s.causalTrace.size();
-            if(causalOk && cf::sameCompletionState(s.recording.trace.back(),current,m_gameState.m_isDualMode)) {
-                s.message="Matched recorded completion state";s.pending=Pending::Pass;return;
+            if(causalOk && (m_hasCompletedLevel || cf::sameCompletionState(s.recording.trace.back(),current,m_gameState.m_isDualMode))) {
+                s.message=m_hasCompletedLevel ? "Geometry Dash reported level completion" : "Matched recorded completion state";
+                s.pending=Pending::Pass;return;
             }
         }
         if (s.state == State::Verify || s.state == State::Analyze) {

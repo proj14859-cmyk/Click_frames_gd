@@ -1,6 +1,6 @@
 # Click Frames GD
 
-## v1.0.8 / 2026-11-12 / 16:33 UTC / GD 2.2081 / Geode 5.11.2
+## v1.0.8 / 2026-11-12 / 18:55 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
 - La ausencia de geometria ya no elimina una ventana certificada: distancias vacias y geometria=0.
@@ -9,6 +9,7 @@
 - El reintento seguro por divergencia causal o bloqueo se restablece en cada evento; no queda consumido por el primer fallo de toda la sesion.
 - Tras dos fallos de paridad de checkpoints en una sesion se desactiva esa cache y se evitan nuevas validaciones costosas; los candidatos continúan desde el inicio.
 - En niveles two-player, un toque marcado como P2 cuando dual ya esta apagado se normaliza al P1 activo. Capturas CFPHYS3 existentes se reparan en memoria y la referencia actualiza el modo derivado; las capturas nuevas guardan jugador, posicion y modo correctos desde Record.
+- Un timeout de la primera referencia ya no aborta Verify: descarta esa alineacion y continua con los desplazamientos globales +1, -1 y sucesivos hasta +/-6.
 
 -Mejoras:
 - El dataset conserva dual, modo2, y2, vy2 y gravedad2; la paridad compara estos datos cuando fueron capturados.
@@ -20,8 +21,9 @@
 - CFPHYS 3 conserva el contexto dual; los formatos anteriores se leen con contexto desconocido.
 - CSV de 26 columnas; shards anteriores se archivan con .v107. Las ventanas abiertas permanecen en dataset_abiertas.csv.
 - input-routing.tsv conserva jugador solicitado/efectivo, modo de dos jugadores y dual activo para diagnosticar rutas de entrada.
-- La politica CF-ANALYSIS-9 invalida resultados parciales anteriores. Audita desde cero la primera reconvergencia y despues una muestra dispersa; una discrepancia borra las ventanas de la sesion y desactiva el atajo.
+- La politica CF-ANALYSIS-10 invalida resultados parciales anteriores. Audita desde cero la primera reconvergencia y despues una muestra dispersa; una discrepancia borra las ventanas de la sesion y desactiva el atajo.
 - Si GD no emite levelComplete durante el replay, Verify acepta el final solamente cuando todos los inputs fueron despachados, la causalidad coincide y P1/P2 alcanzan el estado final grabado con tolerancia de 0.5 unidades. Un timeout muestra tick, cursor y posiciones esperadas/observadas.
+- El indicador interno m_hasCompletedLevel tambien se acepta como final autoritativo, pero solo despues de despachar todos los inputs y validar la causalidad; no se certifican las coordenadas divergentes de un timeout.
 
 -Implementaciones:
 - Contadores independientes para captura incompleta, referencia no verificada y politica local.
@@ -29,6 +31,7 @@
 - El reporte cuenta comprobaciones de reconvergencia, bloqueos por mundo dinamico, diferencias de estado y aceptaciones. La primera medicion Android recibida encontro 774207 callbacks de candidatos, 98% posteriores al clic y cuatro fallos de paridad; esta optimizacion responde a esos datos.
 - La segunda medicion termino un nivel de cinco eventos en 22.49 s con 12 reconvergencias y una auditoria. Stalemate revelo 428 inputs P2 fuera de dual; el informe ahora cuenta cuantos fueron normalizados y los fallos de Verify identifican P1/P2.
 - La tercera medicion normalizo 271 inputs de la captura final de Stalemate, sobrevivio hasta causas del tick 28366 y agoto el horizonte sin recibir levelComplete; CF-ANALYSIS-9 añade la comprobacion reproducible del estado final.
+- La cuarta medicion despacho 314/314 inputs, pero termino con P1 y P2 lejos del estado grabado. CF-ANALYSIS-10 conserva ese resultado como fallo, prueba las alineaciones restantes y amplía el timeout con completion, dual, muerte y cursor causal.
 - Verificacion pendiente en dispositivo: ganancia real de CF-ANALYSIS-7, Stalemate, Denouement y Que-Hollowero. Estos cambios no certifican esos niveles ni la geometria de colision completa hasta recibir sus reportes.
 
 ## v1.0.7 / 2026-11-12 / 02:18 UTC / GD 2.2081 / Geode 5.11.2
