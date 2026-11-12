@@ -27,7 +27,7 @@ int main(){
     cf::training::Features f;f.mode=0;f.speed=.9f;f.vy=8.450123456789;f.geometry=f.replayMatch=true;f.grounded=1;
     cf::training::Totals totals;cf::training::csv(r,{f},totals);assert(totals.exported==0 && totals.uncertified==1);
     r.windows[0].estimated=false;r.windows[0].collisionBounded=true;auto csv=cf::training::csv(r,{f},totals);assert(totals.exported==1);
-    auto line=csv.substr(csv.find('\n')+1);assert(std::count(line.begin(),line.end(),',')==19);
+    auto line=csv.substr(csv.find('\n')+1);assert(std::count(line.begin(),line.end(),',')==25);
     auto root=cf::fs::temp_directory_path()/"cf106-test";cf::fs::remove_all(root);cf::fs::create_directories(root);
     assert(cf::replaceFile(root/"training"/"old.csv",cf::training::legacyHeader));assert(cf::training::aggregate(root));
     assert(cf::fs::exists(root/"training"/"old.csv.v105") && cf::readFile(root/"dataset_entrenamiento.csv")==cf::training::header);
