@@ -239,6 +239,7 @@ struct Session {
     cf::ProbeCache probeCache;
     uint64_t cacheHits = 0, trialAttempts = 0, tickFallbacks = 0, parityFallbacks = 0, previousStateFallbacks = 0;
     uint64_t probeRestores = 0, newlyMeasured = 0;
+    uint64_t rejoinChecks = 0, rejoinReferenceMisses = 0, rejoinWorldBlocks = 0, rejoinStateMismatches = 0, rejoinAccepts = 0;
     bool nativeDisabled = false;
     uint64_t missedNativeTargets = 0, thinnedNativeStates = 0;
     std::array<uint64_t, 6> phaseCalls{};
@@ -530,7 +531,7 @@ bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     return false;
 }
 std::string analysisPolicyToken() {
-    return fmt::format("CF-ANALYSIS-6\nair={}\nsearch={}\ndataset={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
+    return fmt::format("CF-ANALYSIS-7\nair={}\nsearch={}\ndataset={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
         Mod::get()->getSettingValue<std::string>("search-mode"),Mod::get()->getSettingValue<bool>("dataset-mode"));
 }
 cf::precision::Params precisionParams() {
@@ -643,7 +644,7 @@ void save(bool flushPredictions = false) {
         if(!cf::replaceChanged(root/"training-open"/(s.captureDigest+".csv"),openData) || !cf::training::aggregate(root,true))
             diagnostic("DATASET_OPEN_WRITE","No se pudo actualizar el dataset de ventanas abiertas");
         if(!cf::training::refreshMetadata(root)) diagnostic("DATASET_METADATA","No se pudo actualizar el manifiesto del dataset");
-        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-6\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
+        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-7\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
             s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
     }
@@ -665,7 +666,7 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-6\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+    report += fmt::format("Analysis policy: CF-ANALYSIS-7\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     size_t measuredNow = 0;
     for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
@@ -677,6 +678,8 @@ void save(bool flushPredictions = false) {
         s.auditGate.earlyPasses, s.auditGate.audits, s.auditGate.failures, s.auditGate.disabled);
     report += fmt::format("Newly measured events: {}\nSaved measured events: {}\nProbe restores: {}\nNative cache disabled after branch disagreement: {}\n",
         s.newlyMeasured, measuredNow, s.probeRestores, s.nativeDisabled);
+    report += fmt::format("Rejoin checks: {}\nRejoin reference misses: {}\nRejoin dynamic-world blocks: {}\nRejoin state mismatches: {}\nRejoin accepted passes: {}\n",
+        s.rejoinChecks,s.rejoinReferenceMisses,s.rejoinWorldBlocks,s.rejoinStateMismatches,s.rejoinAccepts);
     report += "Profiling hints (not measured causes):\n";
     if (s.batchDisabled) report += "- Batching fell back; inspect parity diagnostic before raising speed.\n";
     if (s.trialAttempts && s.restores-s.probeRestores < s.trialAttempts/2) report += "- Most candidates use full starts; inspect checkpoint targets, memory limits and restore rejection.\n";
@@ -1274,6 +1277,7 @@ void beginAnalysis() {
     s.causalHash = cf::hashStart; s.phaseCalls.fill(0); s.eventReport.clear();
     s.cacheHits = s.trialAttempts = s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = 0;
     s.probeRestores = s.newlyMeasured = 0; s.nativeDisabled = false;
+    s.rejoinChecks=s.rejoinReferenceMisses=s.rejoinWorldBlocks=s.rejoinStateMismatches=s.rejoinAccepts=0;
     s.missedNativeTargets = s.thinnedNativeStates = 0;
     s.resetSeconds = s.restoreSeconds = 0;
     s.nativeTargets = cf::checkpointTargets(s.recording.inputs, radius,
@@ -1474,7 +1478,10 @@ void consume() {
             if (!s.snapshotChecked) {
                 diagnostic("RESTORE_PARITY",s.message);
                 ++s.restoreFallbacks; ++s.parityFallbacks; s.snapshot = nullptr;
-                if (chooseNativeState()) ++s.previousStateFallbacks;
+                if(s.parityFallbacks>=2) {
+                    s.nativeDisabled=true;
+                    log::warn("[CF] native-state cache disabled after repeated parity failures");
+                } else if (chooseNativeState()) ++s.previousStateFallbacks;
                 log::warn("[CF] native-state validation failed; trying earlier state or full replay");
             } else retireOldStates();
         } else {
@@ -1802,18 +1809,32 @@ class $modify(CFBase, GJBaseGameLayer) {
             }
             if (s.state == State::Analyze && !s.validatingSnapshot && !s.auditing && !s.recoveringFlight &&
                 !s.auditGate.disabled && s.targetExecuted &&
-                s.recording.analysisPolicy == 2 && now > s.recording.inputs[s.target].tick && now > s.changedUntil) {
+                now > s.recording.inputs[s.target].tick && now > s.changedUntil) {
                 auto reference = s.baseline.get(now);
                 auto evidence = s.referenceEvidence.get(now);
                 bool grounded = s.owner->m_player1->m_isOnGround &&
                     (!s.owner->m_gameState.m_isDualMode || s.owner->m_player2->m_isOnGround);
-                bool same = !s.causalMismatch && reference && evidence &&
-                    (grounded || Mod::get()->getSettingValue<bool>("air-rejoin")) &&
-                    cf::canRejoin(*reference, current, *evidence, rejoinEvidence(), now, s.changedUntil);
+                ++s.rejoinChecks;
+                bool same=false;
+                if(!reference || !evidence) ++s.rejoinReferenceMisses;
+                else {
+                    auto candidateEvidence=rejoinEvidence();
+                    if(!evidence->quietWorld || !candidateEvidence.quietWorld) ++s.rejoinWorldBlocks;
+                    else {
+                        same=!s.causalMismatch && (grounded || Mod::get()->getSettingValue<bool>("air-rejoin")) &&
+                            cf::canRejoin(*reference,current,*evidence,candidateEvidence,now,s.changedUntil);
+                        if(!same) ++s.rejoinStateMismatches;
+                    }
+                }
                 s.rejoinStreak = same ? s.rejoinStreak + 1 : 0;
                 if (s.rejoinStreak >= (grounded ? 4 : 3)) {
-                    s.message = "Physics evidence rejoined (audited local window)";
-                    s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses; return;
+                    // Particle RNG is not gameplay state. Normalize it only
+                    // after physical/causal/dynamic state has matched exactly.
+                    GameToolbox::fast_srand(evidence->sharedRng);
+                    s.message = s.recording.analysisPolicy==2 ?
+                        "Physics evidence rejoined (audited local window)" :
+                        "Physics and causal state rejoined (audited full route)";
+                    s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses; ++s.rejoinAccepts; return;
                 }
             }
             if (s.state == State::Verify || s.state == State::Analyze) {
@@ -1928,7 +1949,7 @@ class $modify(CFPlay, PlayLayer) {
                 }
             }
             if (s.visual.enabled && s.recording.complete) s.message = "Edited showcase available (visual values)";
-            if(loaded.analysisLoaded && !cf::readFile(path().parent_path()/"analysis-policy.txt").starts_with("CF-ANALYSIS-6\n")) {
+            if(loaded.analysisLoaded && !cf::readFile(path().parent_path()/"analysis-policy.txt").starts_with("CF-ANALYSIS-7\n")) {
                 s.recording.windows.assign(s.recording.inputs.size(),{});s.recording.verified=false;s.predictions.clear();s.state=State::Idle;s.reportDirty=true;
                 s.message=s.visual.enabled?"Edited showcase available; Analyze to update measured windows":"v1.0.6: Analyze again to update saved windows";
             }

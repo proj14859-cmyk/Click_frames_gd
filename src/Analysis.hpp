@@ -117,9 +117,16 @@ struct RejoinEvidence {
     bool quietWorld = false;
     bool operator==(RejoinEvidence const&) const = default;
 };
+inline bool sameGameplayEvidence(RejoinEvidence const& a, RejoinEvidence const& b) {
+    // The shared generator also drives visual particles. Once all physical,
+    // causal and dynamic-world state matches, it can be put back to the
+    // reference value before accepting the rejoin.
+    return a.rng==b.rng && a.replayRng==b.replayRng && a.causalHash==b.causalHash &&
+        a.actorHash==b.actorHash && a.activatedHash==b.activatedHash;
+}
 inline bool canRejoin(Observation const& reference, Observation const& current,
     RejoinEvidence const& a, RejoinEvidence const& b, int now, int changedUntil) {
-    return now > changedUntil && a.quietWorld && b.quietWorld && a == b &&
+    return now > changedUntil && a.quietWorld && b.quietWorld && sameGameplayEvidence(a,b) &&
         observationHash(reference)==observationHash(current) && exactRejoin(reference, current);
 }
 inline bool candidateTrial(std::vector<Input> const& source, size_t index, int offset, std::vector<Input>& out) {

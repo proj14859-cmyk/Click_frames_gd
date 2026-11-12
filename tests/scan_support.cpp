@@ -40,6 +40,8 @@ int main() {
     assert(!cf::canRejoin(base, current, evidence, evidence, 21, 21));
     auto changed = evidence; changed.rng = 43;
     assert(!cf::canRejoin(base, current, evidence, changed, 22, 21));
+    changed = evidence; changed.sharedRng = 99;
+    assert(cf::canRejoin(base, current, evidence, changed, 22, 21));
     changed = evidence; changed.causalHash = 2;
     assert(!cf::canRejoin(base, current, evidence, changed, 22, 21));
     changed = evidence; changed.quietWorld = false;
@@ -47,7 +49,7 @@ int main() {
     current.values[1] = .000001;
     assert(cf::matches(base, current) && !cf::canRejoin(base, current, evidence, evidence, 22, 21));
     cf::AuditGate audits;
-    for (int i = 1; i <= 10; ++i) assert(audits.consider() == (i == 10));
+    for (int i = 1; i <= 512; ++i) assert(audits.consider() == (i == 1 || i == 512));
     audits.observed(false); assert(audits.disabled && audits.failures == 1 && !audits.consider());
     cf::ProbeCache cache; cache.put({1,-1,false}, {false,true});
     assert(cache.get({1,-1,false}, true) && !cache.get({1,1,false}) && !cache.get({1,-1,true}));
