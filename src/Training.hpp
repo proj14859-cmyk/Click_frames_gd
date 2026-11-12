@@ -20,6 +20,13 @@ struct Features {
     int dual=-1, mode2=-1, gravity2=-1;
     double y2=0, vy2=0;
 };
+inline size_t normalizeInactiveDualRouting(std::vector<Input>& inputs, std::vector<Features> const& features) {
+    size_t changed=0;
+    for(size_t i=0;i<inputs.size() && i<features.size();++i) if(features[i].dual==0 && !inputs[i].p1) {
+        inputs[i].p1=true; ++changed;
+    }
+    return changed;
+}
 inline bool finite(Features const& f) {
     return f.mode>=0 && f.mode<=7 && (f.gravity==0 || f.gravity==1) && (f.mini==0 || f.mini==1) && f.delta>=0 &&
         std::isfinite(f.speed) && std::isfinite(f.vy) && std::isfinite(f.dx) && std::isfinite(f.dy);

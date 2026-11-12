@@ -133,7 +133,14 @@ public:
 struct AuditGate {
     size_t earlyPasses = 0, audits = 0, failures = 0;
     bool disabled = false;
-    bool consider() { return !disabled && (++earlyPasses % 10 == 0); }
+    bool consider() {
+        if(disabled) return false;
+        ++earlyPasses;
+        // Strict rejoin already requires exact physical/causal/dynamic state.
+        // Full-start audits are a sparse regression guard, not part of every
+        // timing-window probe; frequent full-level audits erase the shortcut.
+        return earlyPasses==1 || earlyPasses%512==0;
+    }
     void observed(bool pass) { ++audits; if (!pass) { ++failures; disabled = true; } }
 };
 }
