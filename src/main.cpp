@@ -1919,7 +1919,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 auto p1=s.owner->m_player1,p2=s.owner->m_player2;
                 auto const& expected=s.recording.trace.empty()?cf::Sample{}:s.recording.trace.back();
                 s.message = fmt::format("Replay timed out: tick={} next={}/{} completed={} dual={} dead={}/{} causes={}/{} P1=({:.2f},{:.2f}) expected=({:.2f},{:.2f}) P2=({:.2f},{:.2f}) expected=({:.2f},{:.2f})",
-                    tick(),s.next,events.size(),m_hasCompletedLevel,m_gameState.m_isDualMode,
+                    tick(),s.next,events.size(),s.owner->m_hasCompletedLevel,m_gameState.m_isDualMode,
                     p1&&p1->m_isDead,p2&&p2->m_isDead,s.causalCursor,s.causalTrace.size(),
                     p1?p1->getPositionX():0.f,p1?p1->getPositionY():0.f,expected.x,expected.y,
                     p2?p2->getPositionX():0.f,p2?p2->getPositionY():0.f,expected.x2,expected.y2);
