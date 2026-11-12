@@ -155,6 +155,7 @@ struct Session {
     std::string message = "Record a practice run";
     std::string folder; // levels/<name>-<id>/ holds this level's runs
     std::string alert, firstFail; // why a run stopped, shown once pause is back
+    std::string shiftLog;
     int shiftIndex = 0, lastPressTick = -1, divergences = 0;
     float lastIntervalMs = -1.f;
     bool noRetry = false;
@@ -269,8 +270,8 @@ struct Session {
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
-constexpr int VERIFY_SHIFTS[] = {0, 1, -1, 2, -2};
-constexpr int VERIFY_SHIFT_COUNT = 5;
+constexpr int VERIFY_SHIFTS[] = {0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6};
+constexpr int VERIFY_SHIFT_COUNT = sizeof(VERIFY_SHIFTS) / sizeof(VERIFY_SHIFTS[0]);
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
 cf::precision::Job precisionJob;
@@ -1247,7 +1248,7 @@ void beginAnalysis() {
     s.nativeTargets = cf::checkpointTargets(s.recording.inputs, radius,
         size_t(Mod::get()->getSettingValue<int64_t>("checkpoint-budget")));
     s.batchDisabled = false; s.confirmingBoundary = false; s.batchUpdates = 0;
-    s.trial = s.recording.inputs; s.shiftIndex = 0; s.noRetry = false; s.firstFail.clear(); s.alert.clear();
+    s.trial = s.recording.inputs; s.shiftIndex = 0; s.shiftLog.clear(); s.noRetry = false; s.firstFail.clear(); s.alert.clear();
     s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
     s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
     s.reportDirty = true;
@@ -1367,12 +1368,13 @@ void consume() {
             }
             log::info("[CF] verify failed (shift {:+}): {}", by, s.message);
             if (s.firstFail.empty()) s.firstFail = s.message;
+            s.shiftLog += fmt::format("\n  {:+}: {}", by, s.message);
             while (!s.noRetry && ++s.shiftIndex < VERIFY_SHIFT_COUNT) {
                 if (!cf::shiftAll(s.recording.inputs, VERIFY_SHIFTS[s.shiftIndex], s.trial)) continue;
                 s.message = fmt::format("Verifying original run (shift {:+})", VERIFY_SHIFTS[s.shiftIndex]);
                 resetTrial(); return;
             }
-            s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nTried the whole run shifted by 0, +1, -1, +2 and -2 ticks.", s.message, s.firstFail);
+            s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nShifts tried (ticks):{}", s.message, s.firstFail, s.shiftLog);
             diagnostic("VERIFY_FAILED",s.alert);
             stop(s.message); queueReturnToPause(); return;
         }
