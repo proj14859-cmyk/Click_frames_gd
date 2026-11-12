@@ -12,6 +12,7 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/utils/cocos.hpp>
+#include <asp/fs/std.hpp>
 #include "Timing.hpp"
 #include "Storage.hpp"
 #include "Pack.hpp"
@@ -283,6 +284,14 @@ constexpr int VERIFY_SHIFT_COUNT = sizeof(VERIFY_SHIFTS) / sizeof(VERIFY_SHIFTS[
 // Exactly one live PlayLayer owns this session. It is discarded on exit/init.
 Session s;
 cf::precision::Job precisionJob;
+std::filesystem::path saveRoot() {
+    auto converted = Mod::get()->getSaveDir().toStdPath();
+    return converted ? converted.unwrap() : std::filesystem::path{};
+}
+std::filesystem::path geodePath(asp::fs::Path const& path) {
+    auto converted = path.toStdPath();
+    return converted ? converted.unwrap() : std::filesystem::path{};
+}
 struct ClickAudio {
     FMOD::System* system=nullptr;
     FMOD::ChannelGroup* group=nullptr;
@@ -326,7 +335,7 @@ void diagnostic(std::string const& code, std::string const& message) {
     auto identity=code+":"+message;
     if(s.lastDiagnostic==identity) return;
     s.lastDiagnostic=identity;
-    cf::diagnostics::append(Mod::get()->getSaveDir()/"error-log.txt", phaseName(), hasLiveOwner()?int(s.owner->m_gameState.m_currentProgress):-1, s.target, code, message);
+    cf::diagnostics::append(saveRoot()/"error-log.txt", phaseName(), hasLiveOwner()?int(s.owner->m_gameState.m_currentProgress):-1, s.target, code, message);
     log::error("[CF] {}: {}",code,message);
 }
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
@@ -489,7 +498,7 @@ void observeLaunch(PlayerObject* player) {
     }
 }
 int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
-std::filesystem::path levelDir(std::string const& folder) { return Mod::get()->getSaveDir() / "recordings" / folder; }
+std::filesystem::path levelDir(std::string const& folder) { return saveRoot() / "recordings" / folder; }
 std::filesystem::path path() { return levelDir(s.folder) / s.recording.key / "capture.flr"; }
 int selectedPolicy() {
     return Mod::get()->getSettingValue<bool>("local-analysis") ? 2 : Mod::get()->getSettingValue<bool>("same-jump") ? 1 : 0;
@@ -506,8 +515,8 @@ void analysisClock(bool on) {
 bool migrateOldRun() {
     auto name = "run-" + s.recording.key + ".cfr";
     return cf::migrateLegacy(path().parent_path(), s.recording.key, {
-        path().parent_path() / "capture.cfr", Mod::get()->getSaveDir() / "levels" / s.folder / name,
-        Mod::get()->getSaveDir() / name});
+        path().parent_path() / "capture.cfr", saveRoot() / "levels" / s.folder / name,
+        saveRoot() / name});
 }
 void fixPracticeTouchPriority() {
     if (!hasLiveOwner() || !s.owner->m_uiLayer) return;
@@ -637,7 +646,7 @@ void save(bool flushPredictions = false) {
     // failed certification or audit invalidation. CSV itself keeps nine columns.
     auto training=cf::training::csv(s.recording,s.features,s.trainingTotals,s.captureDigest);
     if(!s.captureDigest.empty()) {
-        auto root=Mod::get()->getSaveDir();
+        auto root=saveRoot();
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
             diagnostic("DATASET_WRITE","No se pudo actualizar el dataset de entrenamiento");
         cf::training::Totals openTotals;
@@ -645,7 +654,7 @@ void save(bool flushPredictions = false) {
         if(!cf::replaceChanged(root/"training-open"/(s.captureDigest+".csv"),openData) || !cf::training::aggregate(root,true))
             diagnostic("DATASET_OPEN_WRITE","No se pudo actualizar el dataset de ventanas abiertas");
         if(!cf::training::refreshMetadata(root)) diagnostic("DATASET_METADATA","No se pudo actualizar el manifiesto del dataset");
-        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2081\nGeode: 5.11.2\nPolicy: CF-ANALYSIS-9\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
+        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2091\nGeode: 6.0.0-alpha.1\nPolicy: CF-ANALYSIS-9\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
             s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
         if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
     }
@@ -744,7 +753,7 @@ std::string exportPackImpl() {
     cf::Pack pack; pack.folder = s.folder;
     size_t bytes = 0; std::error_code ec;
     std::map<std::string, std::filesystem::path> captures;
-    auto legacy = Mod::get()->getSaveDir() / "levels" / s.folder;
+    auto legacy = saveRoot() / "levels" / s.folder;
     for (auto const& entry : std::filesystem::directory_iterator(legacy, ec)) {
         auto name = entry.path().filename().string();
         if (cf::runName(name)) captures[name] = entry.path();
@@ -785,7 +794,7 @@ std::string exportPackImpl() {
     }
     if (pack.files.empty()) return "Nothing to export: record and analyze this level first.";
     if (bytes > cf::PACK_MAX_BYTES) return "Runs are too large to export.";
-    auto out = Mod::get()->getSaveDir() / "exports" / (s.folder + ".cfpack");
+    auto out = saveRoot() / "exports" / (s.folder + ".cfpack");
     std::filesystem::create_directories(out.parent_path(), ec);
     std::ofstream file(out, std::ios::binary); cf::packWrite(file, pack); file.close();
     if (!file) return "Could not write the export file.";
@@ -794,7 +803,7 @@ std::string exportPackImpl() {
 // Import: every .cfpack in imports/. A pack is checked completely before any file is written.
 std::string importPacksImpl() {
     if (s.state == State::Record || running()) return "Stop the current run first.";
-    auto dir = Mod::get()->getSaveDir() / "imports";
+    auto dir = saveRoot() / "imports";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     std::vector<std::filesystem::path> found;
@@ -1978,8 +1987,8 @@ class $modify(CFPlay, PlayLayer) {
             std::error_code ec;
             s.storageBlocked = std::filesystem::exists(recordingPath, ec) ||
                 std::filesystem::exists(recordingPath.parent_path() / "capture.cfr", ec) ||
-                std::filesystem::exists(Mod::get()->getSaveDir() / "levels" / s.folder / legacy, ec) ||
-                std::filesystem::exists(Mod::get()->getSaveDir() / legacy, ec);
+                std::filesystem::exists(saveRoot() / "levels" / s.folder / legacy, ec) ||
+                std::filesystem::exists(saveRoot() / legacy, ec);
             if (s.storageBlocked) s.message = "Could not load/migrate capture; original files preserved. Record explicitly to replace.";
             if(s.storageBlocked)diagnostic("CAPTURE_READ",s.message);
         }
@@ -2402,8 +2411,8 @@ class CFDiagnostics : public Popup {
     CCLabelBMFont* m_label=nullptr;
     ScrollLayer* m_scroll=nullptr;
     void select(int source) {
-        auto root=Mod::get()->getSaveDir();
-        auto file=source==0?root/"error-log.txt":cf::diagnostics::newestLog(source==1?dirs::getCrashlogsDir():dirs::getGeodeLogDir());
+        auto root=saveRoot();
+        auto file=source==0?root/"error-log.txt":cf::diagnostics::newestLog(geodePath(source==1?dirs::getCrashlogsDir():dirs::getGeodeLogDir()));
         m_text=file.empty()?"No se encontraron registros.":file.filename().string()+"\n"+cf::diagnostics::readLog(file);
         m_scroll->m_contentLayer->removeAllChildren();
         auto text=m_text.substr(0,24000);
@@ -2589,13 +2598,13 @@ class CFPopup : public Popup {
         add("FWC / JSON", "Solo exactas cerradas",{351,35},!active && !cf::closedWindows(s.recording).empty(),[]{
             try {
                 auto count=cf::closedWindows(s.recording).size();
-                auto root=Mod::get()->getSaveDir()/"exports"/s.folder;
+                auto root=saveRoot()/"exports"/s.folder;
                 bool ok=writeSafe(root/"windows.fwc",cf::fwcBytes(s.recording)) && writeSafe(root/"windows.nandl.json",cf::nandlJson(s.recording));
                 if(!ok) diagnostic("EXPORT_WRITE","No se pudo guardar FWC / NaNDL");
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2081 | Geode 5.11.2 | v1.0.6", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.9", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

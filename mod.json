@@ -1,9 +1,9 @@
 {
-  "geode": "5.11.2",
-  "gd": { "win": "2.2081", "android": "2.2081" },
+  "geode": "6.0.0-alpha.1",
+  "gd": { "win": "2.2091", "android": "2.2091" },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.8",
+  "version": "v1.0.9",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": { "files": ["resources/*.wav", "licenses/*.txt"] },

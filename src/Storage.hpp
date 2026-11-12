@@ -56,7 +56,7 @@ inline std::string metadataJson(Recording const& r) {
     }
     std::ostringstream out;
     out << "{\n  \"schema\": 1,\n  \"fingerprint\": \"" << key.str()
-        << "\",\n  \"gd\": \"2.2081\",\n  \"geode\": \"5.11.2\",\n  \"tps\": 240,\n"
+        << "\",\n  \"gd\": \"2.2091\",\n  \"geode\": \"6.0.0-alpha.1\",\n  \"tps\": 240,\n"
         << "  \"storage_schema\": 2,\n  \"capture_format\": \"CFCAP 1\",\n  \"playback_format\": \"CFPLAY 2\",\n  \"backend\": " << std::quoted(r.backend)
         << ",\n  \"analysis_policy\": " << r.analysisPolicy
         << ",\n  \"capture\": \"capture.flr\",\n  \"playback\": \"playback.flp\",\n  \"complete\": " << (r.complete ? "true" : "false")
