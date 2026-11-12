@@ -12,6 +12,9 @@
 #include <vector>
 
 namespace cf::precision {
+inline double windowMs(int frames,double tps=240.) {
+    return frames>0 && std::isfinite(tps) && tps>0?double(frames)*1000./tps:0.;
+}
 constexpr double minL = .001, maxL = 1e15, unresolved = 1e100;
 constexpr int secantIterations = 10, bisectionIterations = 60;
 enum class Weighting { Base, N, F, C, NF, NC, FC, NFC };

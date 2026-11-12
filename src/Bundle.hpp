@@ -67,18 +67,18 @@ inline bool readCapture(std::istream& in, std::string const& key, Recording& res
 }
 inline std::string playbackBytes(std::string const& digest, Recording const& r) {
     std::ostringstream out;
-    out << "CFPLAY 1 " << digest << ' ' << r.verified << ' ' << r.endTick << ' ' << r.radius << ' ' << r.analysisPolicy
+    out << "CFPLAY 2 " << digest << ' ' << r.verified << ' ' << r.endTick << ' ' << r.radius << ' ' << r.analysisPolicy
         << ' ' << std::quoted(r.backend) << ' ' << r.inputs.size() << '\n';
     for (size_t i = 0; i < r.inputs.size(); ++i) {
         auto w = i < r.windows.size() ? r.windows[i] : Window{};
-        out << r.inputs[i].tick << ' ' << w.early << ' ' << w.late << ' ' << w.measured << ' ' << w.lowerBound << '\n';
+        out << r.inputs[i].tick << ' ' << w.early << ' ' << w.late << ' ' << w.measured << ' ' << w.lowerBound << ' ' << w.estimated << ' ' << w.collisionBounded << '\n';
     }
     return out.str();
 }
 inline bool readPlayback(std::istream& in, std::string const& digest, Recording& capture) {
     std::string magic, hash, backend; int version, end, radius, policy; bool verified; size_t count;
     if (!(in >> magic >> version >> hash >> verified >> end >> radius >> policy >> std::quoted(backend) >> count) ||
-        magic != "CFPLAY" || version != 1 || hash != digest || end < 0 || radius < 1 || radius > 60 || policy < 0 || policy > 2 ||
+        magic != "CFPLAY" || (version != 1 && version != 2) || hash != digest || end < 0 || radius < 1 || radius > 60 || policy < 0 || policy > 2 ||
         backend != capture.backend || count > capture.inputs.size() || (verified && !capture.complete)) return false;
     // Verification may drop trailing releases but must never silently discard presses.
     for (size_t i = count; i < capture.inputs.size(); ++i) if (capture.inputs[i].down) return false;
@@ -87,6 +87,7 @@ inline bool readPlayback(std::istream& in, std::string const& digest, Recording&
         int tick; Window w;
         if (!(in >> tick >> w.early >> w.late >> w.measured >> w.lowerBound) || tick < 0 || tick < last ||
             (capture.complete && tick > end) || w.early < 0 || w.late < 0 || w.early > radius || w.late > radius) return false;
+        if(version>=2 && !(in>>w.estimated>>w.collisionBounded))return false;
         ticks.push_back(tick); windows.push_back(w); last = tick;
     }
     in >> std::ws; if (in.peek() != std::char_traits<char>::eof()) return false;

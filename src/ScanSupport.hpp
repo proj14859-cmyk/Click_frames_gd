@@ -68,6 +68,43 @@ inline std::vector<int> checkpointTargets(std::span<Input const> inputs, int rad
     for (size_t i = 0; i < budget; ++i) sampled.push_back(targets[budget == 1 ? 0 : i * (targets.size() - 1) / (budget - 1)]);
     return sampled;
 }
+// Probe group headers first, but certify every interior offset: GD trajectories
+// need not be monotone in timing (orbs/triggers can create holes).
+struct GroupedSearch {
+    int radius=20, offset=-5, early=0, late=0, group=1, direction=-1;
+    bool done=false,leftClosed=false,rightClosed=false;
+    bool approximate=false;
+    std::array<int8_t,41> outcomes{};
+    void select() {
+        if(!approximate){
+            if(!outcomes[19]){offset=-1;return;}
+            if(!outcomes[21]){offset=1;return;}
+        }
+        for(;;) {
+            if((leftClosed && rightClosed) || group*5-4>radius){done=true;return;}
+            int end=std::min(radius,group*5),begin=group*5-4;
+            bool closed=direction<0?leftClosed:rightClosed;
+            if(!closed) {
+                if(!outcomes[20+direction*end]){offset=direction*end;return;}
+                for(int i=begin;i<=end;++i)if(!outcomes[20+direction*i]){offset=direction*i;return;}
+            }
+            if(direction<0)direction=1;
+            else {direction=-1;++group;}
+        }
+    }
+    void reset(int r,int =0){radius=std::clamp(r,1,20);offset=0;early=late=0;group=1;direction=-1;done=leftClosed=rightClosed=false;outcomes.fill(0);outcomes[20]=1;select();}
+    void accept(bool pass) {
+        if(done)return;
+        outcomes[20+offset]=pass?1:-1;
+        if(approximate && pass && std::abs(offset)==std::min(radius,group*5))
+            for(int i=group*5-4;i<=std::abs(offset);++i)outcomes[20+(offset<0?-i:i)]=1;
+        early=late=0;leftClosed=rightClosed=false;
+        for(int i=1;i<=radius;++i){auto result=outcomes[20-i];if(result<=0){leftClosed=result<0;break;}++early;}
+        for(int i=1;i<=radius;++i){auto result=outcomes[20+i];if(result<=0){rightClosed=result<0;break;}++late;}
+        select();
+    }
+    Window window()const{return {early,late,true,!leftClosed || !rightClosed,approximate};}
+};
 inline int lastChangedTick(std::span<Input const> original, std::span<Input const> candidate) {
     int last = -1;
     for (size_t i = 0; i < candidate.size(); ++i) {
@@ -82,7 +119,7 @@ struct ProbeKey {
     size_t event = 0; int offset = 0; bool full = false;
     auto operator<=>(ProbeKey const&) const = default;
 };
-struct ProbeResult { bool pass = false, fullStart = false; };
+struct ProbeResult { bool pass = false, fullStart = false; int failure=0; };
 class ProbeCache {
     std::map<ProbeKey, ProbeResult> values;
 public:

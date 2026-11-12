@@ -5,6 +5,13 @@
 #include <iostream>
 int main() {
     std::cout << "Synthetic algorithm benchmark; no GD physics, level or device timing\n";
+    for(bool approximate:{false,true}){
+        cf::GroupedSearch grouped;grouped.approximate=approximate;grouped.reset(20);int probes=0;
+        while(!grouped.done){grouped.accept(true);++probes;}
+        assert(probes==(approximate?8:40));
+        std::cout<<"v106_grouped_open_range,"<<(approximate?"estimated":"exact")<<",probes,"<<probes<<",width,"<<grouped.window().width()<<"+\n";
+    }
+    std::cout<<"Historical v104 adaptive-cap benchmark below (not v106 engine)\n";
     std::cout << "events,previous_probes,adaptive_probes,probes_saved_percent,exact_windows,lower_bounds\n";
     for (int events : {20,154}) {
         int previous = 0, adaptive = 0, exact = 0, bounds = 0;

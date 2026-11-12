@@ -1,5 +1,28 @@
 # Click Frames GD
 
+## v1.0.6 / 2026-11-11 / 23:38 UTC / GD 2.2081 / Geode 5.11.2
+
+-Correcciones:
+- La comparacion causal de un candidato admite desplazamientos de 2+abs(offset) ticks, conservando identidad/orden de eventos. Una discrepancia con offset no nulo falla ese intento y cierra su frontera; no aborta el analisis. La referencia original conserva las verificaciones estrictas de 1.0.5.
+- Registro de despegue real de cubo/robot en updateJump: un clic adelantado que despega en el tick original en lugar del tick desplazado se rechaza como buffered. Se conserva launch-ticks.tsv para inspeccion. Requiere que la referencia tenga un despegue identificable; no aplica una suposicion de suelo a nave, wave u orbes en aire.
+- El HUD muestra Margen = frames*1000/240 y Mas dificil = menor margen cerrado exacto reproducido. 3 ticks son 12.50 ms. Las ventanas abiertas usan >= y las estimadas ~. Los intervalos entre pulsaciones se etiquetan por separado y quedan desactivados por defecto. L* se conserva como exportacion estadistica opcional, desligada del HUD.
+
+-Mejoras:
+- Busqueda por grupos de cinco con radio maximo +/-20. Exact (por defecto) comprueba +/-1 antes de cabeceras e interiores, y poda los grupos posteriores al primer fallo contiguo. No salta huecos de validez.
+- Fast estimated prueba cabeceras +/-5, +/-10, +/-15, +/-20, infiere interiores solo si la cabecera pasa y refina los grupos que fallan. Un rango totalmente abierto necesita ocho sondeos de busqueda en lugar de cuarenta; verificaciones de referencia/checkpoints/confirmaciones pueden sumar trabajo. Estas ventanas se marcan ESTIMATED / ~ y quedan excluidas del dataset y FWC/NaNDL. +/-20 totalmente abierto significa al menos 41 ticks de ancho, no 20.
+- Se retira el corte automatico en 8+ de la busqueda; las ventanas se exploran hasta fallo o el radio configurado. Los audios 1..20 siguen representando anchos; se usa frame-wide para anchos mayores.
+
+-Cambios:
+- playback.flp usa CFPLAY 2 y el intercambio .cfr CLICKFRAMES 6 para persistir estimacion y prueba de bordes por colision. Se leen los formatos anteriores, que no reciben certificaciones nuevas por inferencia. La captura original sigue CFCAP 1.
+- Al cargar ventanas de una politica anterior se pide Analyze de nuevo; se conservan la captura original y Edit. Asi Play no muestra margenes antiguos como si ya incluyeran las correcciones del buffer.
+- El CSV ahora tiene diez columnas: vehiculo, velocidad_x, velocidad_y, gravedad, tamano, en_suelo, distancia_obs_x, distancia_obs_y, delta_ticks, TARGET_frames. capture-physics.tsv CFPHYS 2 guarda en_suelo original; v1 se lee con suelo desconocido y no se usa para nuevas etiquetas.
+- Los shards CSV de nueve columnas se archivan con sufijo .v105 antes de regenerar el agregado. No se inventa en_suelo. Para datos nuevos hay que grabar nuevamente y analizar en Exact + Full run.
+
+-Implementaciones:
+- El dataset exige ambas fronteras cerradas por colisiones reales, igualdad de la fisica original con la referencia y geometria fiable. Fallos causales, de buffer, orden de inputs o de politica no se convierten en etiquetas de colision; el informe cuenta las exclusiones.
+- Diagnostico accesible conservado desde CF Logs, pausa y Frames, con lectura/copia de errores y crashlogs. Excepciones C++ durante checkpoints se registran y prueban un reinicio completo; si falla, la ventana no se mide. Esto no captura SIGSEGV ni convierte una restauracion parcial en resultado valido.
+- Once suites con ASan/UBSan, incluyendo huecos entre cabeceras, equivalencia exhaustiva de busqueda exacta, ocho sondeos estimados, conversion ms, causa desplazada, lanzamiento, formatos y migracion del dataset. Velocidad/precision y UI en GD deben comprobarse en dispositivo.
+
 ## v1.0.5 / 2026-11-11 / 16:23 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
