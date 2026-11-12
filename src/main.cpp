@@ -2067,7 +2067,9 @@ class $modify(CFPlay, PlayLayer) {
         if (running()) {
             if (s.pending == Pending::None) {
                 if (s.state == State::Analyze && (s.causalMismatch || s.causalCursor != s.causalTrace.size()) && !s.recoveringFlight) {
-                    s.message = "Candidate changed the recorded causal route; window not certified";
+                    auto expected = s.causalCursor < s.causalTrace.size() ? cf::describeCause(s.causalTrace[s.causalCursor]) : std::string("<end of reference>");
+                    s.message = fmt::format("Causal end mismatch: tick={} event={} offset={:+} cursor={}/{} start={} expected={} observed=<end>; {}", tick(), s.target, s.offset, s.causalCursor, s.causalTrace.size(), s.snapshotChecked ? "checkpoint" : "start", expected, s.parityDiagnostic);
+                    diagnostic("CAUSAL_END", s.message);
                     s.failure=ProbeFailure::Causal;++s.causalRejected;
                     s.pending = s.validatingSnapshot || s.offset!=0 ? Pending::Fail : Pending::Invalid; return;
                 }
