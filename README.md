@@ -20,13 +20,15 @@
 - CFPHYS 3 conserva el contexto dual; los formatos anteriores se leen con contexto desconocido.
 - CSV de 26 columnas; shards anteriores se archivan con .v107. Las ventanas abiertas permanecen en dataset_abiertas.csv.
 - input-routing.tsv conserva jugador solicitado/efectivo, modo de dos jugadores y dual activo para diagnosticar rutas de entrada.
-- La politica CF-ANALYSIS-8 invalida resultados parciales anteriores. Audita desde cero la primera reconvergencia y despues una muestra dispersa; una discrepancia borra las ventanas de la sesion y desactiva el atajo.
+- La politica CF-ANALYSIS-9 invalida resultados parciales anteriores. Audita desde cero la primera reconvergencia y despues una muestra dispersa; una discrepancia borra las ventanas de la sesion y desactiva el atajo.
+- Si GD no emite levelComplete durante el replay, Verify acepta el final solamente cuando todos los inputs fueron despachados, la causalidad coincide y P1/P2 alcanzan el estado final grabado con tolerancia de 0.5 unidades. Un timeout muestra tick, cursor y posiciones esperadas/observadas.
 
 -Implementaciones:
 - Contadores independientes para captura incompleta, referencia no verificada y politica local.
 - dataset_manifest.json y dataset-report.txt resumen filas cerradas/abiertas, niveles unicos, modos, anchos y preparacion minima para entrenamiento.
 - El reporte cuenta comprobaciones de reconvergencia, bloqueos por mundo dinamico, diferencias de estado y aceptaciones. La primera medicion Android recibida encontro 774207 callbacks de candidatos, 98% posteriores al clic y cuatro fallos de paridad; esta optimizacion responde a esos datos.
 - La segunda medicion termino un nivel de cinco eventos en 22.49 s con 12 reconvergencias y una auditoria. Stalemate revelo 428 inputs P2 fuera de dual; el informe ahora cuenta cuantos fueron normalizados y los fallos de Verify identifican P1/P2.
+- La tercera medicion normalizo 271 inputs de la captura final de Stalemate, sobrevivio hasta causas del tick 28366 y agoto el horizonte sin recibir levelComplete; CF-ANALYSIS-9 añade la comprobacion reproducible del estado final.
 - Verificacion pendiente en dispositivo: ganancia real de CF-ANALYSIS-7, Stalemate, Denouement y Que-Hollowero. Estos cambios no certifican esos niveles ni la geometria de colision completa hasta recibir sus reportes.
 
 ## v1.0.7 / 2026-11-12 / 02:18 UTC / GD 2.2081 / Geode 5.11.2

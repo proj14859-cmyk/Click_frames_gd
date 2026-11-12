@@ -48,6 +48,10 @@ int main() {
     assert(!cf::canRejoin(base, current, evidence, changed, 22, 21));
     current.values[1] = .000001;
     assert(cf::matches(base, current) && !cf::canRejoin(base, current, evidence, evidence, 22, 21));
+    cf::Sample finish{100,10,20,30,40},same{100,10.4f,19.6f,999,999};
+    assert(cf::sameCompletionState(finish,same,false));
+    assert(!cf::sameCompletionState(finish,same,true));
+    same.x2=30.4f;same.y2=39.6f;assert(cf::sameCompletionState(finish,same,true));
     cf::AuditGate audits;
     for (int i = 1; i <= 512; ++i) assert(audits.consider() == (i == 1 || i == 512));
     audits.observed(false); assert(audits.disabled && audits.failures == 1 && !audits.consider());

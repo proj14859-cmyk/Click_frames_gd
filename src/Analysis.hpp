@@ -129,6 +129,11 @@ inline bool canRejoin(Observation const& reference, Observation const& current,
     return now > changedUntil && a.quietWorld && b.quietWorld && sameGameplayEvidence(a,b) &&
         observationHash(reference)==observationHash(current) && exactRejoin(reference, current);
 }
+inline bool sameCompletionState(Sample const& reference, Sample const& current, bool dual, float tolerance=.5f) {
+    auto close=[&](float a,float b){return std::isfinite(a) && std::isfinite(b) && std::abs(a-b)<=tolerance;};
+    return close(reference.x,current.x) && close(reference.y,current.y) &&
+        (!dual || (close(reference.x2,current.x2) && close(reference.y2,current.y2)));
+}
 inline bool candidateTrial(std::vector<Input> const& source, size_t index, int offset, std::vector<Input>& out) {
     if (index >= source.size()) return false;
     auto const& press = source[index];
