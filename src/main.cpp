@@ -1527,7 +1527,8 @@ void consume() {
                     log::warn("[CF] native-state cache disabled after {} consecutive parity failures", s.parityStreak);
                 } else if (chooseNativeState()) ++s.previousStateFallbacks;
                 log::warn("[CF] native-state validation failed; trying earlier state or full replay");
-            } else { s.parityStreak = 0; retireOldStates(); }
+            }
+            if (s.snapshotChecked) { s.parityStreak = 0; retireOldStates(); }
         } else {
             bool pass = result == Pending::Pass;
             if (s.auditing) {
