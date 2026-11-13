@@ -1,5 +1,12 @@
 # Click Frames GD
 
+## v1.0.13 / 2026-11-13 / GD 2.2091 / Geode 6
+
+- Los círculos y sonidos de ventanas mayores de 20 frames se ocultan por defecto, sin eliminar la medición ni alterar el contador o las exportaciones; el límite es configurable hasta 41.
+- Los orbes se incorporan a la traza causal solo cuando pasan al estado activado de RobTop, evitando que múltiples callbacks del mismo contacto produzcan límites artificialmente estrechos.
+- La política `CF-ANALYSIS-10` invalida ventanas anteriores, paquetes importados sin procedencia verificable y fragmentos de entrenamiento de políticas antiguas para impedir que se mezclen con el análisis corregido.
+- `Fast estimated` se identifica explícitamente como diagnóstico; para medir timings precisos se debe usar `Exact`.
+
 ## v1.0.12 / 2026-11-13 / GD 2.2091 / Geode 6
 
 - Stop/Save permite reproducir una captura verificada parcialmente analizada; los eventos pendientes aparecen como círculos grises con `?` y no producen sonido ni cuentan como ventanas.

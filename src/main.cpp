@@ -596,7 +596,7 @@ bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     return false;
 }
 std::string analysisPolicyToken() {
-    return fmt::format("CF-ANALYSIS-9\nair={}\nsearch={}\ndataset={}\n", Mod::get()->getSettingValue<bool>("air-rejoin"),
+    return fmt::format("{}\nair={}\nsearch={}\ndataset={}\n", cf::analysisPolicyVersion, Mod::get()->getSettingValue<bool>("air-rejoin"),
         Mod::get()->getSettingValue<std::string>("search-mode"),Mod::get()->getSettingValue<bool>("dataset-mode"));
 }
 cf::precision::Params precisionParams() {
@@ -703,16 +703,17 @@ void save(bool flushPredictions = false) {
     auto training=cf::training::csv(s.recording,s.features,s.trainingTotals,s.captureDigest);
     if(!s.captureDigest.empty()) {
         auto root=saveRoot();
-        if(!cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) || !cf::training::aggregate(root))
+        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2091\nGeode: 6.0.0-alpha.1\nPolicy: {}\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
+            s.captureDigest,s.recording.key,s.recording.backend,cf::analysisPolicyVersion,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
+        bool closedWritten=cf::replaceChanged(root/"training"/(s.captureDigest+".csv"),training) &&
+            cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance);
+        if(!closedWritten || !cf::training::aggregate(root))
             diagnostic("DATASET_WRITE","No se pudo actualizar el dataset de entrenamiento");
         cf::training::Totals openTotals;
         auto openData=cf::training::csv(s.recording,s.features,openTotals,s.captureDigest,true);
         if(!cf::replaceChanged(root/"training-open"/(s.captureDigest+".csv"),openData) || !cf::training::aggregate(root,true))
             diagnostic("DATASET_OPEN_WRITE","No se pudo actualizar el dataset de ventanas abiertas");
         if(!cf::training::refreshMetadata(root)) diagnostic("DATASET_METADATA","No se pudo actualizar el manifiesto del dataset");
-        auto provenance=fmt::format("CF_TRAINING 3\nCapture: {}\nLevel: {}\nBackend: {}\nGD: 2.2091\nGeode: 6.0.0-alpha.1\nPolicy: CF-ANALYSIS-9\nScope: {}\nBaseline verified: {}\nExported rows: {}\nSource: capture-physics.tsv raw pre-input, exact final-reference match\nSchema: early/late/open/radius/digests/event/tick/policy/TPS/geometry/dual/P2 state\nCoordinates: world units, origin-to-native-hazard-rect edge; geometry may be absent and is marked explicitly\n",
-            s.captureDigest,s.recording.key,s.recording.backend,s.recording.analysisPolicy==2?"local (excluded)":"Full run",s.recording.verified,s.trainingTotals.exported);
-        if(!cf::replaceChanged(root/"training"/(s.captureDigest+".meta"),provenance)) diagnostic("DATASET_WRITE","No se pudo guardar la procedencia del dataset");
     }
     auto view = [](std::string const& name, std::string const& data) {
         auto digest = cf::fingerprint(data);
@@ -732,8 +733,8 @@ void save(bool flushPredictions = false) {
     if (s.analysisClock) seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
     auto report = cf::scanReport(s.recording, s.message) + fmt::format("Active analysis seconds: {:.3f}\nPhysics callbacks: {}\nCandidate tests: {}\nNative restores: {}\nRestore fallbacks: {}\nLocal events without reference exit: {}\nMissed local exit samples: {}\nLocal accepted exits: {}\nPeak shared native states: {}\n",
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
-    report += fmt::format("Analysis policy: CF-ANALYSIS-9\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
-        s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
+    report += fmt::format("Analysis policy: {}\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
+        cf::analysisPolicyVersion, s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
     size_t measuredNow = 0;
     for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
         if (cf::counted(s.recording.inputs[i]) && s.recording.windows[i].measured) ++measuredNow;
@@ -892,6 +893,9 @@ std::string importPacksImpl() {
         }
         if (ok) for (auto const& [key, r] : captures) {
             std::string digest; auto directory = levelDir(pack.folder) / key;
+            std::error_code policyError;
+            std::filesystem::remove(directory / "analysis-policy.txt", policyError);
+            if (policyError) { ok = false; break; }
             if (!cf::saveBundle(directory, r, true, digest)) { ok = false; break; }
             auto edits = visual.find(key);
             if (edits != visual.end()) {
@@ -1223,6 +1227,9 @@ void marker(size_t index) {
     if (!cf::counted(e)) return;
     auto w = s.recording.windows[index];
     if (w.measured) if (auto row = cf::rowOf(s.rows, w); row >= 0 && static_cast<size_t>(row) < s.tally.size()) ++s.tally[row];
+    // Keep wide/open windows in the counter and exported analysis, but avoid
+    // covering the level with low-value circles (and their sounds).
+    if (w.measured && w.width() > Mod::get()->getSettingValue<int64_t>("marker-max-width")) return;
     if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
         auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
         if (!root) {
@@ -1758,8 +1765,9 @@ class $modify(CFPlayer, PlayerObject) {
         if(grounded && (m_lastJumpTime!=previousJump || (!m_isOnGround && thrust)) && (mode==0 || mode==5))observeLaunch(this);
     }
     void ringJump(RingObject* object, bool skipCheck) {
+        bool wasActivated = object && object->m_isActivated;
         PlayerObject::ringJump(object, skipCheck);
-        recordCause(1, object, this);
+        if (object && cf::orbWasActivated(wasActivated, object->m_isActivated)) recordCause(1, object, this);
     }
     bool blocksCheckpoint() {
         return hasLiveOwner() && running() &&
@@ -2059,9 +2067,10 @@ class $modify(CFPlay, PlayLayer) {
                 }
             }
             if (s.visual.enabled && s.recording.complete) s.message = "Edited showcase available (visual values)";
-            if(loaded.analysisLoaded && !cf::readFile(path().parent_path()/"analysis-policy.txt").starts_with("CF-ANALYSIS-9\n")) {
+            auto expectedPolicy=std::string(cf::analysisPolicyVersion)+"\n";
+            if(loaded.analysisLoaded && !cf::readFile(path().parent_path()/"analysis-policy.txt").starts_with(expectedPolicy)) {
                 s.recording.windows.assign(s.recording.inputs.size(),{});s.recording.verified=false;s.predictions.clear();s.state=State::Idle;s.reportDirty=true;
-                s.message=s.visual.enabled?"Edited showcase available; Analyze to update measured windows":"v1.0.6: Analyze again to update saved windows";
+                s.message=s.visual.enabled?"Edited showcase available; Analyze to update measured windows":"Analysis policy changed; Analyze again to update saved windows";
             }
             save();
             Mod::get()->setSavedValue<std::string>("last-level-folder", s.folder);
@@ -2695,7 +2704,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.12", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.13", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

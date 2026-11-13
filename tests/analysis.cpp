@@ -20,6 +20,8 @@ int main() {
     assert(!cf::countsAsCause(6)); // Raw feedback is not an event-trigger dispatch.
     assert(cf::countsAsCause(8) && cf::countsAsCause(1) && cf::countsAsCause(5));
     assert(!cf::countsAsCause(0) && !cf::countsAsCause(9));
+    assert(cf::orbWasActivated(false, true));
+    assert(!cf::orbWasActivated(false, false) && !cf::orbWasActivated(true, true) && !cf::orbWasActivated(true, false));
     auto detail = cf::causalDifference(&cause, later, 1);
     assert(detail.find("Expected: tick=10") != std::string::npos);
     assert(detail.find("object=22") != std::string::npos && detail.find("object=23") != std::string::npos);
