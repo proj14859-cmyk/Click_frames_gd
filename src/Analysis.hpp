@@ -21,6 +21,9 @@ inline bool countsAsCause(int kind) {
     // contact/material feedback even when no event trigger is listening.
     return kind >= 1 && kind <= 8 && kind != 6;
 }
+// ringJump can be dispatched repeatedly while the player overlaps an orb.
+// Only the transition to RobTop's activated state is a gameplay activation.
+inline bool orbWasActivated(bool before, bool after) { return !before && after; }
 inline std::string describeCause(CausalEvent const& e) {
     constexpr char const* names[] = {"unknown", "orb-call", "trigger-contact", "pad", "teleport", "group-toggle", "raw-signal", "pickup", "event-trigger"};
     std::ostringstream out;
