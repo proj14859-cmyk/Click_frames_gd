@@ -47,6 +47,18 @@ struct Recording {
             if (counted(inputs[i]) && !windows[i].measured) return false;
         return true;
     }
+    size_t measurableCount() const {
+        return std::count_if(inputs.begin(), inputs.end(), counted);
+    }
+    size_t measuredCount() const {
+        size_t result = 0;
+        for (size_t i = 0; i < inputs.size() && i < windows.size(); ++i)
+            if (counted(inputs[i]) && windows[i].measured) ++result;
+        return result;
+    }
+    bool partialReady() const {
+        return complete && verified && windows.size() == inputs.size() && measuredCount() > 0;
+    }
 };
 inline bool hasEstimated(Recording const& r){return std::any_of(r.windows.begin(),r.windows.end(),[](auto const& w){return w.measured && w.estimated;});}
 // Counter rows span every width from the smallest measured value to the largest,

@@ -25,6 +25,7 @@ int main() {
 
     r.windows[1] = {0, 0, true, false};
     r.windows[1].measured = false; assert(!r.ready()); r.windows[1].measured = true;
+    assert(r.partialReady() && r.measuredCount() == 2 && r.measurableCount() == 2);
     std::stringstream stream; cf::write(stream,r); cf::Recording loaded;
     assert(cf::read(stream,"test",loaded) && loaded.ready() && loaded.inputs.size() == 3);
     assert(loaded.inputs[0].x == 100.f && loaded.inputs[2].y == 220.f);
@@ -32,6 +33,7 @@ int main() {
     r.inputs[2].mode = 5;
     r.windows[2].measured = false;
     assert(!r.ready()); // robot release must be measured
+    assert(r.partialReady()); // a verified partial analysis can still be showcased honestly
     r.inputs[2].mode = 0;
     assert(r.ready()); // cube release is still recorded, but not analyzed/counted
     std::stringstream modes; r.inputs[2].mode = 4; cf::write(modes, r);

@@ -1,5 +1,13 @@
 # Click Frames GD
 
+## v1.0.12 / 2026-11-13 / GD 2.2091 / Geode 6
+
+- Stop/Save permite reproducir una captura verificada parcialmente analizada; los eventos pendientes aparecen como círculos grises con `?` y no producen sonido ni cuentan como ventanas.
+- Analyze conserva la reanudación por evento y muestra una ETA basada únicamente en el rendimiento observado durante la sesión actual.
+- Los reinicios automatizados de Verify/Analyze restauran intentos, saltos, clics y tiempo del nivel al detener el análisis.
+- `metadata.json` identifica versión del mod, política y campos de confianza ya persistidos por ventana.
+- Los datos recientes confirman 61/566 eventos parciales recuperables en Bloudeleuste y muestran que el rendimiento depende de la aceptación de checkpoints; no se habilita captura normal ni margen centrado todavía.
+
 ## v1.0.11 / 2026-11-13 / GD 2.2091 / Geode 6
 
 -Optimizaciones:

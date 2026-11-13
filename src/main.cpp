@@ -300,6 +300,10 @@ struct Session {
     double analysisSeconds = 0;
     bool analysisClock = false;
     std::chrono::steady_clock::time_point analysisStart;
+    bool levelStatsCaptured = false;
+    int savedLevelAttempts = 0, savedLevelJumps = 0, savedLevelClicks = 0, savedLevelAttemptTime = 0, savedPracticeAttempts = 0;
+    int savedLayerAttempts = 0, savedLayerClicks = 0, savedLayerJumps = 0;
+    double savedLayerTimePlayed = 0, savedLayerAttemptTime = 0;
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
@@ -351,6 +355,25 @@ bool scanBatchActive = false;
 bool hasLiveOwner() {
     auto current = PlayLayer::get();
     return current && s.owner == current && current->m_level && current->m_player1 && current->m_player2;
+}
+void captureLevelStats() {
+    if (!hasLiveOwner() || s.levelStatsCaptured) return;
+    auto level = s.owner->m_level;
+    s.savedLevelAttempts = level->m_attempts.value(); s.savedLevelJumps = level->m_jumps.value();
+    s.savedLevelClicks = level->m_clicks.value(); s.savedLevelAttemptTime = level->m_attemptTime.value();
+    s.savedPracticeAttempts = level->m_practiceAttempts;
+    s.savedLayerAttempts = s.owner->m_attempts; s.savedLayerClicks = s.owner->m_clicks; s.savedLayerJumps = s.owner->m_jumps;
+    s.savedLayerTimePlayed = s.owner->m_timePlayed; s.savedLayerAttemptTime = s.owner->m_attemptTime;
+    s.levelStatsCaptured = true;
+}
+void restoreLevelStats() {
+    if (!hasLiveOwner() || !s.levelStatsCaptured) return;
+    auto level = s.owner->m_level;
+    level->m_attempts = s.savedLevelAttempts; level->m_jumps = s.savedLevelJumps; level->m_clicks = s.savedLevelClicks;
+    level->m_attemptTime = s.savedLevelAttemptTime; level->m_practiceAttempts = s.savedPracticeAttempts;
+    s.owner->m_attempts = s.savedLayerAttempts; s.owner->m_clicks = s.savedLayerClicks; s.owner->m_jumps = s.savedLayerJumps;
+    s.owner->m_timePlayed = s.savedLayerTimePlayed; s.owner->m_attemptTime = s.savedLayerAttemptTime;
+    s.levelStatsCaptured = false;
 }
 std::string phaseName() {
     return s.state==State::Verify ? "reference" : s.state==State::Analyze ? "analysis" : s.state==State::Record ? "record" : "interface";
@@ -537,6 +560,11 @@ void analysisClock(bool on) {
     if (s.analysisClock && !on) s.analysisSeconds += std::chrono::duration<double>(now - s.analysisStart).count();
     if (!s.analysisClock && on) s.analysisStart = now;
     s.analysisClock = on;
+}
+double activeAnalysisSeconds() {
+    auto value = s.analysisSeconds;
+    if (s.analysisClock) value += std::chrono::duration<double>(std::chrono::steady_clock::now() - s.analysisStart).count();
+    return value;
 }
 // Copy and validate legacy captures; never delete the old data during migration.
 bool migrateOldRun() {
@@ -919,7 +947,8 @@ void queueReturnToPause() {
 }
 void stop(std::string message) {
     analysisClock(false);
-    s.state = s.recording.ready() ? State::Ready : State::Idle;
+    restoreLevelStats();
+    s.state = s.recording.partialReady() ? State::Ready : State::Idle;
     s.snapshot = nullptr; s.snapshotChecked = false;
     s.snapshotEngineState.reset(); s.snapshotCollisions = {};
     s.validatingSnapshot = false;
@@ -1193,8 +1222,7 @@ void marker(size_t index) {
     if (s.visual.enabled) return;
     if (!cf::counted(e)) return;
     auto w = s.recording.windows[index];
-    if (!w.measured) return;
-    if (auto row = cf::rowOf(s.rows, w); row >= 0 && static_cast<size_t>(row) < s.tally.size()) ++s.tally[row];
+    if (w.measured) if (auto row = cf::rowOf(s.rows, w); row >= 0 && static_cast<size_t>(row) < s.tally.size()) ++s.tally[row];
     if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
         auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
         if (!root) {
@@ -1202,17 +1230,18 @@ void marker(size_t index) {
         }
         auto node = CCNode::create(); node->setPosition({e.x, e.y});
         float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale"));
-        auto rgb = cf::colorFor(w.width()); ccColor3B color3{rgb.r, rgb.g, rgb.b};
+        auto rgb = w.measured ? cf::colorFor(w.width()) : cf::Rgb{150, 160, 175}; ccColor3B color3{rgb.r, rgb.g, rgb.b};
         ccColor4F border{color3.r / 255.f, color3.g / 255.f, color3.b / 255.f, 1.f};
         ccColor4F fill{0, 0, 0, 0};
         auto circle = CCDrawNode::create(); circle->drawCircle({0, 0}, 18.f * scale, fill, 2.f, border, 48);
         node->addChild(circle);
-        auto label = CCLabelBMFont::create(fmt::format("{}{}{} F",w.estimated?"~":"", w.width(), w.lowerBound ? "+" : "").c_str(), "bigFont.fnt");
+        auto text = w.measured ? fmt::format("{}{}{} F",w.estimated?"~":"", w.width(), w.lowerBound ? "+" : "") : "?";
+        auto label = CCLabelBMFont::create(text.c_str(), "bigFont.fnt");
         label->setAlignment(kCCTextAlignmentCenter); label->setScale(.28f * scale);
         label->setColor(color3); label->setPosition({0, 27.f * scale}); node->addChild(label, 1);
         root->addChild(node);
     }
-    if (Mod::get()->getSettingValue<bool>("sounds")) {
+    if (w.measured && Mod::get()->getSettingValue<bool>("sounds")) {
         if(!clickAudio.play(w.width())) diagnostic("AUDIO_PLAY","No se pudo reproducir el sonido de ventana");
     }
 }
@@ -1306,6 +1335,7 @@ void beginAnalysis() {
     s.referenceLandings.assign(s.recording.inputs.size(), {});
     s.recording.radius = radius;
     s.recording.windows.resize(s.recording.inputs.size()); s.recording.verified = false;
+    captureLevelStats();
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
     s.baselinePass = 0; s.baseline.clear(); s.baselineCompared = 0;
     s.initialSharedSeed = GameToolbox::getfast_srand(); s.parityDiagnostic.clear();
@@ -1419,8 +1449,12 @@ void startCandidate() {
         s.message = "Validating shared native-state round trip";
         resetTrial(); return;
     }
-    s.message = fmt::format("{} {}% | event {}/{} | offset {:+} | {} tests", s.recording.analysisPolicy == 2 ? "Local" : "Full run",
-        100 * s.measuredDone / std::max<size_t>(1, s.measurableTotal), s.measuredDone + 1, s.measurableTotal, s.offset, s.tests);
+    auto elapsed = activeAnalysisSeconds();
+    auto remaining = s.measurableTotal > s.measuredDone ? s.measurableTotal - s.measuredDone : 0;
+    auto etaMinutes = s.newlyMeasured && remaining ? std::max(1LL, std::llround(std::ceil(elapsed / s.newlyMeasured * remaining / 60.))) : 0LL;
+    s.message = fmt::format("{} {}% | event {}/{} | offset {:+} | {} tests{}", s.recording.analysisPolicy == 2 ? "Local" : "Full run",
+        100 * s.measuredDone / std::max<size_t>(1, s.measurableTotal), s.measuredDone + 1, s.measurableTotal, s.offset, s.tests,
+        etaMinutes ? fmt::format(" | ETA ~{} min", etaMinutes) : "");
     bool prepared = s.recoveringFlight ? cf::recoveryTrial(s.recording.inputs, s.target, s.offset,
         s.recoveryNeighbor, s.recoveryChange, s.trial) : cf::candidateTrial(s.recording.inputs, s.target, s.offset, s.trial);
     if (!prepared) {
@@ -2007,8 +2041,8 @@ class $modify(CFPlay, PlayLayer) {
             auto rawFeatures=cf::readFile(recordingPath.parent_path()/"capture-physics.tsv");
             if(!rawFeatures.empty() && !cf::training::decode(rawFeatures,s.captureDigest,s.features)) diagnostic("PHYSICS_PARSE","La captura fisica no coincide; se omite del dataset");
             s.traceDigest = cf::fingerprint(cf::traceCsv(s.recording));
-            s.state = s.recording.ready() ? State::Ready : State::Idle;
-            s.message = s.recording.ready() ? "Saved showcase available" : "Saved run: Analyze to continue";
+            s.state = s.recording.partialReady() ? State::Ready : State::Idle;
+            s.message = s.recording.ready() ? "Saved showcase available" : s.recording.partialReady() ? "Partial showcase available; Analyze to resume" : "Saved run: Analyze to continue";
             if (s.recording.analysisPolicy == 2) s.message += " (segment windows)";
             if (loaded.backupAnalysis) s.message += " (recovered playback backup)";
             auto predictionData = readAll(path().parent_path() / "prediction-trails.txt");
@@ -2594,14 +2628,14 @@ class CFPopup : public Popup {
             onClose(nullptr); resumeAndRun([] { beginAnalysis(); });
         });
         add("3. PLAY", s.visual.enabled ? "Presentacion editada" : "Circles + sounds", {79, 115},
-            !active && (s.recording.ready() || (s.visual.enabled && s.recording.complete)), [this] {
+            !active && (s.recording.partialReady() || (s.visual.enabled && s.recording.complete)), [this] {
             if (!ensureSession() || !supported()) {
                 FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return;
             }
             onClose(nullptr);
             resumeAndRun([] {
                 s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
-                s.message = cf::hasEstimated(s.recording)?"Showcase - ESTIMATED windows at 240 TPS":"Showcase - exact measured windows at 240 TPS"; resetTrial();
+                s.message = s.recording.ready() ? (cf::hasEstimated(s.recording)?"Showcase - ESTIMATED windows at 240 TPS":"Showcase - exact measured windows at 240 TPS") : "Partial showcase - ? marks events not measured yet"; resetTrial();
             });
         });
         add("STOP / SAVE", "Keep partial analysis", {215, 115}, active, [this] {
@@ -2661,7 +2695,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.10", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.12", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
