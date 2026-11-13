@@ -1,5 +1,7 @@
 # Click Frames GD
 
+El mod complementario independiente se encuentra en [`collector/`](collector/README.md). Recolecta localmente intentos normales y runs completadas en carpetas separadas para el futuro dataset, y requiere Click Frames GD v1.0.14 o superior.
+
 ## v1.0.14 / 2026-11-13 / GD 2.2091 / Geode 6
 
 - Las ventanas mayores de 20 frames aparecen como círculos al 45%, sin sonido, y se suprimen solo cuando están demasiado cerca de otro marcador ancho. El límite y espaciado son configurables.

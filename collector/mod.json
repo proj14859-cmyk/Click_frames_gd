@@ -1,0 +1,15 @@
+{
+  "geode": "6.0.0-alpha.1",
+  "gd": { "win": "2.2091", "android": "2.2091" },
+  "id": "juan.click_frames_collector",
+  "name": "Click Frames Collector",
+  "version": "v0.1.0",
+  "developer": "Juan",
+  "description": "Local normal-mode attempt and completed-run dataset collector for Click Frames GD.",
+  "dependencies": { "juan.click_frames_gd": ">=v1.0.14" },
+  "settings": {
+    "enabled": { "type": "bool", "name": "Collect normal-mode attempts", "description": "Stores data locally only. Practice and editor test mode are excluded.", "default": true },
+    "sample-stride": { "type": "int", "name": "Trajectory sample stride", "description": "1 records every observed physics tick; higher values reduce file size.", "default": 1, "min": 1, "max": 8 },
+    "max-samples": { "type": "int", "name": "Maximum samples per attempt", "description": "Protects mobile memory. Inputs and the result are still saved if trajectory sampling reaches this limit.", "default": 120000, "min": 2400, "max": 500000 }
+  }
+}

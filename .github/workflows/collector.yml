@@ -1,0 +1,46 @@
+name: Build Collector
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "collector/**"
+      - ".github/workflows/collector.yml"
+
+jobs:
+  collector-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test collector serialization
+        run: g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined collector/tests/collector.cpp -o /tmp/collector-tests && /tmp/collector-tests
+
+  collector-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { name: Windows, os: windows-latest }
+          - { name: Android32, os: ubuntu-latest, target: Android32 }
+          - { name: Android64, os: ubuntu-latest, target: Android64 }
+    name: Collector ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: v6.0.0-alpha.1
+          path: collector
+          combine: true
+          target: ${{ matrix.config.target }}
+
+  collector-package:
+    needs: [collector-tests, collector-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: geode-sdk/build-geode-mod/combine@main
+        id: build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: click_frames_collector
+          path: ${{ steps.build.outputs.build-output }}
