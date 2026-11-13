@@ -263,7 +263,7 @@ struct Session {
     int changedUntil = -1;
     cf::AuditGate auditGate;
     cf::ProbeCache probeCache;
-    uint64_t cacheHits = 0, trialAttempts = 0, tickFallbacks = 0, parityFallbacks = 0, previousStateFallbacks = 0;
+    uint64_t cacheHits = 0, trialAttempts = 0, tickFallbacks = 0, parityFallbacks = 0, previousStateFallbacks = 0, parityStreak = 0;
     uint64_t probeRestores = 0, newlyMeasured = 0;
     uint64_t rejoinChecks = 0, rejoinReferenceMisses = 0, rejoinWorldBlocks = 0, rejoinStateMismatches = 0, rejoinAccepts = 0;
     bool nativeDisabled = false;
@@ -1315,7 +1315,7 @@ void beginAnalysis() {
     s.recoveringFlight = false; s.recoveryReport.clear();
     s.auditing = s.earlyAccepted = s.fromCache = false; s.auditGate = {}; s.probeCache.clear();
     s.causalHash = cf::hashStart; s.phaseCalls.fill(0); s.eventReport.clear();
-    s.cacheHits = s.trialAttempts = s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = 0;
+    s.cacheHits = s.trialAttempts = s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = s.parityStreak = 0;
     s.probeRestores = s.newlyMeasured = 0; s.nativeDisabled = false;
     s.rejoinChecks=s.rejoinReferenceMisses=s.rejoinWorldBlocks=s.rejoinStateMismatches=s.rejoinAccepts=0;
     s.missedNativeTargets = s.thinnedNativeStates = 0;
@@ -1516,14 +1516,18 @@ void consume() {
                 s.nativePool[s.activeNative].rejected = !s.snapshotChecked;
             }
             if (!s.snapshotChecked) {
-                diagnostic("RESTORE_PARITY",s.message);
-                ++s.restoreFallbacks; ++s.parityFallbacks; s.snapshot = nullptr;
-                if(s.parityFallbacks>=2) {
+                diagnostic("RESTORE_PARITY",fmt::format("{} | state tick {} end {} now {} compared {} causalMismatch {} cursor {}/{} pass {}",
+                    s.message, s.snapshotTick, s.snapshotEndTick, tick(), s.snapshotCompared, s.causalMismatch,
+                    s.causalCursor, s.causalTrace.size(), result == Pending::Pass));
+                ++s.restoreFallbacks; ++s.parityFallbacks; ++s.parityStreak; s.snapshot = nullptr;
+                // One bad checkpoint must not switch the cache off for the whole scan: it is already marked rejected,
+                // so try an earlier one. Only a run of consecutive failures means restore is unreliable on this level.
+                if(s.parityStreak>=6) {
                     s.nativeDisabled=true;
-                    log::warn("[CF] native-state cache disabled after repeated parity failures");
+                    log::warn("[CF] native-state cache disabled after {} consecutive parity failures", s.parityStreak);
                 } else if (chooseNativeState()) ++s.previousStateFallbacks;
                 log::warn("[CF] native-state validation failed; trying earlier state or full replay");
-            } else retireOldStates();
+            } else { s.parityStreak = 0; retireOldStates(); }
         } else {
             bool pass = result == Pending::Pass;
             if (s.auditing) {
@@ -2542,7 +2546,7 @@ class CFPopup : public Popup {
             s.reportDirty = true;
             s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0; s.tests = 0;
             s.probeRestores = s.trialAttempts = s.cacheHits = s.newlyMeasured = 0;
-            s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = s.missedNativeTargets = s.thinnedNativeStates = 0;
+            s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = s.parityStreak = s.missedNativeTargets = s.thinnedNativeStates = 0;
             s.phaseCalls.fill(0); s.auditGate = {}; s.nativeDisabled = false;
             s.resetSeconds = s.restoreSeconds = 0; s.eventReport.clear(); s.parityDiagnostic.clear();
             s.inputRoutingReport.clear();
@@ -2627,7 +2631,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.9", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.10", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
