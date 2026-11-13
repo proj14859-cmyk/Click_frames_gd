@@ -893,10 +893,10 @@ std::string importPacksImpl() {
         }
         if (ok) for (auto const& [key, r] : captures) {
             std::string digest; auto directory = levelDir(pack.folder) / key;
-            if (!cf::saveBundle(directory, r, true, digest)) { ok = false; break; }
             std::error_code policyError;
             std::filesystem::remove(directory / "analysis-policy.txt", policyError);
             if (policyError) { ok = false; break; }
+            if (!cf::saveBundle(directory, r, true, digest)) { ok = false; break; }
             auto edits = visual.find(key);
             if (edits != visual.end()) {
                 auto trace = cf::fingerprint(cf::traceCsv(r)); std::ostringstream content;
