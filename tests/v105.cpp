@@ -37,7 +37,8 @@ int main(){
     auto no=f;no.geometry=false;cf::training::csv(r,{no,f,f},totals);assert(totals.exported==1 && totals.geometry==1);
     no=f;no.replayMatch=false;cf::training::csv(r,{no,f,f},totals);assert(totals.exported==0 && totals.missing==1);
     no=f;no.vy=std::numeric_limits<double>::quiet_NaN();assert(cf::training::row(no,3).empty());
-    auto shard=root/"training"/"123.csv";assert(cf::replaceFile(shard,bytes));assert(cf::training::aggregate(root));
+    auto shard=root/"training"/"123.csv";assert(cf::replaceFile(shard,bytes));
+    assert(cf::replaceFile(root/"training"/"123.meta","CF_TRAINING 3\nPolicy: CF-ANALYSIS-10\n"));assert(cf::training::aggregate(root));
     assert(cf::readFile(root/"dataset_entrenamiento.csv")==bytes);assert(cf::training::aggregate(root));assert(cf::readFile(root/"dataset_entrenamiento.csv")==bytes);
     assert(cf::replaceFile(shard,cf::training::header));assert(cf::training::aggregate(root));assert(cf::readFile(root/"dataset_entrenamiento.csv")==cf::training::header);
     auto binary=cf::fwcBytes(r);assert(binary.size()==33 && binary.substr(0,4)=="FWC2");assert(uint8_t(binary[12])==1 && uint8_t(binary[16])==20 && uint8_t(binary[28])==1);

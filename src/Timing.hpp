@@ -13,6 +13,7 @@
 #include <vector>
 
 namespace cf {
+inline constexpr char analysisPolicyVersion[] = "CF-ANALYSIS-10";
 struct Input {
     int tick = 0;
     bool down = false;

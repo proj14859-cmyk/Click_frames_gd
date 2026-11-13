@@ -5,6 +5,10 @@
 #include <set>
 
 namespace cf::training {
+inline bool currentPolicyMetadata(std::string const& bytes) {
+    auto marker = "\nPolicy: " + std::string(analysisPolicyVersion) + "\n";
+    return bytes.starts_with("CF_TRAINING ") && bytes.find(marker) != std::string::npos;
+}
 constexpr char legacyHeader[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
 constexpr char v106Header[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,en_suelo,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames\n";
 constexpr char v107Header[] = "vehiculo,velocidad_x,velocidad_y,gravedad,tamano,en_suelo,distancia_obs_x,distancia_obs_y,delta_ticks,TARGET_frames,early,late,abierta,radio,digest_nivel,digest_captura,indice_evento,tick,politica,tps\n";
@@ -107,6 +111,10 @@ inline bool aggregate(fs::path const& root, bool openOnly = false) {
             continue;
         }
         if(!bytes.starts_with(header)) return false;
+        if(!openOnly) {
+            auto metadata=p; metadata.replace_extension(".meta");
+            if(!currentPolicyMetadata(readFile(metadata))) continue;
+        }
         if(all.size()+bytes.size()>MAX_BUNDLE_BYTES) return false;
         all+=bytes.substr(sizeof(header)-1);
     }

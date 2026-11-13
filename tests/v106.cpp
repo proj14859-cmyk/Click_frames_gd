@@ -35,7 +35,10 @@ int main(){
     auto root=cf::fs::temp_directory_path()/"cf106-test";cf::fs::remove_all(root);cf::fs::create_directories(root);
     assert(cf::replaceFile(root/"training"/"old.csv",cf::training::legacyHeader));assert(cf::training::aggregate(root));
     assert(cf::fs::exists(root/"training"/"old.csv.v105") && cf::readFile(root/"dataset_entrenamiento.csv")==cf::training::header);
-    assert(cf::replaceFile(root/"training"/"current.csv",csv));assert(cf::training::aggregate(root));
+    assert(cf::replaceFile(root/"training"/"current.csv",csv));
+    assert(cf::replaceFile(root/"training"/"current.meta","CF_TRAINING 3\nPolicy: CF-ANALYSIS-10\n"));assert(cf::training::aggregate(root));
+    assert(cf::replaceFile(root/"training"/"stale.csv",csv));
+    assert(cf::replaceFile(root/"training"/"stale.meta","CF_TRAINING 3\nPolicy: CF-ANALYSIS-9\n"));assert(cf::training::aggregate(root));
     assert(cf::training::aggregate(root,true));assert(cf::training::refreshMetadata(root));
     auto manifest=cf::readFile(root/"dataset_manifest.json");auto report=cf::readFile(root/"dataset-report.txt");
     assert(manifest.find("\"closed_rows\": 1")!=std::string::npos && manifest.find("\"unique_levels\": 1")!=std::string::npos);
