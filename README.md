@@ -1,5 +1,19 @@
 # Click Frames GD
 
+## v1.0.11 / 2026-11-13 / GD 2.2091 / Geode 6
+
+-Optimizaciones:
+- La validación de cada checkpoint nativo ahora termina en el tick del evento objetivo (mínimo +16 ticks) verificando paridad física y causal contra la referencia, en lugar de simular hasta el 100% del nivel.
+- Se elimina la triple repetición desde el 0% (`tick 0`) en bordes fallidos cuando el checkpoint nativo está validado, verificando la paridad del prefijo `[snapshotTick, targetTick)` en tiempo real durante el propio candidato.
+- `Verify` se reduce de 3 a 2 pasadas y habilita la ejecución por lotes (`batch-analysis`, hasta 2048 slices / 16 ms por frame por defecto) desde la primera pasada, con respaldo automático a cadencia normal si todos los shifts fallan.
+- `GroupedSearch` en modo `Exact` avanza de forma contigua desde el centro y cierra el lado en el primer fallo sin sondear cabeceras exteriores (`-5/+5`) por adelantado; las cabeceras rápidas quedan exclusivas para `Fast estimated`.
+- `rejoinEvidence()` incorpora el conteo de instancias dinámicas del mundo (`m_tweenActions`, `m_moveEffectInstances`, `m_rotateEffectInstances`, etc.) en `actorHash`, permitiendo reconvergencia temprana incluso en niveles con decoración en movimiento.
+- Se difiere la escritura pesada de shards CSV y `cf::training::aggregate()` hasta finalizar o pausar el escaneo (guardando el bundle cada 16 eventos) y se añade un filtro espacial de `±750` unidades antes de `getObjectRect()` en `captureFeatures()`.
+
+-Cambios:
+- `scan-budget-ms` pasa a `16` ms por defecto (rango `2..24`) y `flight-recovery` pasa a `false` por defecto (activable manualmente en ajustes).
+
+
 ## v1.0.10 / 2026-11-13 / GD 2.2091 / Geode 6
 
 - Un checkpoint nativo con paridad incorrecta se rechaza individualmente y permite probar uno anterior.
