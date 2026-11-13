@@ -1691,7 +1691,7 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
                 } else s.updateSchedule.push_back(dt);
             } else if (s.scheduleCursor < s.updateSchedule.size()) {
                 slice = s.updateSchedule[s.scheduleCursor];
-            } else if (s.state == State::Analyze && !s.validatingSnapshot && !s.updateSchedule.empty()) {
+            } else if (!s.updateSchedule.empty()) {
                 slice = s.updateSchedule.back();
             } else {
                 s.message = "Replay exceeded recorded update schedule; window not measured";
