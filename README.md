@@ -1,5 +1,11 @@
 # Click Frames GD
 
+## v1.0.9 / 2026-11-12 / GD 2.2091 / Geode 6
+
+- Migra el manifiesto, CI y rutas de archivos a Geode 6.0.0-alpha.1 y Geometry Dash 2.2091.
+- Conserva grabaciones, datasets, exportaciones, marcadores y diagnósticos en la carpeta propia del mod.
+- Compilación multidispositivo y verificación dentro del juego pendientes al iniciar esta migración.
+
 ## v1.0.8 / 2026-11-12 / 16:33 UTC / GD 2.2081 / Geode 5.11.2
 
 -Correcciones:
