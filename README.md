@@ -1,5 +1,11 @@
 # Click Frames GD
 
+## v1.0.14 / 2026-11-13 / GD 2.2091 / Geode 6
+
+- Las ventanas mayores de 20 frames aparecen como círculos al 45%, sin sonido, y se suprimen solo cuando están demasiado cerca de otro marcador ancho. El límite y espaciado son configurables.
+- Verify detecta una muerte idéntica tras tres alineaciones, repite una vez sin batching y después detiene la captura con una explicación breve en vez de ejecutar 26 intentos equivalentes.
+- Una captura que muere igual desde 0% debe volver a grabarse desde el inicio sin recuperar checkpoints; una finalización cosida en práctica no demuestra que la ruta completa sea reproducible.
+
 ## v1.0.13 / 2026-11-13 / GD 2.2091 / Geode 6
 
 - Los círculos y sonidos de ventanas mayores de 20 frames se ocultan por defecto, sin eliminar la medición ni alterar el contador o las exportaciones; el límite es configurable hasta 41.

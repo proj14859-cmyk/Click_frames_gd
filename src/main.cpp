@@ -177,11 +177,13 @@ struct Session {
     float stalledSeconds = 0;
     std::vector<cf::Row> rows; // counter rows for this run (see cf::makeRows)
     std::vector<int> tally;
+    std::vector<CCPoint> compactMarkerPositions;
     std::string message = "Record a practice run";
     std::string folder; // levels/<name>-<id>/ holds this level's runs
     std::string alert, firstFail; // why a run stopped, shown once pause is back
     std::string shiftLog;
     int shiftIndex = 0, lastPressTick = -1, divergences = 0;
+    int verifyDeathTick = -1, verifyDeathRepeats = 0;
     float lastIntervalMs = -1.f;
     bool noRetry = false;
     bool background = false, objectsWereVisible = true;
@@ -1177,6 +1179,7 @@ void showMs(float ms) {
 }
 void clearMarkers() {
     clickAudio.stop();
+    s.compactMarkerPositions.clear();
     if (!hasLiveOwner()) return;
     if (auto precision = s.owner->getChildByID("cf-precision")) precision->removeFromParent();
     if (auto ms = s.owner->getChildByID("cf-ms")) ms->removeFromParent();
@@ -1227,16 +1230,22 @@ void marker(size_t index) {
     if (!cf::counted(e)) return;
     auto w = s.recording.windows[index];
     if (w.measured) if (auto row = cf::rowOf(s.rows, w); row >= 0 && static_cast<size_t>(row) < s.tally.size()) ++s.tally[row];
-    // Keep wide/open windows in the counter and exported analysis, but avoid
-    // covering the level with low-value circles (and their sounds).
-    if (w.measured && w.width() > Mod::get()->getSettingValue<int64_t>("marker-max-width")) return;
+    bool compact = w.measured && w.width() > Mod::get()->getSettingValue<int64_t>("marker-max-width");
+    if (compact) {
+        float spacing = static_cast<float>(Mod::get()->getSettingValue<int64_t>("wide-marker-spacing"));
+        for (auto const& point : s.compactMarkerPositions) {
+            float dx=e.x-point.x,dy=e.y-point.y;
+            if (dx*dx+dy*dy < spacing*spacing) return;
+        }
+        s.compactMarkerPositions.push_back({e.x,e.y});
+    }
     if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
         auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
         if (!root) {
             root = CCNode::create(); root->setID("cf-markers"); s.owner->m_objectLayer->addChild(root, 1000);
         }
         auto node = CCNode::create(); node->setPosition({e.x, e.y});
-        float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale"));
+        float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale")) * (compact ? .45f : 1.f);
         auto rgb = w.measured ? cf::colorFor(w.width()) : cf::Rgb{150, 160, 175}; ccColor3B color3{rgb.r, rgb.g, rgb.b};
         ccColor4F border{color3.r / 255.f, color3.g / 255.f, color3.b / 255.f, 1.f};
         ccColor4F fill{0, 0, 0, 0};
@@ -1248,7 +1257,7 @@ void marker(size_t index) {
         label->setColor(color3); label->setPosition({0, 27.f * scale}); node->addChild(label, 1);
         root->addChild(node);
     }
-    if (w.measured && Mod::get()->getSettingValue<bool>("sounds")) {
+    if (w.measured && !compact && Mod::get()->getSettingValue<bool>("sounds")) {
         if(!clickAudio.play(w.width())) diagnostic("AUDIO_PLAY","No se pudo reproducir el sonido de ventana");
     }
 }
@@ -1365,6 +1374,7 @@ void beginAnalysis() {
         size_t(Mod::get()->getSettingValue<int64_t>("checkpoint-budget")));
     s.batchDisabled = false; s.confirmingBoundary = false; s.batchUpdates = 0;
     s.trial = s.recording.inputs; s.shiftIndex = 0; s.shiftLog.clear(); s.noRetry = false; s.firstFail.clear(); s.alert.clear();
+    s.verifyDeathTick = -1; s.verifyDeathRepeats = 0;
     s.analysisSeconds = 0; s.physicsCalls = s.restores = s.restoreFallbacks = 0;
     s.trialCostActive = s.trialTargetCostSeen = false;
     s.localFallbackEvents = s.localFallbackTrials = s.localPasses = 0; s.peakNativeStates = 0;
@@ -1508,6 +1518,16 @@ void consume() {
             }
             if (s.baselinePass > 0) {
                 s.message = "Unstable baseline: repeated route died"; s.pending = Pending::Invalid; return;
+            }
+            if (s.verifyDeathRepeats >= 3) {
+                if (!s.batchDisabled && Mod::get()->getSettingValue<bool>("batch-analysis")) {
+                    s.batchDisabled = true; s.shiftIndex = 0; s.trial = s.recording.inputs;
+                    s.verifyDeathTick = -1; s.verifyDeathRepeats = 0;
+                    s.message = "Same replay death detected; retrying once at normal cadence";
+                    resetTrial(); return;
+                }
+                s.noRetry = true;
+                s.message = fmt::format("Saved route is not reproducible from 0%: replay dies repeatedly at tick {}. Record a clean run from the start without checkpoint recovery, then Analyze again.", s.verifyDeathTick);
             }
             log::info("[CF] verify failed (shift {:+}): {}", by, s.message);
             if (s.firstFail.empty()) s.firstFail = s.message;
@@ -2254,6 +2274,10 @@ class $modify(CFPlay, PlayLayer) {
         if (active && player->m_isDead && s.owner == this && running() &&
             s.pending == Pending::None) {
             s.message = fmt::format("Replay died at tick {} (P{})", tick(),player == m_player1 ? 1 : 2);
+            if (s.state == State::Verify) {
+                if (s.verifyDeathTick == tick()) ++s.verifyDeathRepeats;
+                else { s.verifyDeathTick = tick(); s.verifyDeathRepeats = 1; }
+            }
             // A delayed jump may legitimately die before its shifted press.
             // Only death before BOTH original and candidate times is unrelated
             // to the perturbation and must not narrow the measured window.
@@ -2704,7 +2728,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.13", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.14", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
