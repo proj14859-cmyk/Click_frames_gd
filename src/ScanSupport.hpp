@@ -68,8 +68,9 @@ inline std::vector<int> checkpointTargets(std::span<Input const> inputs, int rad
     for (size_t i = 0; i < budget; ++i) sampled.push_back(targets[budget == 1 ? 0 : i * (targets.size() - 1) / (budget - 1)]);
     return sampled;
 }
-// Probe group headers first, but certify every interior offset: GD trajectories
-// need not be monotone in timing (orbs/triggers can create holes).
+// In Fast estimated mode, probe 5-tick group headers first (8 probes for open +/-20).
+// In Exact mode, probe contiguously outward from center so the first failing offset
+// immediately closes that boundary without wasting simulations on farther offsets.
 struct GroupedSearch {
     int radius=20, offset=-5, early=0, late=0, group=1, direction=-1;
     bool done=false,leftClosed=false,rightClosed=false;
@@ -85,7 +86,7 @@ struct GroupedSearch {
             int end=std::min(radius,group*5),begin=group*5-4;
             bool closed=direction<0?leftClosed:rightClosed;
             if(!closed) {
-                if(!outcomes[20+direction*end]){offset=direction*end;return;}
+                if(approximate && !outcomes[20+direction*end]){offset=direction*end;return;}
                 for(int i=begin;i<=end;++i)if(!outcomes[20+direction*i]){offset=direction*i;return;}
             }
             if(direction<0)direction=1;

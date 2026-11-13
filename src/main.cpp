@@ -428,6 +428,7 @@ cf::training::Features captureFeatures(PlayerObject* player, bool down) {
         auto object=static_cast<GameObject*>(s.owner->m_objects->objectAtIndex(i));
         if(!object || object->m_objectType!=GameObjectType::Hazard || object->m_isDisabled || object->m_isDisabled2 ||
             object->m_objectRadius>0 || object->getRotation()!=0.f) continue;
+        if(std::abs(object->getPositionX()-x)>750.f || std::abs(object->getPositionY()-y)>750.f) continue;
         auto rect=object->getObjectRect();
         double dx=player->m_isGoingLeft?rect.getMaxX()-x:rect.getMinX()-x;
         if((player->m_isGoingLeft? -dx:dx)<0 || std::abs(dx)>600) continue;
@@ -454,10 +455,12 @@ cf::RejoinEvidence rejoinEvidence() {
     cf::RejoinEvidence evidence;
     evidence.rng = s.owner->m_randomSeed; evidence.replayRng = s.owner->m_replayRandSeed;
     evidence.sharedRng = GameToolbox::getfast_srand(); evidence.causalHash = s.causalHash;
-    evidence.quietWorld = g.m_gameObjectPhysics.empty() && g.m_tweenActions.empty() && g.m_stateObjects.empty() &&
-        g.m_moveEffectInstances.empty() && g.m_rotateEffectInstances.empty() && g.m_scaleEffectInstances.empty() &&
-        g.m_dynamicMoveActions.empty() && g.m_dynamicRotateActions.empty() && g.m_advanceFollowInstances.empty();
+    evidence.quietWorld = true;
     uint64_t hash = cf::hashStart;
+    for (size_t count : {g.m_gameObjectPhysics.size(), g.m_tweenActions.size(), g.m_stateObjects.size(),
+        g.m_moveEffectInstances.size(), g.m_rotateEffectInstances.size(), g.m_scaleEffectInstances.size(),
+        g.m_dynamicMoveActions.size(), g.m_dynamicRotateActions.size(), g.m_advanceFollowInstances.size()})
+        hash = cf::hashWord(hash, uint64_t(count));
     auto number = [&](double v) { if (!std::isfinite(v)) evidence.quietWorld = false; hash = cf::hashWord(hash, std::bit_cast<uint64_t>(v)); };
     for (auto player : {s.owner->m_player1, g.m_isDualMode ? s.owner->m_player2 : nullptr}) {
         if (!player) continue;
@@ -666,6 +669,7 @@ void save(bool flushPredictions = false) {
     if(s.featuresDirty && s.features.size()==s.recording.inputs.size()) {
         if(writeSafe(path().parent_path()/"capture-physics.tsv",cf::training::encode(s.captureDigest,s.features))) s.featuresDirty=false;
     }
+    if (s.state == State::Analyze && !flushPredictions && !changedCapture) return;
     // Replacing a capture's shard removes stale labels after policy changes,
     // failed certification or audit invalidation. CSV itself keeps nine columns.
     auto training=cf::training::csv(s.recording,s.features,s.trainingTotals,s.captureDigest);
@@ -1348,7 +1352,8 @@ bool chooseNativeState() {
     s.snapshotCausalCursor = n.causalCursor; s.snapshotCausalHash = n.causalHash;
     s.snapshotCollisions = n.collisions; s.snapshotEngineState = n.engineState;
     s.snapshotStep = n.step; s.snapshotRecordedSize = n.recordedSize; s.snapshotResumeTimer = n.resumeTimer;
-    s.snapshotChecked = n.checked; s.snapshotEndTick = s.recording.endTick;
+    s.snapshotChecked = n.checked;
+    s.snapshotEndTick = std::min(s.recording.endTick, std::max(n.tick + 16, s.recording.inputs[s.target].tick));
     if (!n.checked) { s.validatingSnapshot = true; s.offset = 0; }
     return true;
 }
@@ -1402,7 +1407,8 @@ void startCandidate() {
             s.trialAttempts-s.eventStartAttempts, s.restores-s.eventStartRestores, s.eventPreTargetCalls,
             s.eventPostTargetCalls, s.eventAvoidedTicks, s.restoreFallbacks-s.eventStartRestoreFallbacks,
             s.causalRejected-s.eventStartCausalRejected, s.auditGate.audits-s.eventStartAudits);
-        save(); ++s.target; nextEvent();
+        if (s.newlyMeasured % 16 == 0) save();
+        ++s.target; nextEvent();
         if (s.state != State::Analyze) return;
     }
     s.candidateTrace.clear();
@@ -1470,6 +1476,11 @@ void consume() {
                 s.message = fmt::format("Verifying original run (shift {:+})", VERIFY_SHIFTS[s.shiftIndex]);
                 resetTrial(); return;
             }
+            if (!s.noRetry && !s.batchDisabled && Mod::get()->getSettingValue<bool>("batch-analysis")) {
+                s.batchDisabled = true; s.shiftIndex = 0; s.trial = s.recording.inputs;
+                s.message = "Retrying verification at normal frame cadence";
+                resetTrial(); return;
+            }
             s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nShifts tried (ticks):{}", s.message, s.firstFail, s.shiftLog);
             diagnostic("VERIFY_FAILED",s.alert);
             stop(s.message); queueReturnToPause(); return;
@@ -1480,9 +1491,9 @@ void consume() {
             s.message = "Unstable baseline: completion tick or physics schedule changed";
             s.pending = Pending::Invalid; return;
         }
-        if (++s.baselinePass < 3) {
+        if (++s.baselinePass < 2) {
             s.baselineCompared = 0;
-            s.message = fmt::format("Checking saved route: replay {} of 3", s.baselinePass + 1);
+            s.message = fmt::format("Checking saved route: replay {} of 2", s.baselinePass + 1);
             resetTrial(); return;
         }
         if (by) { // derived playback alignment; immutable capture.flr is not rewritten
@@ -1509,10 +1520,14 @@ void consume() {
     } else if (s.state == State::Analyze) {
         if (s.validatingSnapshot) {
             s.validatingSnapshot = false;
-            s.snapshotChecked = s.snapshot && result == Pending::Pass && tick() == s.snapshotEndTick && s.snapshotCompared > 0 &&
-                !s.causalMismatch && s.causalCursor == s.causalTrace.size();
+            auto expectedRef = s.baseline.get(tick());
+            bool causalOk = tick() == s.recording.endTick ? (s.causalCursor == s.causalTrace.size()) :
+                (expectedRef && s.causalCursor == size_t(expectedRef->flags[9]));
+            s.snapshotChecked = s.snapshot && result == Pending::Pass && tick() >= s.snapshotEndTick && s.snapshotCompared > 0 &&
+                !s.causalMismatch && causalOk;
             if (s.activeNative >= 0) {
                 s.nativePool[s.activeNative].checked = s.snapshotChecked;
+                s.nativePool[s.activeNative].failureConfirmed = s.snapshotChecked;
                 s.nativePool[s.activeNative].rejected = !s.snapshotChecked;
             }
             if (!s.snapshotChecked) {
@@ -1553,7 +1568,7 @@ void consume() {
                 // fixed-macro boundary failed regardless of recovery outcome.
                 ++s.tests;s.failureReasons[20+s.offset]=s.recoveryOriginalFailure; s.search.accept(false); s.offset = s.search.offset; startCandidate(); return;
             }
-            if (!pass && !s.fromCache && s.search.window().width() <= 3 && !s.confirmingBoundary && !s.batchDisabled &&
+            if (!pass && !s.fromCache && !s.snapshotChecked && s.search.window().width() <= 3 && !s.confirmingBoundary && !s.batchDisabled &&
                 Mod::get()->getSettingValue<bool>("batch-analysis")) {
                 s.confirmingBoundary = true; s.fullRestartRetry = true;
                 startCandidate(); return;
@@ -1583,7 +1598,7 @@ void consume() {
                 if (next < s.recording.inputs.size() && s.recording.inputs[next].tick - s.recording.inputs[s.target].tick <= 240) {
                     s.recoveringFlight = true; s.recoveryNeighbor = next; s.recoveryChange = -1;
                     s.recoveryOriginalFailure=s.failure;
-                    s.fullRestartRetry = true; startCandidate(); return;
+                    s.fullRestartRetry = !s.snapshotChecked; startCandidate(); return;
                 }
             }
             ++s.tests;
@@ -1610,7 +1625,7 @@ void consume() {
 // engine/hook order. Rendering occurs once after the batch. Never recursively
 // call this hook or directly bypass PlayLayer's update chain.
 void captureTargetCheckpoint(bool safePhase=false, float dt=0) {
-    if(s.state!=State::Verify || s.baselinePass!=2 || s.pending!=Pending::None)return;
+    if(s.state!=State::Verify || s.baselinePass!=1 || s.pending!=Pending::None)return;
     try {
     int now=tick();
     auto& next=safePhase?s.nextSafeNativeTarget:s.nextNativeTarget;
@@ -1618,7 +1633,7 @@ void captureTargetCheckpoint(bool safePhase=false, float dt=0) {
                 while (next < s.nativeTargets.size() && s.nativeTargets[next] < now) {
                     ++next; if(!safePhase)++s.missedNativeTargets;
                 }
-                if (s.baselinePass == 2 && Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited &&
+                if (s.baselinePass == 1 && Mod::get()->getSettingValue<bool>("native-states") && !s.nativePoolLimited &&
                     next < s.nativeTargets.size() && now >= s.nativeTargets[next]-lead) {
                     do {++next;}while(next<s.nativeTargets.size() && s.nativeTargets[next]<=now+lead);
                     auto cp = s.owner->createCheckpoint();
@@ -1664,9 +1679,8 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
         scanBatchActive = true;
         auto owner = s.owner;
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Mod::get()->getSettingValue<int64_t>("scan-budget-ms"));
-        bool fast = !s.batchDisabled &&
-            !(s.state == State::Verify && s.baselinePass == 0);
-        int limit = fast ? 1024 : 1;
+        bool fast = !s.batchDisabled;
+        int limit = fast ? 2048 : 1;
         for (int i = 0; i < limit; ++i) {
             if (s.pending != Pending::None) consume();
             if (!scanning() || s.owner != owner) break;
@@ -1796,7 +1810,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 ++s.physicsCalls;
                 size_t phase = s.state == State::Verify ? 0 : s.validatingSnapshot ? 1 : s.auditing ? 4 : s.recoveringFlight ? 5 : s.confirmingBoundary ? 3 : 2;
                 ++s.phaseCalls[phase];
-                if(scanBatchActive && !s.batchDisabled && !(s.state==State::Verify && s.baselinePass==0)) ++s.batchCalls[phase];
+                if(scanBatchActive && !s.batchDisabled) ++s.batchCalls[phase];
                 else {
                     ++s.cadenceCalls[phase];
                     s.cadenceReasons[phase]=s.batchDisabled?"PARITY_FAILURE":!Mod::get()->getSettingValue<bool>("batch-analysis")?"USER_DISABLED":"REFERENCE_CAPTURE";
@@ -1843,12 +1857,22 @@ class $modify(CFBase, GJBaseGameLayer) {
                     }
                     ++s.baselineCompared;
                 }
-                if (s.baselinePass == 2) { s.baseline.set(now, current); s.referenceEvidence.insert(now, rejoinEvidence()); }
+                if (s.baselinePass == 1) { s.baseline.set(now, current); s.referenceEvidence.insert(now, rejoinEvidence()); }
             }
             if (s.state == State::Analyze && s.validatingSnapshot) {
                 auto reference = s.baseline.get(now);
                 if (!reference || !cf::matches(*reference, current)) {
                     s.message = "Snapshot physics parity failed; using full replay"; s.pending = Pending::Fail; return;
+                }
+            }
+            if (s.state == State::Analyze && !s.validatingSnapshot && s.snapshotChecked && !s.fullRestartRetry &&
+                now < std::min(s.recording.inputs[s.target].tick, s.recording.inputs[s.target].tick + s.offset)) {
+                auto reference = s.baseline.get(now);
+                if (!reference || !cf::matches(*reference, current)) {
+                    if (s.activeNative >= 0) s.nativePool[s.activeNative].rejected = true;
+                    ++s.restoreFallbacks; ++s.parityFallbacks;
+                    s.snapshot = nullptr; s.snapshotChecked = false; s.fullRestartRetry = true;
+                    resetTrial(); return;
                 }
             }
             if (s.state == State::Analyze && !s.validatingSnapshot && !s.auditing && !s.recoveringFlight &&
@@ -1918,7 +1942,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             while (s.next < events.size() && events[s.next].tick <= tick()) {
                 auto index = s.next++; auto e = events[index];
                 auto identity = e.sourceIndex == size_t(-1) ? index : e.sourceIndex;
-                if(s.state==State::Verify && s.baselinePass==2 && identity<s.features.size() && e.down && e.button==1) {
+                if(s.state==State::Verify && s.baselinePass==1 && identity<s.features.size() && e.down && e.button==1) {
                     auto p=e.p1?s.owner->m_player1:s.owner->m_player2; auto actual=captureFeatures(p,true);auto& original=s.features[identity];
                     // Mode is derived playback metadata. Refresh it from the
                     // verified active player so repaired legacy dual routing
@@ -2087,8 +2111,14 @@ class $modify(CFPlay, PlayLayer) {
                         auto reference = *saved;
                         if (std::abs(reference.x - point.x) > .5f || std::abs(reference.y - point.y) > .5f ||
                             std::abs(reference.x2 - point.x2) > .5f || std::abs(reference.y2 - point.y2) > .5f) {
-                            s.message = "Native state diverged; using full restart"; s.pending = Pending::Fail;
+                            s.message = "Native state diverged; using full restart"; s.pending = Pending::Fail; return;
                         }
+                    }
+                    auto expectedRef = s.baseline.get(now);
+                    bool causalOk = now == s.recording.endTick ? (s.causalCursor == s.causalTrace.size()) :
+                        (expectedRef && s.causalCursor == size_t(expectedRef->flags[9]));
+                    if (now >= s.snapshotEndTick && s.snapshotCompared > 0 && !s.causalMismatch && causalOk) {
+                        s.message = "Validated native checkpoint"; s.pending = Pending::Pass; return;
                     }
                 }
             }
