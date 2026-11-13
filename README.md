@@ -1,5 +1,11 @@
 # Click Frames GD
 
+## v1.0.10 / 2026-11-13 / GD 2.2091 / Geode 6
+
+- Un checkpoint nativo con paridad incorrecta se rechaza individualmente y permite probar uno anterior.
+- La caché solo se desactiva después de seis fallos consecutivos; una restauración válida reinicia la racha.
+- `RESTORE_PARITY` registra tick, horizonte, muestras comparadas, causalidad, cursor y resultado del ensayo.
+
 ## v1.0.9 / 2026-11-12 / GD 2.2091 / Geode 6
 
 - Migra el manifiesto, CI y rutas de archivos a Geode 6.0.0-alpha.1 y Geometry Dash 2.2091.
