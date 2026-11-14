@@ -41,7 +41,13 @@ int slot(int button,bool p1){return (button-1)*2+int(!p1);}
 bool writeFile(std::filesystem::path const& path,std::string const& bytes) {
     std::error_code ec;std::filesystem::create_directories(path.parent_path(),ec);if(ec)return false;
     auto temporary=path;temporary+=".tmp";
-    {std::ofstream out(temporary,std::ios::binary|std::ios::trunc);out.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));if(!out)return false;}
+    {
+        std::ofstream out(temporary,std::ios::binary|std::ios::trunc);
+        if(!out)return false;
+        out.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));
+        out.close();
+        if(!out){std::filesystem::remove(temporary,ec);return false;}
+    }
     std::filesystem::rename(temporary,path,ec);return !ec;
 }
 bool appendIndex(std::filesystem::path const& root,cfc::Attempt const& a) {
@@ -51,10 +57,11 @@ bool appendIndex(std::filesystem::path const& root,cfc::Attempt const& a) {
     if(header)out<<"schema\tattempt_id\tlevel_id\tlevel_hash\tresult\tpercent\tstart_ms\tend_ms\tinputs\tsamples\n";
     out<<cfc::schema<<'\t'<<a.id<<'\t'<<a.levelID<<'\t'<<a.levelHash<<'\t'<<a.result<<'\t'<<a.endPercent<<'\t'
        <<a.startedUnixMs<<'\t'<<a.endedUnixMs<<'\t'<<a.inputs.size()<<'\t'<<a.frames.size()<<'\n';
-    return bool(out);
+    out.close();return bool(out);
 }
 bool writeCategory(std::string const& category,cfc::Attempt const& a) {
-    auto categoryRoot=saveRoot()/category;
+    auto root=saveRoot();if(root.empty())return false;
+    auto categoryRoot=root/category;
     auto levelFolder=cfc::safeFolder(a.levelName)+"-"+std::to_string(a.levelID);
     auto directory=categoryRoot/levelFolder/a.id;
     return writeFile(directory/"metadata.json",cfc::metadata(a)) &&

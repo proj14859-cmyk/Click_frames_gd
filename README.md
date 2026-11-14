@@ -5,8 +5,9 @@ El mod complementario independiente se encuentra en [`collector/`](collector/REA
 ## v1.0.14 / 2026-11-13 / GD 2.2091 / Geode 6
 
 - Las ventanas mayores de 20 frames aparecen como círculos al 45%, sin sonido, y se suprimen solo cuando están demasiado cerca de otro marcador ancho. El límite y espaciado son configurables.
-- Verify detecta una muerte idéntica tras tres alineaciones, repite una vez sin batching y después detiene la captura con una explicación breve en vez de ejecutar 26 intentos equivalentes.
+- Verify corta los reintentos únicamente cuando la muerte ocurre antes de que cualquier alineación permitida pueda afectar el primer input; de lo contrario conserva la búsqueda completa para no descartar una ruta recuperable.
 - Una captura que muere igual desde 0% debe volver a grabarse desde el inicio sin recuperar checkpoints; una finalización cosida en práctica no demuestra que la ruta completa sea reproducible.
+- Record, Verify, Analyze y Play aíslan estadísticas: bloquean guardados de porcentaje, intentos, saltos, clics y desafíos, restauran tiempo/práctica/death-tracker y no invocan la finalización oficial durante un showcase automatizado.
 
 ## v1.0.13 / 2026-11-13 / GD 2.2091 / Geode 6
 
@@ -542,7 +543,7 @@ La velocidad de análisis afecta al tiempo del juego, no cambia la unidad de med
 
 Para detener un análisis, pausa y abre Frames → Stop / Save. Para continuarlo usa Analyze.
 Usa física de 240 TPS, sin Click Between Frames ni ignore damage. Plataforma no está soportado.
-La compatibilidad declarada es GD 2.2081 con Geode 5.11.2 en Windows, Android32 y Android64.
+La compatibilidad declarada es GD 2.2091 con Geode 6.0.0-alpha.1 en Windows, Android32 y Android64.
 
 El margen es el intervalo continuo de ticks válidos alrededor del click original, manteniendo los demás inputs fijos. Una única posición válida (desplazamiento de cero frames) pertenece a 1F / frame perfect. El signo `+` indica que la ventana alcanza el límite de búsqueda y podría ser mayor. El análisis depende de completar la reproducción de la run. En v0.4.0 un desvío de posición se registra como advertencia; una muerte, un bloqueo o un paso físico incompatible detienen la prueba.
 
