@@ -31,7 +31,7 @@ std::filesystem::path saveRoot() {
 }
 bool normalMode(PlayLayer* layer) {
     return layer && Mod::get()->getSettingValue<bool>("enabled") && !layer->m_isPracticeMode &&
-        !layer->m_isTestMode && layer->m_level;
+        !layer->m_isTestMode && !layer->getChildByID("cf-automated-run") && layer->m_level;
 }
 int mode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
@@ -129,7 +129,7 @@ class $modify(CFCPlay,PlayLayer) {
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
         if(s.owner==this && s.active && !normalMode(this))finishAttempt("mode-change",getCurrentPercent());
-        else if(s.owner==this && !s.active && normalMode(this) && !m_hasCompletedLevel && !m_player1->m_isDead)startAttempt(this);
+        else if(s.owner==this && !s.active && normalMode(this) && !m_isPaused && !m_hasCompletedLevel && !m_player1->m_isDead)startAttempt(this);
         sample(this);
     }
     void resetLevel() {
