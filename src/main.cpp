@@ -3,6 +3,9 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/GJGameLevel.hpp>
+#include <Geode/modify/GameLevelManager.hpp>
+#include <Geode/modify/GameStatsManager.hpp>
 #include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/modify/CCScheduler.hpp>
 #include <Geode/modify/MenuLayer.hpp>
@@ -158,6 +161,19 @@ struct NativeState {
     int step = 0, recordedSize = 0, resumeTimer = 0;
     bool checked = false, rejected = false, failureConfirmed = false;
 };
+struct StatsSnapshot {
+    int levelAttempts=0,levelJumps=0,levelClicks=0,levelAttemptTime=0,practiceAttempts=0;
+    int checksum=0;bool checksumValid=false;
+    int normalPercent=0,newNormalPercent=0,practicePercent=0,orbCompletion=0,coins=0,coinsVerified=0,coin1=0,coin2=0,coin3=0;
+    bool completionLegitimate=false;
+    int firstPlayedUnix=0,lastExitedUnix=0,sessionPlayTime=0,totalPlayTime=0,completions=0;
+    int deathTrackerFormat=0,deathUploadRate=0,deathGlobalA=0,deathGlobalB=0;
+    std::string personalBests,deathsPerPercent,startPosDeaths,currentSessionAttempts,startPosAttemptHistory;
+    std::string sessionLog,compressedSessionLog,deathMarkers,deathGlobalData;
+    bool sessionLogDirty=false,deathDataPendingUpload=false;
+    int layerAttempts=0,layerClicks=0,layerJumps=0;
+    double layerTimePlayed=0,layerAttemptTime=0,layerBestAttemptTime=0;
+};
 struct Session {
     PlayLayer* owner = nullptr;
     cf::Recording recording;
@@ -177,6 +193,7 @@ struct Session {
     float stalledSeconds = 0;
     std::vector<cf::Row> rows; // counter rows for this run (see cf::makeRows)
     std::vector<int> tally;
+    std::vector<CCPoint> compactMarkerPositions;
     std::string message = "Record a practice run";
     std::string folder; // levels/<name>-<id>/ holds this level's runs
     std::string alert, firstFail; // why a run stopped, shown once pause is back
@@ -301,9 +318,8 @@ struct Session {
     bool analysisClock = false;
     std::chrono::steady_clock::time_point analysisStart;
     bool levelStatsCaptured = false;
-    int savedLevelAttempts = 0, savedLevelJumps = 0, savedLevelClicks = 0, savedLevelAttemptTime = 0, savedPracticeAttempts = 0;
-    int savedLayerAttempts = 0, savedLayerClicks = 0, savedLayerJumps = 0;
-    double savedLayerTimePlayed = 0, savedLayerAttemptTime = 0;
+    uint64_t statsCorrections = 0;
+    StatsSnapshot savedStats;
 };
 // The recorded tick and the replay's injection point can differ by a step or two, so
 // verification retries the whole run shifted before it gives up.
@@ -358,22 +374,59 @@ bool hasLiveOwner() {
 }
 void captureLevelStats() {
     if (!hasLiveOwner() || s.levelStatsCaptured) return;
-    auto level = s.owner->m_level;
-    s.savedLevelAttempts = level->m_attempts.value(); s.savedLevelJumps = level->m_jumps.value();
-    s.savedLevelClicks = level->m_clicks.value(); s.savedLevelAttemptTime = level->m_attemptTime.value();
-    s.savedPracticeAttempts = level->m_practiceAttempts;
-    s.savedLayerAttempts = s.owner->m_attempts; s.savedLayerClicks = s.owner->m_clicks; s.savedLayerJumps = s.owner->m_jumps;
-    s.savedLayerTimePlayed = s.owner->m_timePlayed; s.savedLayerAttemptTime = s.owner->m_attemptTime;
+    auto level=s.owner->m_level;auto& v=s.savedStats;
+    v.levelAttempts=level->m_attempts.value();v.levelJumps=level->m_jumps.value();v.levelClicks=level->m_clicks.value();
+    v.levelAttemptTime=level->m_attemptTime.value();v.practiceAttempts=level->m_practiceAttempts;
+    v.checksum=level->m_chk;v.checksumValid=level->m_isChkValid;
+    v.normalPercent=level->m_normalPercent.value();v.newNormalPercent=level->m_newNormalPercent2.value();v.practicePercent=level->m_practicePercent;
+    v.orbCompletion=level->m_orbCompletion.value();v.coins=level->m_coins;v.coinsVerified=level->m_coinsVerified.value();
+    v.coin1=level->m_firstCoinVerified.value();v.coin2=level->m_secondCoinVerified.value();v.coin3=level->m_thirdCoinVerified.value();
+    v.completionLegitimate=level->m_isCompletionLegitimate;
+    v.firstPlayedUnix=level->m_firstPlayedUnix;v.lastExitedUnix=level->m_lastExitedUnix;v.sessionPlayTime=level->m_sessionPlayTime;
+    v.totalPlayTime=level->m_totalPlayTime;v.completions=level->m_completions;v.deathTrackerFormat=level->m_deathTrackerFormatVersion;
+    v.deathUploadRate=level->m_deathUploadRate;v.deathGlobalA=level->m_unkK152a;v.deathGlobalB=level->m_unkK152b;
+    v.personalBests=level->m_personalBests;v.deathsPerPercent=level->m_deathsPerPercent;v.startPosDeaths=level->m_startPosDeathCounts;
+    v.currentSessionAttempts=level->m_currentSessionAttempts;v.startPosAttemptHistory=level->m_startPosAttemptHistory;
+    v.sessionLog=level->m_sessionLog;v.compressedSessionLog=level->m_compressedSessionLog;v.deathMarkers=level->m_deathMarkers;
+    v.deathGlobalData=level->m_unkK152c;v.sessionLogDirty=level->m_sessionLogDirty;v.deathDataPendingUpload=level->m_deathDataPendingUpload;
+    v.layerAttempts=s.owner->m_attempts;v.layerClicks=s.owner->m_clicks;v.layerJumps=s.owner->m_jumps;
+    v.layerTimePlayed=s.owner->m_timePlayed;v.layerAttemptTime=s.owner->m_attemptTime;v.layerBestAttemptTime=s.owner->m_bestAttemptTime;
     s.levelStatsCaptured = true;
 }
-void restoreLevelStats() {
+void enforceLevelStats() {
     if (!hasLiveOwner() || !s.levelStatsCaptured) return;
-    auto level = s.owner->m_level;
-    level->m_attempts = s.savedLevelAttempts; level->m_jumps = s.savedLevelJumps; level->m_clicks = s.savedLevelClicks;
-    level->m_attemptTime = s.savedLevelAttemptTime; level->m_practiceAttempts = s.savedPracticeAttempts;
-    s.owner->m_attempts = s.savedLayerAttempts; s.owner->m_clicks = s.savedLayerClicks; s.owner->m_jumps = s.savedLayerJumps;
-    s.owner->m_timePlayed = s.savedLayerTimePlayed; s.owner->m_attemptTime = s.savedLayerAttemptTime;
+    auto level=s.owner->m_level;auto const& v=s.savedStats;
+    bool changed=level->m_attempts.value()!=v.levelAttempts||level->m_jumps.value()!=v.levelJumps||level->m_clicks.value()!=v.levelClicks||
+        level->m_attemptTime.value()!=v.levelAttemptTime||level->m_practiceAttempts!=v.practiceAttempts||level->m_totalPlayTime!=v.totalPlayTime||
+        level->m_deathsPerPercent!=v.deathsPerPercent||level->m_deathMarkers!=v.deathMarkers||level->m_deathDataPendingUpload!=v.deathDataPendingUpload||
+        s.owner->m_attempts!=v.layerAttempts||s.owner->m_clicks!=v.layerClicks||s.owner->m_jumps!=v.layerJumps||
+        s.owner->m_timePlayed!=v.layerTimePlayed||s.owner->m_attemptTime!=v.layerAttemptTime;
+    if(changed)++s.statsCorrections;
+    level->m_attempts=v.levelAttempts;level->m_jumps=v.levelJumps;level->m_clicks=v.levelClicks;level->m_attemptTime=v.levelAttemptTime;
+    level->m_chk=v.checksum;level->m_isChkValid=v.checksumValid;
+    level->m_normalPercent=v.normalPercent;level->m_newNormalPercent2=v.newNormalPercent;level->m_practicePercent=v.practicePercent;
+    level->m_orbCompletion=v.orbCompletion;level->m_coins=v.coins;level->m_coinsVerified=v.coinsVerified;
+    level->m_firstCoinVerified=v.coin1;level->m_secondCoinVerified=v.coin2;level->m_thirdCoinVerified=v.coin3;
+    level->m_isCompletionLegitimate=v.completionLegitimate;
+    level->m_practiceAttempts=v.practiceAttempts;level->m_firstPlayedUnix=v.firstPlayedUnix;level->m_lastExitedUnix=v.lastExitedUnix;
+    level->m_sessionPlayTime=v.sessionPlayTime;level->m_totalPlayTime=v.totalPlayTime;level->m_completions=v.completions;
+    level->m_deathTrackerFormatVersion=v.deathTrackerFormat;level->m_deathUploadRate=v.deathUploadRate;
+    level->m_unkK152a=v.deathGlobalA;level->m_unkK152b=v.deathGlobalB;level->m_unkK152c=v.deathGlobalData;
+    level->m_personalBests=v.personalBests;level->m_deathsPerPercent=v.deathsPerPercent;level->m_startPosDeathCounts=v.startPosDeaths;
+    level->m_currentSessionAttempts=v.currentSessionAttempts;level->m_startPosAttemptHistory=v.startPosAttemptHistory;
+    level->m_sessionLog=v.sessionLog;level->m_compressedSessionLog=v.compressedSessionLog;level->m_sessionLogDirty=v.sessionLogDirty;
+    level->m_deathMarkers=v.deathMarkers;level->m_deathDataPendingUpload=v.deathDataPendingUpload;
+    s.owner->m_attempts=v.layerAttempts;s.owner->m_clicks=v.layerClicks;s.owner->m_jumps=v.layerJumps;
+    s.owner->m_timePlayed=v.layerTimePlayed;s.owner->m_attemptTime=v.layerAttemptTime;s.owner->m_bestAttemptTime=v.layerBestAttemptTime;
+}
+void restoreLevelStats() {
+    if (!s.levelStatsCaptured) return;
+    enforceLevelStats();
     s.levelStatsCaptured = false;
+}
+bool statsIsolationActive() {
+    return s.levelStatsCaptured && (s.state==State::Record || s.state==State::Verify || s.state==State::Analyze ||
+        s.state==State::Playback || s.resetting || s.returningToPause);
 }
 std::string phaseName() {
     return s.state==State::Verify ? "reference" : s.state==State::Analyze ? "analysis" : s.state==State::Record ? "record" : "interface";
@@ -735,6 +788,7 @@ void save(bool flushPredictions = false) {
         seconds, s.physicsCalls, s.tests, s.restores, s.restoreFallbacks, s.localFallbackEvents, s.localFallbackTrials, s.localPasses, s.peakNativeStates);
     report += fmt::format("Analysis policy: {}\nBaseline passes: {}\nBatch fallback: {}\nScheduler scan slices: {}\nObserved physics callbacks per second: {:.1f}\n",
         cf::analysisPolicyVersion, s.baselinePass, s.batchDisabled, s.batchUpdates, seconds > 0 ? s.physicsCalls / seconds : 0.);
+    report += fmt::format("Account-stat writes blocked/restored: {}\n",s.statsCorrections);
     size_t measuredNow = 0;
     for (size_t i = 0; i < s.recording.inputs.size() && i < s.recording.windows.size(); ++i)
         if (cf::counted(s.recording.inputs[i]) && s.recording.windows[i].measured) ++measuredNow;
@@ -932,6 +986,7 @@ void clearMarkers();
 void applyBackground(bool on);
 void queueReturnToPause() {
     if (!hasLiveOwner() || s.returningToPause) return;
+    captureLevelStats();
     s.returningToPause = true;
     Loader::get()->queueInMainThread([] {
         if (!hasLiveOwner()) { s.returningToPause = false; return; }
@@ -940,7 +995,9 @@ void queueReturnToPause() {
         clearMarkers();
         s.owner->removeAllCheckpoints();
         s.owner->resetLevel();
+        enforceLevelStats();
         s.resetting = false;
+        restoreLevelStats();
         fixPracticeTouchPriority();
         Loader::get()->queueInMainThread([] {
             if (hasLiveOwner()) s.owner->pauseGame(false);
@@ -991,6 +1048,7 @@ void resetTrialImpl() {
         s.internalCheckpoint = false;
     }
     s.owner->resetLevel();
+    enforceLevelStats();
     if(scanningReset && !restoring) {
         if(s.state==State::Verify && s.baselinePass==0) {s.rootRandomSeed=s.owner->m_randomSeed;s.rootReplaySeed=s.owner->m_replayRandSeed;}
         s.owner->m_randomSeed=s.rootRandomSeed;s.owner->m_replayRandSeed=s.rootReplaySeed;
@@ -1008,6 +1066,7 @@ void resetTrialImpl() {
             s.scheduleCursor = 0; s.causalCursor = 0;
             s.causalHash = cf::hashStart;
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
+            enforceLevelStats();
             s.owner->m_randomSeed=s.rootRandomSeed;s.owner->m_replayRandSeed=s.rootReplaySeed;GameToolbox::fast_srand(s.initialSharedSeed);
         } else {
             s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld;
@@ -1177,6 +1236,7 @@ void showMs(float ms) {
 }
 void clearMarkers() {
     clickAudio.stop();
+    s.compactMarkerPositions.clear();
     if (!hasLiveOwner()) return;
     if (auto precision = s.owner->getChildByID("cf-precision")) precision->removeFromParent();
     if (auto ms = s.owner->getChildByID("cf-ms")) ms->removeFromParent();
@@ -1227,16 +1287,22 @@ void marker(size_t index) {
     if (!cf::counted(e)) return;
     auto w = s.recording.windows[index];
     if (w.measured) if (auto row = cf::rowOf(s.rows, w); row >= 0 && static_cast<size_t>(row) < s.tally.size()) ++s.tally[row];
-    // Keep wide/open windows in the counter and exported analysis, but avoid
-    // covering the level with low-value circles (and their sounds).
-    if (w.measured && w.width() > Mod::get()->getSettingValue<int64_t>("marker-max-width")) return;
+    bool compact = w.measured && w.width() > Mod::get()->getSettingValue<int64_t>("marker-max-width");
+    if (compact) {
+        float spacing = static_cast<float>(Mod::get()->getSettingValue<int64_t>("wide-marker-spacing"));
+        for (auto const& point : s.compactMarkerPositions) {
+            float dx=e.x-point.x,dy=e.y-point.y;
+            if (dx*dx+dy*dy < spacing*spacing) return;
+        }
+        s.compactMarkerPositions.push_back({e.x,e.y});
+    }
     if (Mod::get()->getSettingValue<bool>("markers") && s.owner->m_objectLayer) {
         auto root = s.owner->m_objectLayer->getChildByID("cf-markers");
         if (!root) {
             root = CCNode::create(); root->setID("cf-markers"); s.owner->m_objectLayer->addChild(root, 1000);
         }
         auto node = CCNode::create(); node->setPosition({e.x, e.y});
-        float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale"));
+        float scale = static_cast<float>(Mod::get()->getSettingValue<double>("marker-scale")) * (compact ? .45f : 1.f);
         auto rgb = w.measured ? cf::colorFor(w.width()) : cf::Rgb{150, 160, 175}; ccColor3B color3{rgb.r, rgb.g, rgb.b};
         ccColor4F border{color3.r / 255.f, color3.g / 255.f, color3.b / 255.f, 1.f};
         ccColor4F fill{0, 0, 0, 0};
@@ -1248,7 +1314,7 @@ void marker(size_t index) {
         label->setColor(color3); label->setPosition({0, 27.f * scale}); node->addChild(label, 1);
         root->addChild(node);
     }
-    if (w.measured && Mod::get()->getSettingValue<bool>("sounds")) {
+    if (w.measured && !compact && Mod::get()->getSettingValue<bool>("sounds")) {
         if(!clickAudio.play(w.width())) diagnostic("AUDIO_PLAY","No se pudo reproducir el sonido de ventana");
     }
 }
@@ -1357,6 +1423,7 @@ void beginAnalysis() {
     s.auditing = s.earlyAccepted = s.fromCache = false; s.auditGate = {}; s.probeCache.clear();
     s.causalHash = cf::hashStart; s.phaseCalls.fill(0); s.eventReport.clear();
     s.cacheHits = s.trialAttempts = s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = s.parityStreak = 0;
+    s.statsCorrections=0;
     s.probeRestores = s.newlyMeasured = 0; s.nativeDisabled = false;
     s.rejoinChecks=s.rejoinReferenceMisses=s.rejoinWorldBlocks=s.rejoinStateMismatches=s.rejoinAccepts=0;
     s.missedNativeTargets = s.thinnedNativeStates = 0;
@@ -1720,11 +1787,10 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
         scanBatchActive = true;
         auto owner = s.owner;
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Mod::get()->getSettingValue<int64_t>("scan-budget-ms"));
-        bool fast = !s.batchDisabled;
-        int limit = fast ? 2048 : 1;
+        int limit = s.batchDisabled ? 1 : 2048;
         for (int i = 0; i < limit; ++i) {
             if (s.pending != Pending::None) consume();
-            if (!scanning() || s.owner != owner) break;
+            if (!scanning() || s.owner != owner || (i > 0 && s.batchDisabled)) break;
             float slice = dt;
             if (s.state == State::Verify && s.baselinePass == 0) {
                 if (s.updateSchedule.size() >= 250000) {
@@ -1757,7 +1823,46 @@ class $modify(CFAudio, FMODAudioEngine) {
 };
 #endif
 
+class $modify(CFAccountStats, GameStatsManager) {
+#ifndef GEODE_IS_WINDOWS
+    void incrementStat(char const* key) {
+        if(statsIsolationActive())return;
+        GameStatsManager::incrementStat(key);
+    }
+#endif
+    void incrementStat(char const* key,int amount) {
+        if(statsIsolationActive())return;
+        GameStatsManager::incrementStat(key,amount);
+    }
+    void incrementChallenge(GJChallengeType type,int amount) {
+        if(statsIsolationActive())return;
+        GameStatsManager::incrementChallenge(type,amount);
+    }
+};
+
+class $modify(CFLevelStats, GJGameLevel) {
+    void savePercentage(int percent,bool practice,int clicks,int attempts,bool checksum) {
+        if(statsIsolationActive()&&hasLiveOwner()&&s.owner->m_level==this)return;
+        GJGameLevel::savePercentage(percent,practice,clicks,attempts,checksum);
+    }
+    void saveNewScore(int value,int type,int ticks,int clicks,int coins,std::string inputs,bool save) {
+        if(statsIsolationActive()&&hasLiveOwner()&&s.owner->m_level==this)return;
+        GJGameLevel::saveNewScore(value,type,ticks,clicks,coins,std::move(inputs),save);
+    }
+};
+
+class $modify(CFLevelSave, GameLevelManager) {
+    void saveLevel(GJGameLevel* level) {
+        if(statsIsolationActive()&&hasLiveOwner()&&s.owner->m_level==level)enforceLevelStats();
+        GameLevelManager::saveLevel(level);
+    }
+};
+
 class $modify(CFPlayer, PlayerObject) {
+    void incrementJumps() {
+        if (statsIsolationActive()) return;
+        PlayerObject::incrementJumps();
+    }
     void updateJump(float dt) {
         bool grounded=m_isOnGround;int mode=playerMode(this);double previousJump=m_lastJumpTime;
         PlayerObject::updateJump(dt);
@@ -2032,6 +2137,14 @@ class $modify(CFBase, GJBaseGameLayer) {
 };
 
 class $modify(CFPlay, PlayLayer) {
+    void updateAttempts() {
+        if(statsIsolationActive())return;
+        PlayLayer::updateAttempts();
+    }
+    void updateAttemptTime(float attemptTime) {
+        if(statsIsolationActive())return;
+        PlayLayer::updateAttemptTime(attemptTime);
+    }
     static void bindSession(PlayLayer* layer) {
         applyBackground(false);
         precisionJob.cancel();
@@ -2123,6 +2236,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
+        if (statsIsolationActive()) enforceLevelStats();
         if (s.owner != this || s.resetting || s.pending != Pending::None || !m_player1 || !m_player2) return;
         int now = tick();
         if ((s.state==State::Verify || s.state==State::Analyze) && now>=s.recording.endTick &&
@@ -2232,8 +2346,10 @@ class $modify(CFPlay, PlayLayer) {
     }
     void resetLevel() {
         if (s.owner == this) s.showcaseComplete = false;
-        if (running() && !s.resetting) stop("Automated run cancelled by manual restart");
+        bool cancelled=running()&&!s.resetting;
+        if(cancelled){stop("Automated run cancelled by manual restart");captureLevelStats();s.resetting=true;}
         s.restored = false; PlayLayer::resetLevel();
+        if(cancelled){enforceLevelStats();s.resetting=false;restoreLevelStats();}
         if (s.state == State::Record && !s.resetting) {
             s.captureDirty = true;
             if (!s.restored) {
@@ -2251,9 +2367,17 @@ class $modify(CFPlay, PlayLayer) {
             s.pending == Pending::None && player && !player->m_isDead &&
             (player == m_player1 || (player == m_player2 && m_gameState.m_isDualMode));
         PlayLayer::destroyPlayer(player, object);
+        if(statsIsolationActive())enforceLevelStats();
         if (active && player->m_isDead && s.owner == this && running() &&
             s.pending == Pending::None) {
             s.message = fmt::format("Replay died at tick {} (P{})", tick(),player == m_player1 ? 1 : 2);
+            if (s.state == State::Verify && !s.recording.inputs.empty()) {
+                int earliest=std::min_element(s.recording.inputs.begin(),s.recording.inputs.end(),[](auto const& a,auto const& b){return a.tick<b.tick;})->tick;
+                if (tick() < earliest-6) {
+                    s.noRetry=true;
+                    s.message=fmt::format("Saved route dies at tick {} before any recorded input can affect it. Record a clean run from 0% without checkpoint recovery, then Analyze again.",tick());
+                }
+            }
             // A delayed jump may legitimately die before its shifted press.
             // Only death before BOTH original and candidate times is unrelated
             // to the perturbation and must not narrow the measured window.
@@ -2272,16 +2396,16 @@ class $modify(CFPlay, PlayLayer) {
             if (!cf::allPressesDispatched(s.recording.inputs, s.next)) {
                 s.message = "Level finished before all clicks were replayed"; s.pending = Pending::Fail; return;
             }
-            // Successful showcases use the native completion path. Analysis and
-            // recording retain their reset/pause handoff. Keep the game's mode.
-            stop("Showcase complete. Native completion screen");
-            s.showcaseComplete = true; clearMarkers(); hud();
-            PlayLayer::levelComplete(); return;
+            // Never call native completion for an automated showcase: doing so
+            // can award progress, currency and account statistics.
+            stop("Showcase complete. Account statistics unchanged");
+            s.showcaseComplete = true;clearMarkers();hud();queueReturnToPause();return;
         }
         if (s.state == State::Record) {
             s.captureDirty = true;
             s.recording.complete = true; s.recording.endTick = tick();
             s.recording.verified = false; s.recording.windows.clear();
+            restoreLevelStats();
             s.state = State::Idle; s.message = "Run saved. Pause > Frames > Analyze"; save();
             queueReturnToPause(); return;
         }
@@ -2318,8 +2442,10 @@ class $modify(CFPlay, PlayLayer) {
             analysisClock(false);
             applyBackground(false);
             if (!s.recording.key.empty()) save(true);
+            enforceLevelStats();
         }
         PlayLayer::onExit();
+        if(s.owner==this)s.levelStatsCaptured=false;
     }
 };
 
@@ -2628,7 +2754,7 @@ class CFPopup : public Popup {
             s.state = State::Idle; s.pending = Pending::None; s.checkpoints.clear();
             s.recordedHeld.fill(false); s.physicalHeld.fill(false); s.injectedHeld.fill(false);
             onClose(nullptr);
-            resumeAndRun([] { resetTrial(); s.state = State::Record; s.message = "REC - finish the level in practice"; });
+            resumeAndRun([] { captureLevelStats(); resetTrial(); s.state = State::Record; s.message = "REC - finish the level in practice"; });
         });
         add("2. ANALYZE", selectedPolicy() == 2 ? (s.recording.analysisPolicy == 2 ? "Local / Resume" : "Local: new scan") :
             (s.recording.analysisPolicy == 2 ? "Full run: new scan" : "Full run / Resume"), {215, 171}, !active && s.recording.complete && !s.recording.inputs.empty(), [this] {
@@ -2643,6 +2769,7 @@ class CFPopup : public Popup {
             }
             onClose(nullptr);
             resumeAndRun([] {
+                captureLevelStats();
                 s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
                 s.message = s.recording.ready() ? (cf::hasEstimated(s.recording)?"Showcase - ESTIMATED windows at 240 TPS":"Showcase - exact measured windows at 240 TPS") : "Partial showcase - ? marks events not measured yet"; resetTrial();
             });
@@ -2655,7 +2782,7 @@ class CFPopup : public Popup {
         });
         add("SETTINGS", "Options", {46, 59}, true, [] { openSettingsPopup(Mod::get()); }, 62);
         add("HELP", "Guide", {114, 59}, true, [] {
-            FLAlertLayer::create("How to use", "<cg>1. Record</c>: starts a NEW run in practice. Finish the level using checkpoints as needed.\n<cy>2. Analyze</c>: verifies the saved run, then replays many tests to measure each input. This can take a long time. Pause to Stop / Save and resume later.\n<cb>3. Play</c>: replays with circles, sounds and the counter. Use it again to replay.\n<cp>Export / Import</c>: Export writes this level's runs to a .cfpack file. To load one you received, copy it into the imports folder and press Import.\nGray buttons unlock after the previous step. 240 TPS; disable CBF and ignore damage.", "OK")->show();
+            FLAlertLayer::create("How to use", "<cg>1. Record</c>: starts a NEW run in practice. Finish the level using checkpoints as needed.\n<cy>2. Analyze</c>: verifies the saved run, then replays many tests to measure each input. This can take a long time. Pause to Stop / Save and resume later.\n<cb>3. Play</c>: replays with circles, sounds and the counter. Use it again to replay.\n<cp>Account safety</c>: automated recording, verification, analysis and playback do not add attempts, deaths, progress or play time to your account.\n<cp>Export / Import</c>: Export writes this level's runs to a .cfpack file. To load one you received, copy it into the imports folder and press Import.\nGray buttons unlock after the previous step. 240 TPS; disable CBF and ignore damage.", "OK")->show();
         }, 62);
         add("EXPORT", "Share", {182, 59}, !active, [this] {
             if (!ensureSession()) return;
@@ -2704,7 +2831,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.13", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.14", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
