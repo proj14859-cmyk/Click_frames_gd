@@ -1,6 +1,7 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
+#include <asp/fs/std.hpp>
 #include "CollectorData.hpp"
 #include <array>
 #include <chrono>
@@ -98,9 +99,9 @@ void sample(PlayLayer* layer) {
     if(s.attempt.frames.size()>=size_t(limit)){s.attempt.samplesTruncated=true;return;}
     auto p1=layer->m_player1,p2=layer->m_player2;cfc::Frame f;
     f.tick=tick;f.percent=layer->getCurrentPercent();f.x1=p1->getPositionX();f.y1=p1->getPositionY();f.vy1=p1->m_yVelocity;f.speed1=p1->m_playerSpeed;
-    f.mode1=mode(p1);f.gravity1=p1->m_isUpsideDown;f.mini1=p1->m_isMini;f.grounded1=p1->m_isOnGround;
+    f.mode1=mode(p1);f.gravity1=p1->m_isUpsideDown;f.mini1=p1->m_vehicleSize!=1.f;f.grounded1=p1->m_isOnGround;
     f.x2=p2->getPositionX();f.y2=p2->getPositionY();f.vy2=p2->m_yVelocity;f.speed2=p2->m_playerSpeed;
-    f.mode2=mode(p2);f.gravity2=p2->m_isUpsideDown;f.mini2=p2->m_isMini;f.grounded2=p2->m_isOnGround;f.dual=layer->m_gameState.m_isDualMode;
+    f.mode2=mode(p2);f.gravity2=p2->m_isUpsideDown;f.mini2=p2->m_vehicleSize!=1.f;f.grounded2=p2->m_isOnGround;f.dual=layer->m_gameState.m_isDualMode;
     s.attempt.frames.push_back(f);
 }
 void input(GJBaseGameLayer* layer,bool down,int button,bool p1) {
