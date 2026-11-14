@@ -8,6 +8,7 @@ El mod complementario independiente se encuentra en [`collector/`](collector/REA
 - Verify corta los reintentos únicamente cuando la muerte ocurre antes de que cualquier alineación permitida pueda afectar el primer input; de lo contrario conserva la búsqueda completa para no descartar una ruta recuperable.
 - Una captura que muere igual desde 0% debe volver a grabarse desde el inicio sin recuperar checkpoints; una finalización cosida en práctica no demuestra que la ruta completa sea reproducible.
 - Record, Verify, Analyze y Play aíslan estadísticas: bloquean guardados de porcentaje, intentos, saltos, clics y desafíos, restauran tiempo/práctica/death-tracker y no invocan la finalización oficial durante un showcase automatizado.
+- Play ejecuta la demostración en modo normal (sin interfaz de práctica), pero conserva el aislamiento completo de estadísticas y recompensas.
 
 ## v1.0.13 / 2026-11-13 / GD 2.2091 / Geode 6
 

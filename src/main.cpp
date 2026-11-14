@@ -372,6 +372,12 @@ bool hasLiveOwner() {
     auto current = PlayLayer::get();
     return current && s.owner == current && current->m_level && current->m_player1 && current->m_player2;
 }
+void setAutomatedRunMarker(bool enabled) {
+    if (!hasLiveOwner()) return;
+    auto marker=s.owner->getChildByID("cf-automated-run");
+    if(enabled && !marker){marker=CCNode::create();marker->setID("cf-automated-run");s.owner->addChild(marker);}
+    else if(!enabled && marker)marker->removeFromParent();
+}
 void captureLevelStats() {
     if (!hasLiveOwner() || s.levelStatsCaptured) return;
     auto level=s.owner->m_level;auto& v=s.savedStats;
@@ -1001,6 +1007,7 @@ void queueReturnToPause() {
         fixPracticeTouchPriority();
         Loader::get()->queueInMainThread([] {
             if (hasLiveOwner()) s.owner->pauseGame(false);
+            setAutomatedRunMarker(false);
             s.returningToPause = false;
             if (!s.alert.empty()) { FLAlertLayer::create("Click Frames", s.alert, "OK")->show(); s.alert.clear(); }
         });
@@ -1029,8 +1036,13 @@ void resetTrialImpl() {
     s.showcaseComplete = false;
     s.resetting = true; releaseInjected(); clearMarkers();
     if (s.state == State::Verify || s.state == State::Analyze) applyBackground(true);
-    // Automated runs stay in practice and reset through the normal practice path.
-    if (!s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
+    // Recording and analysis use practice for deterministic checkpoint/reset
+    // support. The public showcase must look like an ordinary normal-mode run;
+    // account-stat isolation is already active before changing modes.
+    bool showcase = s.state == State::Playback;
+    setAutomatedRunMarker(showcase);
+    if (showcase && s.owner->m_isPracticeMode) s.owner->togglePracticeMode(false);
+    else if (!showcase && !s.owner->m_isPracticeMode) s.owner->togglePracticeMode(true);
     s.owner->removeAllCheckpoints();
     if (!Mod::get()->getSettingValue<bool>("native-states")) { s.snapshot = nullptr; s.snapshotChecked = false; }
     bool restoring = s.snapshot && (s.validatingSnapshot || s.snapshotChecked) && !s.fullRestartRetry;
@@ -1724,7 +1736,7 @@ void consume() {
     } else if (s.state == State::Playback) {
         if (result == Pending::Fail) s.alert = s.message;
         stop(result == Pending::Pass ? "Showcase complete. Replay available" : s.message);
-        if (result == Pending::Fail) queueReturnToPause();
+        queueReturnToPause();
     }
 }
 }
@@ -2349,7 +2361,7 @@ class $modify(CFPlay, PlayLayer) {
         bool cancelled=running()&&!s.resetting;
         if(cancelled){stop("Automated run cancelled by manual restart");captureLevelStats();s.resetting=true;}
         s.restored = false; PlayLayer::resetLevel();
-        if(cancelled){enforceLevelStats();s.resetting=false;restoreLevelStats();}
+        if(cancelled){enforceLevelStats();s.resetting=false;restoreLevelStats();setAutomatedRunMarker(false);}
         if (s.state == State::Record && !s.resetting) {
             s.captureDirty = true;
             if (!s.restored) {
@@ -2777,6 +2789,7 @@ class CFPopup : public Popup {
         add("STOP / SAVE", "Keep partial analysis", {215, 115}, active, [this] {
             if (!ensureSession()) return;
             stop("Stopped. Partial analysis saved; Analyze to resume");
+            setAutomatedRunMarker(false);
             onClose(nullptr);
             if (auto popup = CFPopup::create()) popup->show();
         });
