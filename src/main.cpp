@@ -163,6 +163,7 @@ struct NativeState {
 };
 struct StatsSnapshot {
     int levelAttempts=0,levelJumps=0,levelClicks=0,levelAttemptTime=0,practiceAttempts=0;
+    int checksum=0;bool checksumValid=false;
     int normalPercent=0,newNormalPercent=0,practicePercent=0,orbCompletion=0,coins=0,coinsVerified=0,coin1=0,coin2=0,coin3=0;
     bool completionLegitimate=false;
     int firstPlayedUnix=0,lastExitedUnix=0,sessionPlayTime=0,totalPlayTime=0,completions=0;
@@ -376,6 +377,7 @@ void captureLevelStats() {
     auto level=s.owner->m_level;auto& v=s.savedStats;
     v.levelAttempts=level->m_attempts.value();v.levelJumps=level->m_jumps.value();v.levelClicks=level->m_clicks.value();
     v.levelAttemptTime=level->m_attemptTime.value();v.practiceAttempts=level->m_practiceAttempts;
+    v.checksum=level->m_chk;v.checksumValid=level->m_isChkValid;
     v.normalPercent=level->m_normalPercent.value();v.newNormalPercent=level->m_newNormalPercent2.value();v.practicePercent=level->m_practicePercent;
     v.orbCompletion=level->m_orbCompletion.value();v.coins=level->m_coins;v.coinsVerified=level->m_coinsVerified.value();
     v.coin1=level->m_firstCoinVerified.value();v.coin2=level->m_secondCoinVerified.value();v.coin3=level->m_thirdCoinVerified.value();
@@ -401,6 +403,7 @@ void enforceLevelStats() {
         s.owner->m_timePlayed!=v.layerTimePlayed||s.owner->m_attemptTime!=v.layerAttemptTime;
     if(changed)++s.statsCorrections;
     level->m_attempts=v.levelAttempts;level->m_jumps=v.levelJumps;level->m_clicks=v.levelClicks;level->m_attemptTime=v.levelAttemptTime;
+    level->m_chk=v.checksum;level->m_isChkValid=v.checksumValid;
     level->m_normalPercent=v.normalPercent;level->m_newNormalPercent2=v.newNormalPercent;level->m_practicePercent=v.practicePercent;
     level->m_orbCompletion=v.orbCompletion;level->m_coins=v.coins;level->m_coinsVerified=v.coinsVerified;
     level->m_firstCoinVerified=v.coin1;level->m_secondCoinVerified=v.coin2;level->m_thirdCoinVerified=v.coin3;
@@ -1821,6 +1824,10 @@ class $modify(CFAudio, FMODAudioEngine) {
 #endif
 
 class $modify(CFAccountStats, GameStatsManager) {
+    void incrementStat(char const* key) {
+        if(statsIsolationActive())return;
+        GameStatsManager::incrementStat(key);
+    }
     void incrementStat(char const* key,int amount) {
         if(statsIsolationActive())return;
         GameStatsManager::incrementStat(key,amount);
