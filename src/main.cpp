@@ -1824,10 +1824,12 @@ class $modify(CFAudio, FMODAudioEngine) {
 #endif
 
 class $modify(CFAccountStats, GameStatsManager) {
+#ifndef GEODE_IS_WINDOWS
     void incrementStat(char const* key) {
         if(statsIsolationActive())return;
         GameStatsManager::incrementStat(key);
     }
+#endif
     void incrementStat(char const* key,int amount) {
         if(statsIsolationActive())return;
         GameStatsManager::incrementStat(key,amount);
