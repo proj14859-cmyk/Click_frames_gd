@@ -1038,6 +1038,7 @@ void stop(std::string message) {
 }
 void resetTrialImpl() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return; }
+    s.endedBy="unknown";s.horizonTrial=false;
     auto resetStart = std::chrono::steady_clock::now();
     bool scanningReset = s.state == State::Verify || s.state == State::Analyze;
     if (s.state == State::Analyze && !s.validatingSnapshot) ++s.trialAttempts;
