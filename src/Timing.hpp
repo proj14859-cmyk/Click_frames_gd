@@ -13,7 +13,7 @@
 #include <vector>
 
 namespace cf {
-inline constexpr char analysisPolicyVersion[] = "CF-ANALYSIS-10";
+inline constexpr char analysisPolicyVersion[] = "CF-ANALYSIS-11";
 struct Input {
     int tick = 0;
     bool down = false;
@@ -90,14 +90,16 @@ inline int rowOf(std::vector<Row> const& rows, Window const& w) {
 }
 inline std::string label(Row const& row) { return std::to_string(row.from) + (row.open ? "+" : ""); }
 struct Rgb { unsigned char r, g, b; };
-// Tight is red, loose is green: width 1 = red ... 10 or more = green.
+// Reference chart uses discrete 240 Hz width bands; color is not difficulty.
 inline Rgb colorFor(int width) {
-    static constexpr Rgb stops[5] = {{255, 75, 75}, {255, 150, 55}, {255, 225, 70}, {245, 245, 245}, {105, 245, 125}};
-    float t = std::clamp((width - 1) / 9.f, 0.f, 1.f) * 4.f;
-    int i = std::min(3, static_cast<int>(t));
-    float f = t - static_cast<float>(i);
-    auto mix = [f](unsigned char a, unsigned char b) { return static_cast<unsigned char>(a + (b - a) * f + .5f); };
-    return {mix(stops[i].r, stops[i + 1].r), mix(stops[i].g, stops[i + 1].g), mix(stops[i].b, stops[i + 1].b)};
+    if (width <= 0) return {245, 80, 160};
+    if (width == 1) return {255, 75, 75};
+    if (width == 2) return {255, 170, 85};
+    if (width == 3) return {255, 235, 120};
+    if (width == 4) return {105, 245, 125};
+    if (width == 5) return {100, 235, 235};
+    if (width <= 7) return {110, 185, 255};
+    return {155, 125, 255};
 }
 inline std::string fingerprint(std::string const& content) {
     uint64_t h = 14695981039346656037ULL;

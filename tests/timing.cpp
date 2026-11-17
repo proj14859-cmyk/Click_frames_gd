@@ -58,7 +58,7 @@ int main() {
     assert(wr.size() == 4 && wr[3].from == 5 && wr[3].to == 7 && wr[3].open);
     for (size_t i = 0; i < wide.windows.size(); ++i) assert(cf::rowOf(wr, wide.windows[i]) == std::min<int>(i, 3));
     assert(cf::makeRows(wide, 1).size() == 2 && cf::makeRows(cf::Recording{}, 8).empty());
-    auto red = cf::colorFor(1), green = cf::colorFor(50);
+    auto red = cf::colorFor(1), green = cf::colorFor(4);
     assert(red.r == 255 && red.g == 75 && green.g == 245 && green.r == 105);
     run[0].tick = std::numeric_limits<int>::max();
     auto previous = moved;

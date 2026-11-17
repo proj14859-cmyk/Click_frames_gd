@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-project(ClickFramesCollector VERSION 0.1.0)
+project(ClickFramesCollector VERSION 0.1.1)
 file(GLOB SOURCES src/*.cpp)
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 if(NOT DEFINED ENV{GEODE_SDK})
@@ -10,5 +10,5 @@ if(NOT DEFINED ENV{GEODE_SDK})
 endif()
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 # Packaging needs an exact locally-known version; the runtime dependency in
-# mod.json remains >=1.0.14 so later Click Frames releases are accepted.
-setup_geode_mod(${PROJECT_NAME} EXTERNALS "juan.click_frames_gd:1.0.14")
+# mod.json remains >=1.0.15 so later Click Frames releases are accepted.
+setup_geode_mod(${PROJECT_NAME} EXTERNALS "juan.click_frames_gd:1.0.15")

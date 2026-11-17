@@ -11,6 +11,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test timing engine and persistence
         run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/scan_limits.cpp -o /tmp/scan-limits-tests
+          /tmp/scan-limits-tests
           g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/timing.cpp -o /tmp/timing-tests
           /tmp/timing-tests
           g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/pack.cpp -o /tmp/pack-tests

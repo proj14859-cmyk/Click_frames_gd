@@ -30,7 +30,8 @@ std::filesystem::path saveRoot() {
     return converted ? converted.unwrap() : std::filesystem::path{};
 }
 bool normalMode(PlayLayer* layer) {
-    return layer && Mod::get()->getSettingValue<bool>("enabled") && !layer->m_isPracticeMode &&
+    return layer && Mod::get()->getSavedValue<bool>("normal-runs-consent-v1",false) &&
+        Mod::get()->getSettingValue<bool>("enabled") && !layer->m_isPracticeMode &&
         !layer->m_isTestMode && !layer->getChildByID("cf-automated-run") && layer->m_level;
 }
 int mode(PlayerObject* p) {

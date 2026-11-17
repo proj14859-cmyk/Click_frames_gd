@@ -36,7 +36,7 @@ int main(){
     assert(cf::replaceFile(root/"training"/"old.csv",cf::training::legacyHeader));assert(cf::training::aggregate(root));
     assert(cf::fs::exists(root/"training"/"old.csv.v105") && cf::readFile(root/"dataset_entrenamiento.csv")==cf::training::header);
     assert(cf::replaceFile(root/"training"/"current.csv",csv));
-    assert(cf::replaceFile(root/"training"/"current.meta","CF_TRAINING 3\nPolicy: CF-ANALYSIS-10\n"));assert(cf::training::aggregate(root));
+    assert(cf::replaceFile(root/"training"/"current.meta","CF_TRAINING 3\nPolicy: CF-ANALYSIS-11\n"));assert(cf::training::aggregate(root));
     assert(cf::replaceFile(root/"training"/"stale.csv",csv));
     assert(cf::replaceFile(root/"training"/"stale.meta","CF_TRAINING 3\nPolicy: CF-ANALYSIS-9\n"));assert(cf::training::aggregate(root));
     assert(cf::training::aggregate(root,true));assert(cf::training::refreshMetadata(root));
