@@ -69,7 +69,10 @@ bool writeCategory(std::string const& category,cfc::Attempt const& a) {
     auto categoryRoot=root/category;
     auto levelFolder=cfc::safeFolder(a.levelName)+"-"+std::to_string(a.levelID);
     auto directory=categoryRoot/levelFolder/a.id;
-    return writeFile(directory/"metadata.json",cfc::metadata(a)) &&
+    std::ostringstream queue;
+    queue<<"tick\tbutton\tdown\tplayer\tnative_timestamp\n"<<std::setprecision(17);
+    for(auto const& e:a.queuedInputs)queue<<e.tick<<'\t'<<e.button<<'\t'<<e.down<<'\t'<<(e.p2?2:1)<<'\t'<<e.timestamp<<'\n';
+    return writeFile(directory/"queued-inputs.tsv",queue.str()) && writeFile(directory/"metadata.json",cfc::metadata(a)) &&
         writeFile(directory/"inputs.tsv",cfc::inputsTsv(a)) &&
         writeFile(directory/"trajectory.tsv",cfc::trajectoryTsv(a)) && appendIndex(categoryRoot,a);
 }
@@ -126,6 +129,13 @@ void input(GJBaseGameLayer* layer,bool down,int button,bool p1) {
 }
 
 class $modify(CFCInput,GJBaseGameLayer) {
+    void processQueuedButtons(float dt,bool clearInputQueue) {
+        if(clearInputQueue && s.active && s.owner==this && normalMode(s.owner)) {
+            for(auto const& event:m_queuedButtons)
+                s.attempt.queuedInputs.push_back({int(m_gameState.m_currentProgress),int(event.m_button),event.m_isPush,event.m_isPlayer2,event.m_timestamp});
+        }
+        GJBaseGameLayer::processQueuedButtons(dt,clearInputQueue);
+    }
     void handleButton(bool down,int button,bool p1) {
         input(this,down,button,p1);GJBaseGameLayer::handleButton(down,button,p1);
     }
