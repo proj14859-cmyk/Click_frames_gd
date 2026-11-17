@@ -1575,6 +1575,10 @@ void startCandidate() {
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
     if(s.state==State::Analyze){
+        if(s.endedBy=="unknown"){
+            s.endedBy=s.validatingSnapshot?"validation":s.failure==ProbeFailure::Causal?"causal_mismatch":
+                s.failure==ProbeFailure::Buffered?"buffered_input":s.failure==ProbeFailure::Policy?"policy":"invalid";
+        }
         s.trialReport+=fmt::format("{}\t{}\t{}\t{}\t{}\t{}\n",s.target,s.offset,tick(),s.endedBy,
             s.validatingSnapshot?"validation":s.horizonTrial?"horizon":"measured",result==Pending::Pass);
     }
@@ -2721,12 +2725,13 @@ void showDiagnostics(){if(auto p=CFDiagnostics::create()) p->show();}
 
 class CFOptions : public Popup {
     bool extra=false;
+    CCMenu* options=nullptr;
     void draw(){
-        m_buttonMenu->removeAllChildren();
+        options->removeAllChildren();
         auto add=[this](std::string name,float y,std::function<void()> fn){
             auto sprite=ButtonSprite::create(name.c_str());sprite->setScale(.5f);
             auto item=CCMenuItemExt::createSpriteExtra(sprite,[fn](auto){auto action=fn;action();});
-            item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace({190,y})));m_buttonMenu->addChild(item);
+            item->setPosition({190,y});options->addChild(item);
         };
         auto toggle=[&](char const* key,char const* name,float y){
             add(fmt::format("{}: {}",name,Mod::get()->getSettingValue<bool>(key)?"ON":"OFF"),y,[this,key]{Mod::get()->setSettingValue<bool>(key,!Mod::get()->getSettingValue<bool>(key));draw();});
@@ -2758,7 +2763,8 @@ class CFOptions : public Popup {
         }
         add("Close",55,[this]{onClose(nullptr);});
     }
-    bool init(){if(!Popup::init(380,270))return false;setTitle("Click Frames options");draw();return true;}
+    bool init(){if(!Popup::init(380,270))return false;setTitle("Click Frames options");
+        options=CCMenu::create();options->setPosition({0,0});m_mainLayer->addChild(options);draw();return true;}
 public:
     static CFOptions* create(){auto p=new CFOptions;if(p->init()){p->autorelease();return p;}delete p;return nullptr;}
 };

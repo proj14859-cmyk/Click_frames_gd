@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 namespace cf {
 inline bool reachedHorizon(int now,int click,int offset,int limit,bool local,bool dataset,
     bool validating,bool auditing,bool recovery,bool fullRetry,bool disabled,bool dispatched,bool alive) {
