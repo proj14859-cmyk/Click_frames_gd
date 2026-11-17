@@ -1,5 +1,12 @@
 # Click Frames GD
 
+## v1.0.16
+
+- Settings are grouped into three sections with titles: **Normal** (display, sound, HUD; never change measured windows), **Advanced** (search radius, analysis scope, speed, checkpoints, optional L* statistics; results stay exact) and **Experimental** (Fast estimated search, survival horizon, air rejoin, flight recovery, dataset mode; may produce estimated or shortcut-based results). Setting keys and defaults are unchanged, so saved preferences carry over.
+- Unstable baseline: a baseline that dies or drifts during the 2nd replay (or changes completion tick, or shows causal drift with batching already off) is now rebuilt from scratch up to 2 times per Analyze. Two consecutive matching replays are still required, so no unverified baseline is accepted. The final error now includes the death tick.
+- Replay died at tick X during Analyze, before the shifted click could matter: the probe is now retried once from a clean full start (no native state, normal cadence) before the analysis is aborted. The retry budget resets at each event.
+- In-game options: "Advanced settings" button renamed "All settings".
+
 ## v1.0.15 / GD 2.2091
 
 - Measurement units are 240 Hz ticks, independent of render FPS: 1F = 4.167 ms, 2F = 8.333 ms, 4F = 16.667 ms. A 2F window here does not mean two frames at 60 Hz. CBF sub-tick intervals in the reference images are approximate conversions, not measurements supplied by this vanilla 240 TPS analyzer.

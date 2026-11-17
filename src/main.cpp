@@ -253,6 +253,7 @@ struct Session {
     int baselinePass = 0, baselineEnd = 0;
     bool batchDisabled = false, confirmingBoundary = false;
     bool baselineRetryPending = false;
+    int baselineRestarts = 0;
     cf::TickTable<cf::Observation> baseline;
     cf::TickTable<cf::RejoinEvidence> referenceEvidence;
     size_t baselineCompared = 0;
@@ -453,6 +454,13 @@ bool running() { return s.state == State::Verify || s.state == State::Analyze ||
 int auditClass(size_t target) { return target<s.recording.inputs.size()?std::clamp(s.recording.inputs[target].mode,0,7):0; }
 cf::AuditGate& activeAudit() { return s.classAudits[auditClass(s.target)]; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
+// An unstable baseline (stray death, drift) is rebuilt from scratch at most twice; two matching replays are still required.
+bool restartBaseline() {
+    if (s.baselineRestarts >= 2) return false;
+    ++s.baselineRestarts; s.batchDisabled = true; s.baselinePass = 0; s.baselineCompared = 0;
+    s.baselineRetryPending = true; s.causalParity = {};
+    return true;
+}
 void recordCause(int kind, GameObject* object, PlayerObject* player, int detail = 0) {
     if (!cf::countsAsCause(kind) || !hasLiveOwner() || s.resetting || s.pending != Pending::None ||
         (s.state != State::Verify && s.state != State::Analyze)) return;
@@ -475,6 +483,8 @@ void recordCause(int kind, GameObject* object, PlayerObject* player, int detail 
             if (!s.batchDisabled && Mod::get()->getSettingValue<bool>("batch-analysis")) {
                 s.batchDisabled = true; s.baselinePass = 0; s.baselineRetryPending = true;
                 s.message = "Causal cadence mismatch; rebuilding baseline without batching"; s.pending = Pending::Fail;
+            } else if (restartBaseline()) {
+                s.message = fmt::format("Causal drift at tick {}; rebuilding baseline ({}/2)", tick(), s.baselineRestarts); s.pending = Pending::Fail;
             } else {
                 s.message = fmt::format("Route differs at tick {} (kind {}). See baseline-difference.txt", tick(), kind);
                 s.pending = Pending::Invalid;
@@ -1437,7 +1447,7 @@ void beginAnalysis() {
     s.recording.windows.resize(s.recording.inputs.size()); s.recording.verified = false;
     captureLevelStats();
     s.state = State::Verify; s.pending = Pending::None; s.tests = 0;
-    s.baselinePass = 0; s.baseline.clear(); s.baselineCompared = 0;
+    s.baselinePass = 0; s.baseline.clear(); s.baselineCompared = 0; s.baselineRestarts = 0;
     s.initialSharedSeed = GameToolbox::getfast_srand(); s.parityDiagnostic.clear();
     for(auto& f:s.features) f.replayMatch=false;
     s.featuresDirty=!s.features.empty();
@@ -1600,7 +1610,7 @@ void consume() {
         s.trialCostActive = false;
     }
     if(result==Pending::Invalid && s.state==State::Analyze && !s.auditing && !s.diagnosticRetryUsed &&
-        (s.causalMismatch || s.message.find("Replay stalled")!=std::string::npos)) {
+        (s.causalMismatch || s.endedBy=="death" || s.message.find("Replay stalled")!=std::string::npos)) {
         diagnostic("SAFE_RETRY",s.message);
         s.diagnosticRetryUsed=true;s.batchDisabled=true;s.fullRestartRetry=true;
         s.snapshot=nullptr;s.snapshotChecked=false;s.validatingSnapshot=false;
@@ -1620,7 +1630,13 @@ void consume() {
                 s.baselineCompared = 0; resetTrial(); return;
             }
             if (s.baselinePass > 0) {
-                s.message = "Unstable baseline: repeated route died"; s.pending = Pending::Invalid; return;
+                auto died = s.message;
+                if (restartBaseline()) {
+                    s.baselineRetryPending = false; diagnostic("BASELINE_RESTART", died);
+                    s.message = fmt::format("Baseline unstable ({}); rebuilding {}/2", died, s.baselineRestarts);
+                    resetTrial(); return;
+                }
+                s.message = fmt::format("Unstable baseline: repeated route died ({})", died); s.pending = Pending::Invalid; return;
             }
             log::info("[CF] verify failed (shift {:+}): {}", by, s.message);
             if (s.firstFail.empty()) s.firstFail = s.message;
@@ -1642,6 +1658,11 @@ void consume() {
         if (s.baselinePass == 0) {
             s.baselineEnd = tick();
         } else if (tick() != s.baselineEnd || s.baselineCompared != s.baseline.size() || s.causalParity.opened>=0 || s.causalMismatch || s.causalCursor != s.causalTrace.size()) {
+            if (restartBaseline()) {
+                s.baselineRetryPending = false; diagnostic("BASELINE_RESTART", "completion tick or physics schedule changed");
+                s.message = fmt::format("Baseline drifted; rebuilding {}/2", s.baselineRestarts);
+                resetTrial(); return;
+            }
             s.message = "Unstable baseline: completion tick or physics schedule changed";
             s.pending = Pending::Invalid; return;
         }
@@ -2039,6 +2060,9 @@ class $modify(CFBase, GJBaseGameLayer) {
                             s.batchDisabled = true; s.baselinePass = 0;
                             s.baselineRetryPending = true;
                             s.message = "Batch parity failed; rebuilding baseline at normal cadence";
+                            s.pending = Pending::Fail;
+                        } else if (restartBaseline()) {
+                            s.message = fmt::format("Baseline drift at tick {}; rebuilding ({}/2)", now, s.baselineRestarts);
                             s.pending = Pending::Fail;
                         } else {
                             s.message = fmt::format("Unstable baseline at tick {}: {}", now,
@@ -2589,7 +2613,7 @@ class CFOptions : public Popup {
                     });
                 });
             });
-            add("Advanced settings",100,[]{openSettingsPopup(Mod::get());});
+            add("All settings",100,[]{openSettingsPopup(Mod::get());});
         }
         add("Close",55,[this]{onClose(nullptr);});
     }
@@ -2817,7 +2841,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.15", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.16", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
