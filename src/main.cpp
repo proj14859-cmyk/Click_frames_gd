@@ -176,6 +176,8 @@ struct StatsSnapshot {
     double layerTimePlayed=0,layerAttemptTime=0,layerBestAttemptTime=0;
 };
 struct Session {
+    bool toolSafe=false;
+    float priorToolScale=1;
     PlayLayer* owner = nullptr;
     cf::Recording recording;
     State state = State::Idle;
@@ -439,7 +441,7 @@ void restoreLevelStats() {
     s.levelStatsCaptured = false;
 }
 bool statsIsolationActive() {
-    return s.levelStatsCaptured && (s.state==State::Record || s.state==State::Verify || s.state==State::Analyze ||
+    return s.levelStatsCaptured && (s.toolSafe || s.state==State::Record || s.state==State::Verify || s.state==State::Analyze ||
         s.state==State::Playback || s.resetting || s.returningToPause);
 }
 std::string phaseName() {
@@ -1362,7 +1364,12 @@ void marker(size_t index) {
         if(!clickAudio.play(w.width())) diagnostic("AUDIO_PLAY","No se pudo reproducir el sonido de ventana");
     }
 }
+bool dirtyCapture(PlayLayer* layer) {
+    return layer->m_ignoreDamage || layer->m_isIgnoreDamageEnabled || layer->m_startPosObject || s.toolSafe;
+}
 std::string inputBackend() {
+    if (hasLiveOwner() && s.owner->m_clickBetweenSteps) return "native-between-steps";
+    if (hasLiveOwner() && s.owner->m_clickOnSteps && !Loader::get()->isModLoaded("syzzi.click_between_frames")) return "cos240";
     if (auto cbf = Loader::get()->getLoadedMod("syzzi.click_between_frames")) {
 #ifdef GEODE_IS_WINDOWS
         if (cbf->getSettingValue<bool>("physics-bypass")) return "unsupported-bypass";
@@ -1407,7 +1414,7 @@ void predictionPreview() {
 bool supported() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return false; }
     if (s.owner->m_isPlatformer) { s.message = "Platformer is not supported"; return false; }
-    if (s.owner->m_isIgnoreDamageEnabled) { s.message = "Disable ignore damage before recording or analysis"; return false; }
+    if (dirtyCapture(s.owner)) { s.message = "Use an unassisted run from the original start with Ignore Damage disabled"; return false; }
     auto backend = inputBackend();
     if (backend != "vanilla240" && backend != "cos240") {
         s.message = "Use vanilla or CBF Click on Steps; fractional CBF and physics bypass have no precise replay adapter"; return false;
@@ -1939,6 +1946,9 @@ class $modify(CFLevelSave, GameLevelManager) {
 };
 
 class $modify(CFPlayer, PlayerObject) {
+    void playDeathEffect(){
+        if(!hasLiveOwner() || !Mod::get()->getSettingValue<bool>("tool-no-death"))PlayerObject::playDeathEffect();
+    }
     void incrementJumps() {
         if (statsIsolationActive()) return;
         PlayerObject::incrementJumps();
@@ -2327,8 +2337,16 @@ class $modify(CFPlay, PlayLayer) {
         if (s.owner == this) { analysisClock(false); s.physicalHeld.fill(false); applyBackground(false); }
         PlayLayer::pauseGame(unfocused);
     }
+    bool rejectCapture() {
+        if(s.owner!=this || (s.state!=State::Record && !running()))return false;
+        if(!dirtyCapture(this) && (s.state!=State::Record || inputBackend()==s.recording.backend))return false;
+        if(s.state==State::Record){s.captureDirty=true;s.recording.complete=false;}
+        s.alert="Invalid attempt: assisted play, Start Pos or changed input mode.";
+        stop(s.alert);queueReturnToPause();return true;
+    }
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
+        if(rejectCapture())return;
         if (statsIsolationActive()) enforceLevelStats();
         if (s.owner != this || s.resetting || s.pending != Pending::None || !m_player1 || !m_player2) return;
         int now = tick();
@@ -2458,6 +2476,7 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void destroyPlayer(PlayerObject* player, GameObject* object) {
+        if(s.owner==this && s.toolSafe && Mod::get()->getSettingValue<bool>("tool-noclip"))return;
         // A collision request may be ignored by GD (invulnerability, inactive
         // player, reset). Let the engine decide before classifying a trial.
         bool active = s.owner == this && running() && !s.resetting &&
@@ -2489,6 +2508,8 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void levelComplete() {
+        if(s.owner==this && s.toolSafe){resetLevel();enforceLevelStats();return;}
+        if(rejectCapture())return;
         if(s.owner==this && running())s.endedBy="level_end";
         if (s.owner == this && s.state == State::Playback) {
             if (s.pending == Pending::Fail) return;
@@ -2543,6 +2564,7 @@ class $modify(CFPlay, PlayLayer) {
             if (!s.recording.key.empty()) save(true);
             enforceLevelStats();
         }
+        if(s.owner==this && s.toolSafe)CCDirector::get()->getScheduler()->setTimeScale(s.priorToolScale);
         PlayLayer::onExit();
         if(s.owner==this)s.levelStatsCaptured=false;
     }
@@ -2860,6 +2882,7 @@ class CFPopup : public Popup {
 public:
     static CFPopup* create() { auto p = new CFPopup; if (p->init()) { p->autorelease(); return p; } delete p; return nullptr; }
 };
+#include "LevelTools.inc"
 class $modify(CFPause, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
@@ -2870,6 +2893,8 @@ class $modify(CFPause, PauseLayer) {
         auto sprite = ButtonSprite::create("Frames"); sprite->setScale(.7f);
         auto button = CCMenuItemExt::createSpriteExtra(sprite, [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
         button->m_scaleMultiplier = 1.f; button->setPosition({0, 0}); menu->addChild(button);
+        auto toolButton=CCMenuItemExt::createSpriteExtra(ButtonSprite::create("Tools"),[](auto){showLevelTools();});
+        toolButton->setScale(.52f);toolButton->setPosition({-90,0});menu->addChild(toolButton);
         auto diagSprite=ButtonSprite::create("Logs"); diagSprite->setScale(.5f);
         auto diag=CCMenuItemExt::createSpriteExtra(diagSprite,[](auto){showDiagnostics();}); diag->m_scaleMultiplier=1.f;diag->setPosition({90,0});menu->addChild(diag);
     }
