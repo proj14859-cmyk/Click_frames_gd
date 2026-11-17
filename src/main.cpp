@@ -1414,6 +1414,7 @@ void predictionPreview() {
 bool supported() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return false; }
     if (s.owner->m_isPlatformer) { s.message = "Platformer is not supported"; return false; }
+    if (std::abs(CCDirector::get()->getScheduler()->getTimeScale()-1.f)>.00001f) {s.message="Disable external speed changes before recording or analysis";return false;}
     if (dirtyCapture(s.owner)) { s.message = "Use an unassisted run from the original start with Ignore Damage disabled"; return false; }
     auto backend = inputBackend();
     if (backend != "vanilla240" && backend != "cos240") {
@@ -2339,7 +2340,8 @@ class $modify(CFPlay, PlayLayer) {
     }
     bool rejectCapture() {
         if(s.owner!=this || (s.state!=State::Record && !running()))return false;
-        if(!dirtyCapture(this) && (s.state!=State::Record || inputBackend()==s.recording.backend))return false;
+        bool validSpeed = s.state!=State::Record || std::abs(CCDirector::get()->getScheduler()->getTimeScale()-1.f)<.00001f;
+        if(validSpeed && !dirtyCapture(this) && (s.state!=State::Record || inputBackend()==s.recording.backend))return false;
         if(s.state==State::Record){s.captureDirty=true;s.recording.complete=false;}
         s.alert="Invalid attempt: assisted play, Start Pos or changed input mode.";
         stop(s.alert);queueReturnToPause();return true;
@@ -2876,7 +2878,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.17", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.18", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:
