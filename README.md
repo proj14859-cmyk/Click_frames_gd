@@ -1,5 +1,8 @@
 # Click Frames GD
 
+Configuración para Exact + Full run y recolección normal:
+[`CONFIGURACION_ENTRENAMIENTO.md`](CONFIGURACION_ENTRENAMIENTO.md).
+
 ## v1.0.16
 
 - Settings are grouped into three sections with titles: **Normal** (display, sound, HUD; never change measured windows), **Advanced** (search radius, analysis scope, speed, checkpoints, optional L* statistics; results stay exact) and **Experimental** (Fast estimated search, survival horizon, air rejoin, flight recovery, dataset mode; may produce estimated or shortcut-based results). Setting keys and defaults are unchanged, so saved preferences carry over.

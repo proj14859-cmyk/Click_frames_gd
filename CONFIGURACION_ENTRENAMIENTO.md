@@ -19,6 +19,8 @@ En Frames > Settings > Extra options > All settings configura:
 | Probe neighboring flight inputs | OFF |
 | Analysis speed | 1.0 |
 | Batched analysis | OFF |
+| Validated native state cache | ON |
+| Event checkpoint targets | 192 |
 | Analysis work budget per frame (ms) | 16 |
 
 Este perfil prioriza verificación a cadencia normal. Dataset mode fuerza Exact
