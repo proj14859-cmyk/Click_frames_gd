@@ -2612,7 +2612,7 @@ class CFClickEditor : public Popup {
             float y=220-float(n%6)*27;
             auto label=CCLabelBMFont::create(fmt::format("#{}  {}F -> {}F  ({:+})  {:.1f}ms",i+1,original,value,value-original,value*1000./240).c_str(),"chatFont.fnt");
             label->setScale(.48f);label->setPosition({175,y});rows->addChild(label);
-            button("-",{335,y},[this,n]{if(valid()){edits.markers[n].width=std::max(1,edits.markers[n].width-1);draw();}});
+            button("-",{335,y},[this,n]{if(valid()){edits.markers[n].width=std::clamp(edits.markers[n].width-1,1,20);draw();}});
             button("+",{380,y},[this,n]{if(valid()){edits.markers[n].width=std::min(20,edits.markers[n].width+1);draw();}});
         }
         button("<",{35,32},[this]{if(page){--page;draw();}});
@@ -2810,7 +2810,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.14", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.15", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

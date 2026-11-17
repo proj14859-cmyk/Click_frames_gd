@@ -10,5 +10,5 @@ if(NOT DEFINED ENV{GEODE_SDK})
 endif()
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 # Packaging needs an exact locally-known version; the runtime dependency in
-# mod.json remains >=1.0.14 so later Click Frames releases are accepted.
+# mod.json remains >=1.0.15 so later Click Frames releases are accepted.
 setup_geode_mod(${PROJECT_NAME} EXTERNALS "juan.click_frames_gd:1.0.15")

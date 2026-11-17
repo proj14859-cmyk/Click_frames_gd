@@ -5,7 +5,7 @@
 - Measurement units are 240 Hz ticks, independent of render FPS: 1F = 4.167 ms, 2F = 8.333 ms, 4F = 16.667 ms. A 2F window here does not mean two frames at 60 Hz. CBF sub-tick intervals in the reference images are approximate conversions, not measurements supplied by this vanilla 240 TPS analyzer.
 - Closed windows limited by causal or buffered-input rules, rather than confirmed collision boundaries, are marked estimated. Level difficulty never changes a measured width.
 - Local analysis can stop after 600 ticks following the shifted click. The setting accepts 0 to disable. Horizon results are estimated, excluded from training/community exports, and never reused as full-route cache evidence. Strict dataset mode, full-route scans, audits and failed movement classes bypass the horizon.
-- `scan-events.tsv` adds `ended_by` (last probe for the event) and `confidence`. `scan-trials.tsv` records every probe, including validation/audit attempts, with its individual reason: local_exit, rejoin, death, level_end, horizon, cache, or an invalidation reason.
+- `scan-events.tsv` adds `ended_by` (ordered probe reasons separated by `|`) and `confidence`. `scan-trials.tsv` records every probe, including validation/audit attempts, with its individual reason: local_exit, rejoin, death, level_end, horizon, cache, or an invalidation reason.
 - Checkpoint validation aborts after 64 ticks with zero comparisons and logs the reference trace size.
 - Audits are tracked per movement mode (cube, ship, ball, UFO, wave, robot, spider, swing). A failed audit invalidates only that class's windows; native-state integrity failures still invalidate shared state globally.
 - Settings opens a short menu; extras contain local/strict analysis, normal-run collection and advanced settings. Collector 0.1.1 requires two confirmations and defaults to no collection.
@@ -13,7 +13,7 @@
 
 Runtime validation still requires GD: compare an easy demon and Acheron using the same input backend, inspect the new trial log, and compare account stats before/after Play and analysis. No runtime speedup or timing accuracy is claimed from compilation alone.
 
-El mod complementario independiente se encuentra en [`collector/`](collector/README.md). Recolecta localmente intentos normales y runs completadas en carpetas separadas para el futuro dataset, y requiere Click Frames GD v1.0.14 o superior.
+El mod complementario independiente se encuentra en [`collector/`](collector/README.md). Recolecta localmente intentos normales y runs completadas en carpetas separadas para el futuro dataset, y requiere Click Frames GD v1.0.15 o superior.
 
 ## v1.0.14 / 2026-11-13 / GD 2.2091 / Geode 6
 

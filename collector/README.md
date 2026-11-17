@@ -1,7 +1,11 @@
 # Click Frames Collector
 
-Companion dataset collector for Click Frames GD v1.0.14 or newer, Geometry Dash
+Companion dataset collector for Click Frames GD v1.0.15 or newer, Geometry Dash
 2.2091 and Geode 6.0.0-alpha.1.
+
+Collection defaults to disabled. In Click Frames, open Settings > Extra options >
+Collect normal runs and accept both confirmations. The same button disables it.
+Enabling the collector setting alone does not bypass consent.
 
 ## Storage
 
