@@ -617,6 +617,7 @@ int slot(int button, bool p1) { return (p1 ? 0 : 3) + button - 1; }
 std::filesystem::path levelDir(std::string const& folder) { return saveRoot() / "recordings" / folder; }
 std::filesystem::path path() { return levelDir(s.folder) / s.recording.key / "capture.flr"; }
 int selectedPolicy() {
+    if (Mod::get()->getSettingValue<bool>("dataset-mode")) return 0;
     return Mod::get()->getSettingValue<bool>("local-analysis") ? 2 : Mod::get()->getSettingValue<bool>("same-jump") ? 1 : 0;
 }
 std::string workingDigest() { return cf::fingerprint(s.captureDigest + cf::playbackBytes(s.captureDigest, s.recording)); }
@@ -810,6 +811,11 @@ void save(bool flushPredictions = false) {
         s.trialAttempts ? double(s.restores-std::min(s.restores,s.probeRestores))/s.trialAttempts : 0., s.tickFallbacks, s.parityFallbacks, s.previousStateFallbacks,
         s.missedNativeTargets, s.thinnedNativeStates, s.resetSeconds, s.restoreSeconds, s.cacheHits,
         s.auditGate.earlyPasses, s.auditGate.audits, s.auditGate.failures, s.auditGate.disabled);
+    for (size_t mode=0; mode<s.classAudits.size(); ++mode) {
+        auto const& audit=s.classAudits[mode];
+        report += fmt::format("Movement class {}: early_passes={} audits={} failures={} local_disabled={}\n",
+            mode,audit.earlyPasses,audit.audits,audit.failures,audit.disabled);
+    }
     report += fmt::format("Newly measured events: {}\nSaved measured events: {}\nProbe restores: {}\nNative cache disabled after branch disagreement: {}\nNormalized inactive-dual P2 inputs: {}\n",
         s.newlyMeasured, measuredNow, s.probeRestores, s.nativeDisabled,s.normalizedRouting);
     report += fmt::format("Rejoin checks: {}\nRejoin reference misses: {}\nRejoin dynamic-world blocks: {}\nRejoin state mismatches: {}\nRejoin accepted passes: {}\n",

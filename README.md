@@ -9,7 +9,7 @@
 - `scan-events.tsv` adds `ended_by` (ordered probe reasons separated by `|`) and `confidence`. `scan-trials.tsv` records every probe, including validation/audit attempts, with its individual reason: local_exit, rejoin, death, level_end, horizon, cache, or an invalidation reason.
 - Checkpoint validation aborts after 64 ticks with zero comparisons and logs the reference trace size.
 - Audits are tracked per movement mode (cube, ship, ball, UFO, wave, robot, spider, swing). A failed audit invalidates only that class's windows; native-state integrity failures still invalidate shared state globally.
-- Settings opens a short menu; extras contain local/strict analysis, normal-run collection and advanced settings. Collector 0.1.1 requires two confirmations and defaults to no collection.
+- Settings opens a short menu; extras contain local/strict analysis, normal-run collection and advanced settings. Strict training scan overrides local mode and forces full-route exact analysis. Collector 0.1.1 requires two confirmations and defaults to no collection.
 - Edit lists measured clicks in pages, showing measured -> edited width, difference and milliseconds. Minus/plus adjusts widths to 1..20; unchanged wider measurements are retained. Only this editor offers “Play run modified”, with per-width sounds. Ordinary Play uses measured windows. Manual edits never replace training labels.
 
 Runtime validation still requires GD: compare an easy demon and Acheron using the same input backend, inspect the new trial log, and compare account stats before/after Play and analysis. No runtime speedup or timing accuracy is claimed from compilation alone.
