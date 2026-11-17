@@ -1,47 +1,285 @@
 {
   "geode": "6.0.0-alpha.1",
-  "gd": { "win": "2.2091", "android": "2.2091" },
+  "gd": {
+    "win": "2.2091",
+    "android": "2.2091"
+  },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.15",
+  "version": "v1.0.16",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
-  "resources": { "files": ["resources/*.wav", "licenses/*.txt"] },
+  "resources": {
+    "files": [
+      "resources/*.wav",
+      "licenses/*.txt"
+    ]
+  },
   "settings": {
-    "horizon-ticks": { "type": "int", "name": "Local survival horizon (240 Hz ticks)", "default": 600, "min": 0, "max": 2400, "description": "0 disables. Local probes may accept survival after this many ticks. Results are estimated and excluded from training. Disabled for audits, full-route scans and dataset mode." },
-    "search-mode": { "type": "string", "name": "Grouped window search", "default": "Exact", "one-of": ["Exact", "Fast estimated"], "description": "Exact verifies every contiguous offset and is required for precise timing. Fast estimated is diagnostic: it skips interior probes, marks results ~ and excludes them from training and community exports." },
-    "dataset-mode": { "type": "bool", "name": "Dataset capture mode", "default": false, "description": "Forces exact search and at least a +/-12 tick radius. Only full-run, verified, collision-bounded rows enter dataset_entrenamiento.csv; open windows remain diagnostic." },
-    "precision-statistics": { "type": "bool", "name": "Export optional L* statistics", "default": false, "description": "Keeps the statistical model in separate CSV/report files; the live HUD always shows physical window milliseconds." },
-    "interval-hud": { "type": "bool", "name": "Show previous press interval", "default": false, "description": "Optional separate interval HUD; this is elapsed time between presses, not window precision." },
-    "air-rejoin": { "type": "bool", "name": "Audited airborne reconvergence", "description": "Stops after three exact matching airborne ticks with matching RNG/causal/physical/dynamic-world evidence. Sparse full-start audits guard against divergence; a mismatch clears local windows and disables shortcuts.", "default": true },
-    "checkpoint-budget": { "type": "int", "name": "Event checkpoint targets", "description": "Targets checkpoints just before clicks on the reference run. Samples across the level if there are more targets than this. Object-state memory limits and fallback validation still apply.", "default": 192, "min": 8, "max": 256 },
-    "scan-budget-ms": { "type": "int", "name": "Analysis work budget per frame (ms)", "description": "Up to 2048 recorded scheduler slices within this time budget per rendered frame.", "default": 16, "min": 2, "max": 24 },
-    "precision-enabled": { "type": "bool", "name": "Window margin and hardest click (ms)", "description": "Shows current window frames * 1000 / 240 and the smallest exact margin replayed this session. Independent of the optional L* solver. Open and estimated windows are labeled; Edit stays visual.", "default": true },
-    "precision-model": { "type": "string", "name": "Precision weighting", "default": "Base", "one-of": ["Base", "Nerve", "Fatigue", "CPS", "N+F", "N+C", "F+C", "N+F+C"] },
-    "precision-unit": { "type": "string", "name": "Precision display unit", "default": "Milliseconds (sigma)", "one-of": ["Milliseconds (sigma)", "L*"] },
-    "precision-target": { "type": "float", "name": "Precision target solve time (seconds)", "default": 86400.0, "min": 1.0, "max": 1000000000.0 },
-    "precision-respawn": { "type": "float", "name": "Precision respawn time (seconds)", "default": 0.0, "min": 0.0, "max": 3600.0 },
-    "precision-nerve": { "type": "float", "name": "Precision nerve coefficient", "default": 0.0016520833717346, "min": 0.0, "max": 1.0 },
-    "precision-fatigue": { "type": "float", "name": "Precision fatigue coefficient", "default": 0.0002727763242154, "min": 0.0, "max": 1.0 },
-    "precision-cps": { "type": "float", "name": "Precision CPS coefficient", "default": 0.2784421686721826, "min": 0.0, "max": 1.0 },
-    "precision-x": { "type": "float", "name": "Precision horizontal position (%)", "default": 2.0, "min": 0.0, "max": 100.0 },
-    "precision-y": { "type": "float", "name": "Precision vertical position (%)", "default": 8.0, "min": 0.0, "max": 100.0 },
-    "flight-recovery": { "type": "bool", "name": "Probe neighboring flight inputs", "description": "After a failed flight boundary, tries the next input at -1/+1 tick. Saves alternative-route evidence in flight-recoveries.tsv without expanding fixed-macro windows.", "default": false },
-    "batch-analysis": { "type": "bool", "name": "Batched analysis", "description": "Replays recorded scheduler slices in bounded batches without drawing the hidden level between slices. Reference passes verify physical/causal parity. Budget is configurable; disable for mod conflicts.", "default": true },
-    "sounds": { "type": "bool", "name": "Click sounds", "default": true },
-    "markers": { "type": "bool", "name": "Persistent circles", "default": true },
-    "marker-max-width": { "type": "int", "name": "Full-size circle limit (frames)", "description": "Windows above this width use small, silent circles. Their measurements and counter totals remain unchanged.", "default": 20, "min": 1, "max": 41 },
-    "wide-marker-spacing": { "type": "int", "name": "Wide circle spacing", "description": "Minimum world-space distance between compact wide-window circles. Higher values hide more overlapping circles; 0 keeps all of them.", "default": 54, "min": 0, "max": 180 },
-    "local-analysis": { "type": "bool", "name": "Fast local segment analysis", "description": "Tests until the reference landing or the next relevant action's exit zone. Does not certify later consequences in the full run. Turn off for full-route margins. Changing scope restarts measurements when Analyze is pressed.", "default": true },
-    "same-jump": { "type": "bool", "name": "Validate landing in full-run mode", "description": "In full-run mode, cube/robot jumps must also match the reference landing corridor. Local mode always checks its own reference exit.", "default": true },
-    "native-states": { "type": "bool", "name": "Validated native state cache", "description": "Captures event-directed checkpoints with dynamic-map/object-count limits, validates continuation physics up to the target event and tries earlier states on mismatch.", "default": true },
-    "trajectory-preview": { "type": "bool", "name": "Analyzed trajectory preview", "description": "Show bounded traces from simulated candidates near their click during Play. Not live prediction for arbitrary manual inputs.", "default": true },
-    "ms-x": { "type": "float", "name": "Milliseconds horizontal position (%)", "default": 2.0, "min": 0.0, "max": 100.0 },
-    "ms-y": { "type": "float", "name": "Milliseconds vertical position (%)", "default": 2.0, "min": 0.0, "max": 100.0 },
-    "scan-speed": { "type": "float", "name": "Analysis speed", "description": "Game speed while Verify/Analyze run behind a cover. 1.0 = normal. Lower it if your phone stutters.", "default": 1.5, "min": 1.0, "max": 3.0 },
-    "max-rows": { "type": "int", "name": "Max counter rows", "description": "The counter shows every width from the smallest to the largest measured window, including empty widths. If there are more than this, the widest ones share one row (for example 8+).", "default": 8, "min": 2, "max": 12 },
-    "scan-radius": { "type": "int", "name": "Search radius (ticks)", "default": 20, "min": 1, "max": 20 },
-    "counter-scale": { "type": "float", "name": "Counter size", "default": 1.0, "min": 0.5, "max": 2.0 },
-    "marker-scale": { "type": "float", "name": "Marker size", "default": 1.0, "min": 0.5, "max": 2.0 }
+    "section-normal": {
+      "type": "title",
+      "name": "NORMAL - display, sound and HUD",
+      "description": "Only change what you see and hear. They never alter the measured windows."
+    },
+    "sounds": {
+      "type": "bool",
+      "name": "Click sounds",
+      "default": true
+    },
+    "markers": {
+      "type": "bool",
+      "name": "Persistent circles",
+      "default": true
+    },
+    "marker-scale": {
+      "type": "float",
+      "name": "Marker size",
+      "default": 1.0,
+      "min": 0.5,
+      "max": 2.0
+    },
+    "marker-max-width": {
+      "type": "int",
+      "name": "Full-size circle limit (frames)",
+      "description": "Windows above this width use small, silent circles. Their measurements and counter totals remain unchanged.",
+      "default": 20,
+      "min": 1,
+      "max": 41
+    },
+    "wide-marker-spacing": {
+      "type": "int",
+      "name": "Wide circle spacing",
+      "description": "Minimum world-space distance between compact wide-window circles. Higher values hide more overlapping circles; 0 keeps all of them.",
+      "default": 54,
+      "min": 0,
+      "max": 180
+    },
+    "counter-scale": {
+      "type": "float",
+      "name": "Counter size",
+      "default": 1.0,
+      "min": 0.5,
+      "max": 2.0
+    },
+    "max-rows": {
+      "type": "int",
+      "name": "Max counter rows",
+      "description": "The counter shows every width from the smallest to the largest measured window, including empty widths. If there are more than this, the widest ones share one row (for example 8+).",
+      "default": 8,
+      "min": 2,
+      "max": 12
+    },
+    "precision-enabled": {
+      "type": "bool",
+      "name": "Window margin and hardest click (ms)",
+      "description": "Shows current window frames * 1000 / 240 and the smallest exact margin replayed this session. Independent of the optional L* solver. Open and estimated windows are labeled; Edit stays visual.",
+      "default": true
+    },
+    "ms-x": {
+      "type": "float",
+      "name": "Milliseconds horizontal position (%)",
+      "default": 2.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    "ms-y": {
+      "type": "float",
+      "name": "Milliseconds vertical position (%)",
+      "default": 2.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    "interval-hud": {
+      "type": "bool",
+      "name": "Show previous press interval",
+      "default": false,
+      "description": "Optional separate interval HUD; this is elapsed time between presses, not window precision."
+    },
+    "trajectory-preview": {
+      "type": "bool",
+      "name": "Analyzed trajectory preview",
+      "description": "Show bounded traces from simulated candidates near their click during Play. Not live prediction for arbitrary manual inputs.",
+      "default": true
+    },
+    "section-advanced": {
+      "type": "title",
+      "name": "ADVANCED - analysis scope, speed and statistics",
+      "description": "Change how far or how fast the analysis runs, or add optional exports. Results stay exact and verified."
+    },
+    "scan-radius": {
+      "type": "int",
+      "name": "Search radius (ticks)",
+      "default": 20,
+      "min": 1,
+      "max": 20
+    },
+    "local-analysis": {
+      "type": "bool",
+      "name": "Fast local segment analysis",
+      "description": "Tests until the reference landing or the next relevant action's exit zone. Does not certify later consequences in the full run. Turn off for full-route margins. Changing scope restarts measurements when Analyze is pressed.",
+      "default": true
+    },
+    "same-jump": {
+      "type": "bool",
+      "name": "Validate landing in full-run mode",
+      "description": "In full-run mode, cube/robot jumps must also match the reference landing corridor. Local mode always checks its own reference exit.",
+      "default": true
+    },
+    "scan-speed": {
+      "type": "float",
+      "name": "Analysis speed",
+      "description": "Game speed while Verify/Analyze run behind a cover. 1.0 = normal. Lower it if your phone stutters.",
+      "default": 1.5,
+      "min": 1.0,
+      "max": 3.0
+    },
+    "scan-budget-ms": {
+      "type": "int",
+      "name": "Analysis work budget per frame (ms)",
+      "description": "Up to 2048 recorded scheduler slices within this time budget per rendered frame.",
+      "default": 16,
+      "min": 2,
+      "max": 24
+    },
+    "batch-analysis": {
+      "type": "bool",
+      "name": "Batched analysis",
+      "description": "Replays recorded scheduler slices in bounded batches without drawing the hidden level between slices. Reference passes verify physical/causal parity. Budget is configurable; disable for mod conflicts.",
+      "default": true
+    },
+    "native-states": {
+      "type": "bool",
+      "name": "Validated native state cache",
+      "description": "Captures event-directed checkpoints with dynamic-map/object-count limits, validates continuation physics up to the target event and tries earlier states on mismatch.",
+      "default": true
+    },
+    "checkpoint-budget": {
+      "type": "int",
+      "name": "Event checkpoint targets",
+      "description": "Targets checkpoints just before clicks on the reference run. Samples across the level if there are more targets than this. Object-state memory limits and fallback validation still apply.",
+      "default": 192,
+      "min": 8,
+      "max": 256
+    },
+    "precision-statistics": {
+      "type": "bool",
+      "name": "Export optional L* statistics",
+      "default": false,
+      "description": "Keeps the statistical model in separate CSV/report files; the live HUD always shows physical window milliseconds."
+    },
+    "precision-model": {
+      "type": "string",
+      "name": "Precision weighting",
+      "default": "Base",
+      "one-of": [
+        "Base",
+        "Nerve",
+        "Fatigue",
+        "CPS",
+        "N+F",
+        "N+C",
+        "F+C",
+        "N+F+C"
+      ]
+    },
+    "precision-unit": {
+      "type": "string",
+      "name": "Precision display unit",
+      "default": "Milliseconds (sigma)",
+      "one-of": [
+        "Milliseconds (sigma)",
+        "L*"
+      ]
+    },
+    "precision-target": {
+      "type": "float",
+      "name": "Precision target solve time (seconds)",
+      "default": 86400.0,
+      "min": 1.0,
+      "max": 1000000000.0
+    },
+    "precision-respawn": {
+      "type": "float",
+      "name": "Precision respawn time (seconds)",
+      "default": 0.0,
+      "min": 0.0,
+      "max": 3600.0
+    },
+    "precision-nerve": {
+      "type": "float",
+      "name": "Precision nerve coefficient",
+      "default": 0.0016520833717346,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "precision-fatigue": {
+      "type": "float",
+      "name": "Precision fatigue coefficient",
+      "default": 0.0002727763242154,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "precision-cps": {
+      "type": "float",
+      "name": "Precision CPS coefficient",
+      "default": 0.2784421686721826,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "precision-x": {
+      "type": "float",
+      "name": "Precision horizontal position (%)",
+      "default": 2.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    "precision-y": {
+      "type": "float",
+      "name": "Precision vertical position (%)",
+      "default": 8.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    "section-experimental": {
+      "type": "title",
+      "name": "EXPERIMENTAL - shortcuts and estimated results",
+      "description": "Change how windows are searched or accepted. Results may be estimated or shortcut-based, so use them for diagnosis and verify before trusting them."
+    },
+    "search-mode": {
+      "type": "string",
+      "name": "Grouped window search",
+      "default": "Exact",
+      "one-of": [
+        "Exact",
+        "Fast estimated"
+      ],
+      "description": "Exact verifies every contiguous offset and is required for precise timing. Fast estimated is diagnostic: it skips interior probes, marks results ~ and excludes them from training and community exports."
+    },
+    "horizon-ticks": {
+      "type": "int",
+      "name": "Local survival horizon (240 Hz ticks)",
+      "default": 600,
+      "min": 0,
+      "max": 2400,
+      "description": "0 disables. Local probes may accept survival after this many ticks. Results are estimated and excluded from training. Disabled for audits, full-route scans and dataset mode."
+    },
+    "air-rejoin": {
+      "type": "bool",
+      "name": "Audited airborne reconvergence",
+      "description": "Stops after three exact matching airborne ticks with matching RNG/causal/physical/dynamic-world evidence. Sparse full-start audits guard against divergence; a mismatch clears local windows and disables shortcuts.",
+      "default": true
+    },
+    "flight-recovery": {
+      "type": "bool",
+      "name": "Probe neighboring flight inputs",
+      "description": "After a failed flight boundary, tries the next input at -1/+1 tick. Saves alternative-route evidence in flight-recoveries.tsv without expanding fixed-macro windows.",
+      "default": false
+    },
+    "dataset-mode": {
+      "type": "bool",
+      "name": "Dataset capture mode",
+      "default": false,
+      "description": "Forces exact search and at least a +/-12 tick radius. Only full-run, verified, collision-bounded rows enter dataset_entrenamiento.csv; open windows remain diagnostic."
+    }
   }
 }
