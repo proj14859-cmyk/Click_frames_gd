@@ -32,7 +32,10 @@ std::filesystem::path saveRoot() {
 bool normalMode(PlayLayer* layer) {
     return layer && Mod::get()->getSavedValue<bool>("normal-runs-consent-v1",false) &&
         Mod::get()->getSettingValue<bool>("enabled") && !layer->m_isPracticeMode &&
-        !layer->m_isTestMode && !layer->getChildByID("cf-automated-run") && layer->m_level;
+        (!layer->m_isTestMode || layer->m_startPosObject) &&
+        !layer->m_ignoreDamage && !layer->m_isIgnoreDamageEnabled &&
+        !layer->getChildByID("cf-assisted-attempt") &&
+        std::abs(CCDirector::get()->getScheduler()->getTimeScale()-1.f)<.00001f && !layer->getChildByID("cf-automated-run") && layer->m_level;
 }
 int mode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
@@ -74,6 +77,9 @@ void startAttempt(PlayLayer* layer) {
     if(!normalMode(layer) || s.finalizing)return;
     s.owner=layer;s.attempt={};s.active=true;s.lastTick=-1;s.sampleCounter=0;s.held.fill(false);
     auto level=layer->m_level;auto stamp=unixMs();
+    s.attempt.fromStartPos = layer->m_startPosObject != nullptr;
+    s.attempt.startPercent = layer->getCurrentPercent();
+    s.attempt.backend = layer->m_clickBetweenSteps ? "between-steps" : layer->m_clickOnSteps ? "on-steps" : "standard";
     s.attempt.startedUnixMs=stamp;s.attempt.levelID=level->m_levelID.value();s.attempt.levelName=level->m_levelName;
     s.attempt.levelHash=std::to_string(cfc::fnv1a(level->m_levelString));
     s.attempt.stars=level->m_stars.value();s.attempt.demon=level->m_demon.value();s.attempt.demonDifficulty=level->m_demonDifficulty;
@@ -83,11 +89,14 @@ void startAttempt(PlayLayer* layer) {
 }
 void finishAttempt(std::string result,float percent,int deathID=0,int deathType=0,float deathX=0,float deathY=0) {
     if(!s.active || s.finalizing)return;
+    if (!normalMode(s.owner)) { s.active=false; return; }
+    if (result=="completed" && (s.attempt.fromStartPos || s.attempt.startPercent>0.f)) result="segment-end";
     s.finalizing=true;s.active=false;
     s.attempt.endedUnixMs=unixMs();s.attempt.result=std::move(result);s.attempt.endPercent=std::clamp(percent,0.f,100.f);
     s.attempt.completed=s.attempt.result=="completed";s.attempt.endTick=s.owner?int(s.owner->m_gameState.m_currentProgress):s.lastTick;
     s.attempt.deathObjectID=deathID;s.attempt.deathObjectType=deathType;s.attempt.deathX=deathX;s.attempt.deathY=deathY;
     if(!writeCategory("normal-attempts",s.attempt))log::error("[Collector] Could not save normal attempt {}",s.attempt.id);
+    if(s.attempt.fromStartPos && !writeCategory("startpos-segments",s.attempt)) log::error("[Collector] Could not save segment {}",s.attempt.id);
     if(s.attempt.completed && !writeCategory("completed-runs",s.attempt))log::error("[Collector] Could not save completed run {}",s.attempt.id);
     s.finalizing=false;
 }
@@ -129,8 +138,7 @@ class $modify(CFCPlay,PlayLayer) {
     }
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-        if(s.owner==this && s.active && !normalMode(this))finishAttempt("mode-change",getCurrentPercent());
-        else if(s.owner==this && !s.active && normalMode(this) && !m_isPaused && !m_hasCompletedLevel && !m_player1->m_isDead)startAttempt(this);
+        if(s.owner==this && s.active && !normalMode(this))s.active=false;
         sample(this);
     }
     void resetLevel() {
