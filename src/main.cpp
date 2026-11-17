@@ -265,6 +265,8 @@ struct Session {
     size_t scheduleCursor = 0;
     uint64_t initialSharedSeed = 0, snapshotSharedSeed = 0;
     uint64_t rootRandomSeed=0, rootReplaySeed=0;
+    double rootExtraDelta=0;
+    int rootStep=0;
     size_t snapshotScheduleCursor = 0;
     std::array<CollisionState, 2> snapshotCollisions;
     std::shared_ptr<EngineState> snapshotEngineState;
@@ -1087,8 +1089,12 @@ void resetTrialImpl() {
     s.owner->resetLevel();
     enforceLevelStats();
     if(scanningReset && !restoring) {
-        if(s.state==State::Verify && s.baselinePass==0) {s.rootRandomSeed=s.owner->m_randomSeed;s.rootReplaySeed=s.owner->m_replayRandSeed;}
+        if(s.state==State::Verify && s.baselinePass==0) {
+            s.rootRandomSeed=s.owner->m_randomSeed;s.rootReplaySeed=s.owner->m_replayRandSeed;
+            s.rootExtraDelta=s.owner->m_extraDelta;s.rootStep=s.owner->m_currentStep;
+        }
         s.owner->m_randomSeed=s.rootRandomSeed;s.owner->m_replayRandSeed=s.rootReplaySeed;
+        s.owner->m_extraDelta=s.rootExtraDelta;s.owner->m_currentStep=s.rootStep;
         GameToolbox::fast_srand(s.initialSharedSeed);
     }
     if (s.musicMutedByCf) FMODAudioEngine::get()->setBackgroundMusicVolume(0.f);
@@ -1105,6 +1111,7 @@ void resetTrialImpl() {
             s.resetting = true; s.owner->removeAllCheckpoints(); s.owner->resetLevel(); s.resetting = false;
             enforceLevelStats();
             s.owner->m_randomSeed=s.rootRandomSeed;s.owner->m_replayRandSeed=s.rootReplaySeed;GameToolbox::fast_srand(s.initialSharedSeed);
+            s.owner->m_extraDelta=s.rootExtraDelta;s.owner->m_currentStep=s.rootStep;
         } else {
             s.next = s.snapshotNext; s.injectedHeld = s.snapshotHeld;
             s.owner->m_queuedButtons = s.snapshotButtons;
@@ -1849,14 +1856,18 @@ class $modify(CFScanScheduler, cocos2d::CCScheduler) {
         static bool inside = false;
         auto scanning = [] { return hasLiveOwner() && !s.owner->m_isPaused && !s.returningToPause &&
             (s.state == State::Verify || s.state == State::Analyze); };
-        if (inside || !scanning() || !Mod::get()->getSettingValue<bool>("batch-analysis")) {
+        if (inside || !scanning()) {
             CCScheduler::update(dt); return;
         }
         inside = true;
         scanBatchActive = true;
         auto owner = s.owner;
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(Mod::get()->getSettingValue<int64_t>("scan-budget-ms"));
-        int limit = s.batchDisabled ? 1 : 2048;
+        // Disabling acceleration must not disable deterministic replay cadence.
+        // One recorded scheduler slice per render still reproduces the same
+        // dt sequence and physics-step grouping as the reference pass.
+        bool batching=Mod::get()->getSettingValue<bool>("batch-analysis");
+        int limit = s.batchDisabled || !batching ? 1 : 2048;
         for (int i = 0; i < limit; ++i) {
             if (s.pending != Pending::None) consume();
             if (!scanning() || s.owner != owner || (i > 0 && s.batchDisabled)) break;
@@ -2072,6 +2083,8 @@ class $modify(CFBase, GJBaseGameLayer) {
                         s.parityDiagnostic = fmt::format("tick={} pass={} batching={} dt={} causal-cursor={}/{} next-expected={} {}", now, failedPass,
                             failedBatching, dt, s.causalCursor, s.causalTrace.size(), expectedCause, !reference ? "missing tick" : cf::difference(*reference, current));
                         diagnostic("PARITY_FAILURE",s.parityDiagnostic);
+                        diagnostic("PARITY_SCHEDULE",fmt::format("cursor={} size={} extra_delta={} step={} half={} last={} root_extra_delta={} root_step={}",
+                            s.scheduleCursor,s.updateSchedule.size(),m_extraDelta,m_currentStep,half,last,s.rootExtraDelta,s.rootStep));
                         return;
                     }
                     ++s.baselineCompared;
@@ -2841,7 +2854,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.16", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.17", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

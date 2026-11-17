@@ -1,5 +1,14 @@
 # Click Frames GD
 
+## v1.0.17
+
+Reference scheduler timing is now recorded/replayed even with Batched analysis
+OFF. Previously that setting also bypassed cadence replay and exposed repeated
+runs to different live frame durations. Full restarts restore the reference
+physics accumulator and step counter. PARITY_SCHEDULE diagnostics record timing
+state if verification still diverges. Position tolerances remain unchanged;
+gameplay reproduction must be tested on device.
+
 Configuración para Exact + Full run y recolección normal:
 [`CONFIGURACION_ENTRENAMIENTO.md`](CONFIGURACION_ENTRENAMIENTO.md).
 
