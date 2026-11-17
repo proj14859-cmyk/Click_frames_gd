@@ -130,7 +130,7 @@ void input(GJBaseGameLayer* layer,bool down,int button,bool p1) {
 
 class $modify(CFCInput,GJBaseGameLayer) {
     void processQueuedButtons(float dt,bool clearInputQueue) {
-        if(clearInputQueue && s.active && s.owner==this && normalMode(s.owner)) {
+        if(clearInputQueue && s.active && static_cast<GJBaseGameLayer*>(s.owner)==this && normalMode(s.owner)) {
             for(auto const& event:m_queuedButtons)
                 s.attempt.queuedInputs.push_back({int(m_gameState.m_currentProgress),int(event.m_button),event.m_isPush,event.m_isPlayer2,event.m_timestamp});
         }
