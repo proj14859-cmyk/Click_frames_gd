@@ -3,6 +3,7 @@
 ## v1.0.15 / GD 2.2091
 
 - Measurement units are 240 Hz ticks, independent of render FPS: 1F = 4.167 ms, 2F = 8.333 ms, 4F = 16.667 ms. A 2F window here does not mean two frames at 60 Hz. CBF sub-tick intervals in the reference images are approximate conversions, not measurements supplied by this vanilla 240 TPS analyzer.
+- Marker colors follow the reference bands: red 1F, orange 2F, yellow 3F, green 4F, cyan 5F, blue 6–7F and purple 8F or wider.
 - Closed windows limited by causal or buffered-input rules, rather than confirmed collision boundaries, are marked estimated. Level difficulty never changes a measured width.
 - Local analysis can stop after 600 ticks following the shifted click. The setting accepts 0 to disable. Horizon results are estimated, excluded from training/community exports, and never reused as full-route cache evidence. Strict dataset mode, full-route scans, audits and failed movement classes bypass the horizon.
 - `scan-events.tsv` adds `ended_by` (ordered probe reasons separated by `|`) and `confidence`. `scan-trials.tsv` records every probe, including validation/audit attempts, with its individual reason: local_exit, rejoin, death, level_end, horizon, cache, or an invalidation reason.
