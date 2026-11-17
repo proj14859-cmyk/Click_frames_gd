@@ -3,11 +3,12 @@
   "gd": { "win": "2.2091", "android": "2.2091" },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.14",
+  "version": "v1.0.15",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": { "files": ["resources/*.wav", "licenses/*.txt"] },
   "settings": {
+    "horizon-ticks": { "type": "int", "name": "Local survival horizon (240 Hz ticks)", "default": 600, "min": 0, "max": 2400, "description": "0 disables. Local probes may accept survival after this many ticks. Results are estimated and excluded from training. Disabled for audits, full-route scans and dataset mode." },
     "search-mode": { "type": "string", "name": "Grouped window search", "default": "Exact", "one-of": ["Exact", "Fast estimated"], "description": "Exact verifies every contiguous offset and is required for precise timing. Fast estimated is diagnostic: it skips interior probes, marks results ~ and excludes them from training and community exports." },
     "dataset-mode": { "type": "bool", "name": "Dataset capture mode", "default": false, "description": "Forces exact search and at least a +/-12 tick radius. Only full-run, verified, collision-bounded rows enter dataset_entrenamiento.csv; open windows remain diagnostic." },
     "precision-statistics": { "type": "bool", "name": "Export optional L* statistics", "default": false, "description": "Keeps the statistical model in separate CSV/report files; the live HUD always shows physical window milliseconds." },

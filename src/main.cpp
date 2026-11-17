@@ -20,6 +20,7 @@
 #include "Storage.hpp"
 #include "Pack.hpp"
 #include "Analysis.hpp"
+#include "ScanLimits.hpp"
 #include "Editor.hpp"
 #include "Bundle.hpp"
 #include "RetainedDictionary.hpp"
@@ -279,6 +280,9 @@ struct Session {
     bool auditing = false, earlyAccepted = false, fromCache = false;
     int changedUntil = -1;
     cf::AuditGate auditGate;
+    std::array<cf::AuditGate,8> classAudits{};
+    bool horizonTrial=false, horizonEvent=false;
+    std::string endedBy="unknown", trialReport;
     cf::ProbeCache probeCache;
     uint64_t cacheHits = 0, trialAttempts = 0, tickFallbacks = 0, parityFallbacks = 0, previousStateFallbacks = 0, parityStreak = 0;
     uint64_t probeRestores = 0, newlyMeasured = 0;
@@ -445,6 +449,8 @@ void diagnostic(std::string const& code, std::string const& message) {
     log::error("[CF] {}: {}",code,message);
 }
 bool running() { return s.state == State::Verify || s.state == State::Analyze || s.state == State::Playback; }
+int auditClass(size_t target) { return target<s.recording.inputs.size()?std::clamp(s.recording.inputs[target].mode,0,7):0; }
+cf::AuditGate& activeAudit() { return s.classAudits[auditClass(s.target)]; }
 int tick() { return static_cast<int>(s.owner->m_gameState.m_currentProgress); }
 void recordCause(int kind, GameObject* object, PlayerObject* player, int detail = 0) {
     if (!cf::countsAsCause(kind) || !hasLiveOwner() || s.resetting || s.pending != Pending::None ||
@@ -655,8 +661,8 @@ bool writeSafe(std::filesystem::path const& file, std::string const& text) {
     return false;
 }
 std::string analysisPolicyToken() {
-    return fmt::format("{}\nair={}\nsearch={}\ndataset={}\n", cf::analysisPolicyVersion, Mod::get()->getSettingValue<bool>("air-rejoin"),
-        Mod::get()->getSettingValue<std::string>("search-mode"),Mod::get()->getSettingValue<bool>("dataset-mode"));
+    return fmt::format("{}\nair={}\nsearch={}\ndataset={}\nhorizon={}\n", cf::analysisPolicyVersion, Mod::get()->getSettingValue<bool>("air-rejoin"),
+        Mod::get()->getSettingValue<std::string>("search-mode"),Mod::get()->getSettingValue<bool>("dataset-mode"),Mod::get()->getSettingValue<int64_t>("horizon-ticks"));
 }
 cf::precision::Params precisionParams() {
     cf::precision::Params p;
@@ -824,7 +830,8 @@ void save(bool flushPredictions = false) {
         << s.cadenceReasons[i]
         << ',' << s.batchCalls[i] << ',' << s.cadenceCalls[i] << '\n';
     view("scan-phases.csv", phases.str());
-    if (!s.eventReport.empty()) view("scan-events.tsv", "event\ttick\tearly\tlate\twidth\tlower_bound\tphysics_calls\ttest_outcomes\ttrial_attempts\trestores\tpre_target_calls\tpost_target_calls\tticks_avoided_by_restore\trestore_fallbacks\tcausal_failures\taudits\n" + s.eventReport);
+    if (!s.eventReport.empty()) view("scan-events.tsv", "event\ttick\tearly\tlate\twidth\tlower_bound\tphysics_calls\ttest_outcomes\ttrial_attempts\trestores\tpre_target_calls\tpost_target_calls\tticks_avoided_by_restore\trestore_fallbacks\tcausal_failures\taudits\tended_by\tconfidence\n" + s.eventReport);
+    if (!s.trialReport.empty()) view("scan-trials.tsv","event\toffset\tend_tick\tended_by\tconfidence\tpass\n"+s.trialReport);
     if (!s.inputRoutingReport.empty()) view("input-routing.tsv", "tick\tbutton\tdown\trequested_player\teffective_player\ttwo_player_level\tdual_active\tplayer_dead\n" + s.inputRoutingReport);
     report += "Parity diagnostic: " + s.parityDiagnostic + "\n";
     if (!s.parityDiagnostic.empty()) view("baseline-difference.txt", s.parityDiagnostic + "\n");
@@ -1433,6 +1440,7 @@ void beginAnalysis() {
     s.rawSignals.clear(); s.rawSignalCount = 0; s.baselineRetryPending = false;
     s.recoveringFlight = false; s.recoveryReport.clear();
     s.auditing = s.earlyAccepted = s.fromCache = false; s.auditGate = {}; s.probeCache.clear();
+    s.classAudits={};s.trialReport.clear();
     s.causalHash = cf::hashStart; s.phaseCalls.fill(0); s.eventReport.clear();
     s.cacheHits = s.trialAttempts = s.tickFallbacks = s.parityFallbacks = s.previousStateFallbacks = s.parityStreak = 0;
     s.statsCorrections=0;
@@ -1494,6 +1502,7 @@ void nextEvent() {
         queueReturnToPause(); return;
     }
     s.search.approximate=s.approximateAnalysis;
+    s.horizonEvent=false;
     s.search.reset(s.recording.radius); s.offset = s.search.offset;s.failureReasons.fill(ProbeFailure::None);
     s.eventStartCalls = s.physicsCalls; s.eventStartTests = s.tests; s.eventStartAttempts = s.trialAttempts; s.eventStartRestores = s.restores;
     s.eventStartRestoreFallbacks = s.restoreFallbacks; s.eventStartCausalRejected = s.causalRejected;
@@ -1514,20 +1523,24 @@ void startCandidate() {
     if (s.search.done && !s.validatingSnapshot) {
         s.recording.windows[s.target] = s.search.window();
         auto& complete=s.recording.windows[s.target];
+        complete.estimated=complete.estimated || s.horizonEvent;
         complete.collisionBounded=!complete.lowerBound && !complete.estimated &&
             s.failureReasons[20-complete.early-1]==ProbeFailure::Collision && s.failureReasons[20+complete.late+1]==ProbeFailure::Collision;
+        // A causal/policy boundary is not proof of a physical frame-perfect.
+        if(!complete.lowerBound && !complete.collisionBounded)complete.estimated=true;
         ++s.newlyMeasured;
         auto const& w = s.recording.windows[s.target];
-        s.eventReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.target, s.recording.inputs[s.target].tick,
+        s.eventReport += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.target, s.recording.inputs[s.target].tick,
             w.early, w.late, w.width(), w.lowerBound, s.physicsCalls-s.eventStartCalls, s.tests-s.eventStartTests,
             s.trialAttempts-s.eventStartAttempts, s.restores-s.eventStartRestores, s.eventPreTargetCalls,
             s.eventPostTargetCalls, s.eventAvoidedTicks, s.restoreFallbacks-s.eventStartRestoreFallbacks,
-            s.causalRejected-s.eventStartCausalRejected, s.auditGate.audits-s.eventStartAudits);
+            s.causalRejected-s.eventStartCausalRejected, s.auditGate.audits-s.eventStartAudits,s.endedBy,s.horizonEvent?"horizon":"measured");
         if (s.newlyMeasured % 16 == 0) save();
         ++s.target; nextEvent();
         if (s.state != State::Analyze) return;
     }
     s.candidateTrace.clear();
+    s.horizonTrial=false;s.endedBy="unknown";
     s.fromCache = false;
     if (!s.fullRestartRetry && s.activeNative >= 0 && s.nativePool[s.activeNative].rejected) chooseNativeState();
     if (s.validatingSnapshot) {
@@ -1549,9 +1562,10 @@ void startCandidate() {
     }
     s.changedUntil = cf::lastChangedTick(s.recording.inputs, s.trial);
     if (!s.auditing && !s.recoveringFlight) {
-        cf::ProbeKey key{s.target, s.offset, s.auditGate.disabled || s.recording.analysisPolicy != 2};
+        cf::ProbeKey key{s.target, s.offset, activeAudit().disabled || s.recording.analysisPolicy != 2};
         if (auto cached = s.probeCache.get(key, s.fullRestartRetry || s.confirmingBoundary)) {
             ++s.cacheHits; s.fromCache = true; s.earlyAccepted = false;
+            s.endedBy="cache";
             s.failure=ProbeFailure(cached->failure);
             s.pending = cached->pass ? Pending::Pass : Pending::Fail; return;
         }
@@ -1560,6 +1574,10 @@ void startCandidate() {
 }
 void consume() {
     auto result = s.pending; s.pending = Pending::None;
+    if(s.state==State::Analyze){
+        s.trialReport+=fmt::format("{}\t{}\t{}\t{}\t{}\t{}\n",s.target,s.offset,tick(),s.endedBy,
+            s.validatingSnapshot?"validation":s.horizonTrial?"horizon":"measured",result==Pending::Pass);
+    }
     if (s.state == State::Analyze && s.trialCostActive) {
         if (s.trialTargetCostSeen) s.eventPostTargetCalls += s.physicsCalls - s.trialTargetCall;
         else s.eventPreTargetCalls += s.physicsCalls - s.trialStartCalls;
@@ -1666,17 +1684,19 @@ void consume() {
         } else {
             bool pass = result == Pending::Pass;
             if (s.auditing) {
-                s.auditing = false; s.auditGate.observed(pass);
+                s.auditing = false; s.auditGate.observed(pass); activeAudit().observed(pass);
                 s.fullRestartRetry = false;
                 if (!pass) {
                     log::warn("[CF] audit mismatch: event {} offset {}; clearing local results", s.target, s.offset);
-                    s.parityDiagnostic = fmt::format("Audit mismatch: event={} offset={} {}. Local exits disabled; remeasuring full continuations.", s.target, s.offset, s.message);
+                    s.parityDiagnostic = fmt::format("Audit mismatch: event={} offset={} {}. Movement-class exits disabled; remeasuring affected windows.", s.target, s.offset, s.message);
                     diagnostic("AUDIT_MISMATCH",s.parityDiagnostic);
-                    s.recording.windows.assign(s.recording.inputs.size(), {}); s.predictions.clear(); s.probeCache.clear();
+                    int failedClass=auditClass(s.target);
+                    for(size_t j=0;j<s.recording.windows.size();++j)if(auditClass(j)==failedClass){s.recording.windows[j]={};s.predictions.erase(j);}
+                    s.probeCache.clear();
                     s.target = 0; s.newlyMeasured = 0; s.eventReport.clear(); save(); nextEvent(); startCandidate(); return;
                 }
                 s.probeCache.put({s.target, s.offset, true}, {true, true});
-            } else if (pass && s.earlyAccepted && !s.fromCache && !s.recoveringFlight && s.auditGate.consider()) {
+            } else if (pass && s.earlyAccepted && !s.fromCache && !s.recoveringFlight && activeAudit().consider()) {
                 s.auditing = true; s.fullRestartRetry = true; startCandidate(); return;
             }
             if (s.recoveringFlight) {
@@ -1708,7 +1728,7 @@ void consume() {
                     s.target = 0; s.newlyMeasured = 0; s.eventReport.clear(); save(); nextEvent(); startCandidate(); return;
                 }
             }
-            if (!s.fromCache) s.probeCache.put({s.target, s.offset, s.auditGate.disabled || s.recording.analysisPolicy != 2},
+            if (!s.fromCache && !s.horizonTrial) s.probeCache.put({s.target, s.offset, activeAudit().disabled || s.recording.analysisPolicy != 2},
                 {pass, s.fullRestartRetry || !s.snapshotChecked,int(s.failure)});
             s.fullRestartRetry = false;
             int mode = s.recording.inputs[s.target].mode;
@@ -2035,7 +2055,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                 }
             }
             if (s.state == State::Analyze && !s.validatingSnapshot && !s.auditing && !s.recoveringFlight &&
-                !s.auditGate.disabled && s.targetExecuted &&
+                !activeAudit().disabled && s.targetExecuted &&
                 now > s.recording.inputs[s.target].tick && now > s.changedUntil) {
                 auto reference = s.baseline.get(now);
                 auto evidence = s.referenceEvidence.get(now);
@@ -2061,7 +2081,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                     s.message = s.recording.analysisPolicy==2 ?
                         "Physics evidence rejoined (audited local window)" :
                         "Physics and causal state rejoined (audited full route)";
-                    s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses; ++s.rejoinAccepts; return;
+                    s.endedBy="rejoin";s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses; ++s.rejoinAccepts; return;
                 }
             }
             if (s.state == State::Verify || s.state == State::Analyze) {
@@ -2074,7 +2094,7 @@ class $modify(CFBase, GJBaseGameLayer) {
                     {now, p1->getPositionX(), p1->getPositionY(), p2->getPositionX(), p2->getPositionY()},
                     playerMode(p1), playerMode(p2), p1->m_isUpsideDown, p2->m_isUpsideDown});
             }
-            if (s.state == State::Analyze && s.recording.analysisPolicy == 2 && !s.validatingSnapshot && !s.auditing && !s.auditGate.disabled &&
+            if (s.state == State::Analyze && s.recording.analysisPolicy == 2 && !s.validatingSnapshot && !s.auditing && !activeAudit().disabled &&
                 !s.segmentMissed && s.target < s.segmentExits.size() && s.segmentExits[s.target].known) {
                 auto const& exit = s.segmentExits[s.target];
                 if (now > exit.tick) { s.segmentMissed = true; ++s.localFallbackTrials; }
@@ -2089,11 +2109,19 @@ class $modify(CFBase, GJBaseGameLayer) {
                     // A zone mismatch is not a collision. Continue the real run
                     // rather than turning a heuristic rejection into a narrow window.
                     if (pass) {
-                        s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses;
+                        s.endedBy="local_exit";s.earlyAccepted = true; s.pending = Pending::Pass; ++s.localPasses;
                         s.message = "Local horizon survived (not full-route certification)"; return;
                     }
                     s.segmentMissed = true; ++s.localFallbackTrials;
                 }
+            }
+            int horizon=int(Mod::get()->getSettingValue<int64_t>("horizon-ticks"));
+            if(s.state==State::Analyze && cf::reachedHorizon(now,s.recording.inputs[s.target].tick,s.offset,horizon,
+                s.recording.analysisPolicy==2,Mod::get()->getSettingValue<bool>("dataset-mode"),
+                s.validatingSnapshot,s.auditing,s.recoveringFlight,s.fullRestartRetry,activeAudit().disabled,s.targetExecuted,
+                !s.owner->m_player1->m_isDead && (!s.owner->m_gameState.m_isDualMode || !s.owner->m_player2->m_isDead))){
+                s.horizonTrial=s.horizonEvent=true;s.endedBy="horizon";s.pending=Pending::Pass;
+                s.message="Survived horizon (estimated; excluded from training)";return;
             }
             captureTargetCheckpoint();
             auto const& events = s.state == State::Playback ? s.recording.inputs : s.trial;
@@ -2257,7 +2285,7 @@ class $modify(CFPlay, PlayLayer) {
             bool causalOk=s.state==State::Verify && s.baselinePass==0 ? true :
                 !s.causalMismatch && s.causalCursor==s.causalTrace.size();
             if(causalOk && cf::sameCompletionState(s.recording.trace.back(),current,m_gameState.m_isDualMode)) {
-                s.message="Matched recorded completion state";s.pending=Pending::Pass;return;
+                s.endedBy="level_end";s.message="Matched recorded completion state";s.pending=Pending::Pass;return;
             }
         }
         if (s.state == State::Verify || s.state == State::Analyze) {
@@ -2274,6 +2302,10 @@ class $modify(CFPlay, PlayLayer) {
                     s.candidateTrace.size() < 256 && (s.candidateTrace.empty() || now > s.candidateTrace.back().tick))
                     s.candidateTrace.push_back(point);
                 if (s.validatingSnapshot) {
+                    if(cf::missingValidationTrace(now,s.snapshotTick,s.snapshotCompared)){
+                        s.message=fmt::format("Validation has no reference comparisons after 64 ticks; referenceTrace.size()={}",s.referenceTrace.size());
+                        diagnostic("EMPTY_REFERENCE",s.message);s.endedBy="validation_no_reference";s.pending=Pending::Fail;return;
+                    }
                     auto saved = s.referenceTrace.get(now);
                     if (saved) {
                         ++s.snapshotCompared;
@@ -2382,6 +2414,7 @@ class $modify(CFPlay, PlayLayer) {
         if(statsIsolationActive())enforceLevelStats();
         if (active && player->m_isDead && s.owner == this && running() &&
             s.pending == Pending::None) {
+            s.endedBy="death";
             s.message = fmt::format("Replay died at tick {} (P{})", tick(),player == m_player1 ? 1 : 2);
             if (s.state == State::Verify && !s.recording.inputs.empty()) {
                 int earliest=std::min_element(s.recording.inputs.begin(),s.recording.inputs.end(),[](auto const& a,auto const& b){return a.tick<b.tick;})->tick;
@@ -2403,6 +2436,7 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void levelComplete() {
+        if(s.owner==this && running())s.endedBy="level_end";
         if (s.owner == this && s.state == State::Playback) {
             if (s.pending == Pending::Fail) return;
             if (!cf::allPressesDispatched(s.recording.inputs, s.next)) {
@@ -2685,6 +2719,108 @@ public:
 };
 void showDiagnostics(){if(auto p=CFDiagnostics::create()) p->show();}
 
+class CFOptions : public Popup {
+    bool extra=false;
+    void draw(){
+        m_buttonMenu->removeAllChildren();
+        auto add=[this](std::string name,float y,std::function<void()> fn){
+            auto sprite=ButtonSprite::create(name.c_str());sprite->setScale(.5f);
+            auto item=CCMenuItemExt::createSpriteExtra(sprite,[fn](auto){auto action=fn;action();});
+            item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace({190,y})));m_buttonMenu->addChild(item);
+        };
+        auto toggle=[&](char const* key,char const* name,float y){
+            add(fmt::format("{}: {}",name,Mod::get()->getSettingValue<bool>(key)?"ON":"OFF"),y,[this,key]{Mod::get()->setSettingValue<bool>(key,!Mod::get()->getSettingValue<bool>(key));draw();});
+        };
+        if(!extra){
+            toggle("sounds","Sounds",210);toggle("markers","Circles",175);
+            toggle("precision-enabled","Window milliseconds",140);
+            add("Extra options",100,[this]{extra=true;draw();});
+        }else{
+            toggle("local-analysis","Local analysis",210);
+            toggle("dataset-mode","Strict training scan",175);
+            add("Collect normal runs",140,[]{
+                auto collector=Loader::get()->getLoadedMod("juan.click_frames_collector");
+                if(!collector){FLAlertLayer::create("Collector","Instala Click Frames Collector para grabar runs normales.","OK")->show();return;}
+                if(collector->getSavedValue<bool>("normal-runs-consent-v1",false)){
+                    collector->setSavedValue<bool>("normal-runs-consent-v1",false);
+                    FLAlertLayer::create("Collector","Grabacion desactivada.","OK")->show();return;
+                }
+                createQuickPopup("Grabar runs normales","Se guardaran inputs, trayectorias e intentos localmente. Puede ocupar mucho espacio.","Cancelar","Continuar",[](auto,bool yes){
+                    if(!yes)return;
+                    createQuickPopup("Confirmar grabacion","Activar la recopilacion de todos los intentos normales y runs al 100% para entrenamiento? Puedes desactivarla aqui.","Cancelar","Activar",[](auto,bool confirmed){
+                        if(confirmed)if(auto mod=Loader::get()->getLoadedMod("juan.click_frames_collector")){
+                            mod->setSavedValue<bool>("normal-runs-consent-v1",true);mod->setSettingValue<bool>("enabled",true);
+                        }
+                    });
+                });
+            });
+            add("Advanced settings",100,[]{openSettingsPopup(Mod::get());});
+        }
+        add("Close",55,[this]{onClose(nullptr);});
+    }
+    bool init(){if(!Popup::init(380,270))return false;setTitle("Click Frames options");draw();return true;}
+public:
+    static CFOptions* create(){auto p=new CFOptions;if(p->init()){p->autorelease();return p;}delete p;return nullptr;}
+};
+
+class CFClickEditor : public Popup {
+    cf::VisualEdits edits;
+    std::vector<size_t> indices;
+    size_t page=0;
+    CCNode* rows=nullptr;
+    PlayLayer* owner=nullptr;
+    std::string key;
+    bool valid() { return hasLiveOwner() && s.owner==owner && s.recording.key==key && owner->m_isPaused && !running(); }
+    void button(std::string title,CCPoint pos,std::function<void()> fn) {
+        auto sprite=ButtonSprite::create(title.c_str());sprite->setScale(.45f);
+        auto item=CCMenuItemExt::createSpriteExtra(sprite,[fn](auto){auto action=fn;action();});
+        item->setPosition(pos);rows->addChild(item);
+    }
+    void draw() {
+        rows->removeAllChildren();
+        for(size_t n=page*6;n<std::min(indices.size(),page*6+6);++n){
+            auto i=indices[n];int original=s.recording.windows[i].width(),value=edits.markers[n].width;
+            float y=220-float(n%6)*27;
+            auto label=CCLabelBMFont::create(fmt::format("#{}  {}F -> {}F  ({:+})  {:.1f}ms",i+1,original,value,value-original,value*1000./240).c_str(),"chatFont.fnt");
+            label->setScale(.48f);label->setPosition({175,y});rows->addChild(label);
+            button("-",{335,y},[this,n]{if(valid()){edits.markers[n].width=std::max(1,edits.markers[n].width-1);draw();}});
+            button("+",{380,y},[this,n]{if(valid()){edits.markers[n].width=std::min(20,edits.markers[n].width+1);draw();}});
+        }
+        button("<",{35,32},[this]{if(page){--page;draw();}});
+        button(">",{395,32},[this]{if((page+1)*6<indices.size()){++page;draw();}});
+        button("Play run modified",{215,32},[this]{
+            if(!valid() || indices.empty())return;
+            edits.enabled=true;
+            std::ostringstream out;cf::writeEditsTsv(out,key,cf::fingerprint(cf::traceCsv(s.recording)),edits);
+            if(!writeSafe(visualPath(),out.str())){FLAlertLayer::create("Error","No se guardaron los cambios.","OK")->show();return;}
+            s.visual=edits;s.precisionDirty=true;
+            onClose(nullptr);
+            Loader::get()->queueInMainThread([]{
+                if(!hasLiveOwner())return;
+                if(auto scene=CCDirector::get()->getRunningScene())
+                    if(auto pause=scene->getChildByType<PauseLayer>(0))pause->onResume(nullptr);
+                captureLevelStats();s.state=State::Playback;s.pending=Pending::None;prepareShowcase();resetTrial();
+            });
+        });
+    }
+    bool init() {
+        if(!Popup::init(430,280))return false;
+        setTitle("Clicks: measured -> edited (240 Hz)");
+        owner=s.owner;key=s.recording.key;
+        for(size_t i=0;i<s.recording.inputs.size() && i<s.recording.windows.size();++i){
+            if(!cf::counted(s.recording.inputs[i]) || !s.recording.windows[i].measured)continue;
+            auto const& e=s.recording.inputs[i];
+            indices.push_back(i);
+            cf::VisualMarker marker{e.tick,s.recording.windows[i].width(),0,1.f,true,true,e.p1};
+            for(auto const& old:s.visual.markers)if(old.tick==e.tick && old.p1==e.p1){marker.width=old.width;break;}
+            edits.markers.push_back(marker);
+        }
+        auto menu=CCMenu::create();menu->setPosition({0,0});rows=menu;m_mainLayer->addChild(rows);draw();return true;
+    }
+public:
+    static CFClickEditor* create(){auto p=new CFClickEditor;if(p->init()){p->autorelease();return p;}delete p;return nullptr;}
+};
+
 class CFPopup : public Popup {
     static bool ensureSession() {
         auto layer = PlayLayer::get();
@@ -2742,7 +2878,7 @@ class CFPopup : public Popup {
             item->setPosition(m_buttonMenu->convertToNodeSpace(m_mainLayer->convertToWorldSpace(pos)));
         };
         add("EDITAR", "Solo visual", {351, 211}, !active && !s.recording.trace.empty(), [this] {
-            onClose(nullptr); if (auto editor = CFEditor::create()) editor->show();
+            onClose(nullptr); if (auto editor = CFClickEditor::create()) editor->show();
         }, 118, 28);
         add("DIAGNOSTICO", "Logs / crash", {351,235}, true, []{showDiagnostics();},118,22);
         add("1. RECORD", "New practice run", {79, 171}, !active, [this] {
@@ -2774,7 +2910,7 @@ class CFPopup : public Popup {
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             onClose(nullptr); resumeAndRun([] { beginAnalysis(); });
         });
-        add("3. PLAY", s.visual.enabled ? "Presentacion editada" : "Circles + sounds", {79, 115},
+        add("3. PLAY", "Measured run", {79, 115},
             !active && (s.recording.partialReady() || (s.visual.enabled && s.recording.complete)), [this] {
             if (!ensureSession() || !supported()) {
                 FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return;
@@ -2782,6 +2918,7 @@ class CFPopup : public Popup {
             onClose(nullptr);
             resumeAndRun([] {
                 captureLevelStats();
+                s.visual.enabled=false;
                 s.state = State::Playback; s.pending = Pending::None; prepareShowcase();
                 s.message = s.recording.ready() ? (cf::hasEstimated(s.recording)?"Showcase - ESTIMATED windows at 240 TPS":"Showcase - exact measured windows at 240 TPS") : "Partial showcase - ? marks events not measured yet"; resetTrial();
             });
@@ -2793,7 +2930,7 @@ class CFPopup : public Popup {
             onClose(nullptr);
             if (auto popup = CFPopup::create()) popup->show();
         });
-        add("SETTINGS", "Options", {46, 59}, true, [] { openSettingsPopup(Mod::get()); }, 62);
+        add("SETTINGS", "Options", {46, 59}, true, [] { if(auto popup=CFOptions::create())popup->show(); }, 62);
         add("HELP", "Guide", {114, 59}, true, [] {
             FLAlertLayer::create("How to use", "<cg>1. Record</c>: starts a NEW run in practice. Finish the level using checkpoints as needed.\n<cy>2. Analyze</c>: verifies the saved run, then replays many tests to measure each input. This can take a long time. Pause to Stop / Save and resume later.\n<cb>3. Play</c>: replays with circles, sounds and the counter. Use it again to replay.\n<cp>Account safety</c>: automated recording, verification, analysis and playback do not add attempts, deaths, progress or play time to your account.\n<cp>Export / Import</c>: Export writes this level's runs to a .cfpack file. To load one you received, copy it into the imports folder and press Import.\nGray buttons unlock after the previous step. 240 TPS; disable CBF and ignore damage.", "OK")->show();
         }, 62);
