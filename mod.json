@@ -6,7 +6,7 @@
   },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.17",
+  "version": "v1.0.18",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": {
@@ -16,6 +16,79 @@
     ]
   },
   "settings": {
+    "tool-section": {
+      "type": "title",
+      "name": "Level tools"
+    },
+    "tool-no-particles": {
+      "type": "bool",
+      "name": "No particles",
+      "default": false
+    },
+    "tool-no-trail": {
+      "type": "bool",
+      "name": "No trail",
+      "default": false
+    },
+    "tool-no-death": {
+      "type": "bool",
+      "name": "No death effect",
+      "default": false
+    },
+    "tool-boxes": {
+      "type": "bool",
+      "name": "Show solid hitboxes",
+      "default": false
+    },
+    "tool-path": {
+      "type": "bool",
+      "name": "Show recorded trajectory",
+      "default": false
+    },
+    "tool-path-boxes": {
+      "type": "bool",
+      "name": "Show trajectory boxes (approx.)",
+      "default": false
+    },
+    "tool-noclip": {
+      "type": "bool",
+      "name": "Noclip",
+      "default": false
+    },
+    "tool-fps": {
+      "type": "bool",
+      "name": "Show FPS",
+      "default": false
+    },
+    "tool-time": {
+      "type": "bool",
+      "name": "Show level time",
+      "default": false
+    },
+    "tool-solid-wave": {
+      "type": "bool",
+      "name": "Solid wave trail",
+      "default": false
+    },
+    "tool-no-wave": {
+      "type": "bool",
+      "name": "No wave trail",
+      "default": false
+    },
+    "tool-speed": {
+      "type": "float",
+      "name": "Speedhack (safe session)",
+      "default": 1,
+      "min": 0.1,
+      "max": 3
+    },
+    "tool-width": {
+      "type": "float",
+      "name": "Wave trail thickness",
+      "default": 1,
+      "min": 0,
+      "max": 5
+    },
     "section-normal": {
       "type": "title",
       "name": "NORMAL - display, sound and HUD",
@@ -34,9 +107,9 @@
     "marker-scale": {
       "type": "float",
       "name": "Marker size",
-      "default": 1.0,
+      "default": 1,
       "min": 0.5,
-      "max": 2.0
+      "max": 2
     },
     "marker-max-width": {
       "type": "int",
@@ -57,9 +130,9 @@
     "counter-scale": {
       "type": "float",
       "name": "Counter size",
-      "default": 1.0,
+      "default": 1,
       "min": 0.5,
-      "max": 2.0
+      "max": 2
     },
     "max-rows": {
       "type": "int",
@@ -78,16 +151,16 @@
     "ms-x": {
       "type": "float",
       "name": "Milliseconds horizontal position (%)",
-      "default": 2.0,
-      "min": 0.0,
-      "max": 100.0
+      "default": 2,
+      "min": 0,
+      "max": 100
     },
     "ms-y": {
       "type": "float",
       "name": "Milliseconds vertical position (%)",
-      "default": 2.0,
-      "min": 0.0,
-      "max": 100.0
+      "default": 2,
+      "min": 0,
+      "max": 100
     },
     "interval-hud": {
       "type": "bool",
@@ -130,8 +203,8 @@
       "name": "Analysis speed",
       "description": "Game speed while Verify/Analyze run behind a cover. 1.0 = normal. Lower it if your phone stutters.",
       "default": 1.5,
-      "min": 1.0,
-      "max": 3.0
+      "min": 1,
+      "max": 3
     },
     "scan-budget-ms": {
       "type": "int",
@@ -194,51 +267,51 @@
     "precision-target": {
       "type": "float",
       "name": "Precision target solve time (seconds)",
-      "default": 86400.0,
-      "min": 1.0,
-      "max": 1000000000.0
+      "default": 86400,
+      "min": 1,
+      "max": 1000000000
     },
     "precision-respawn": {
       "type": "float",
       "name": "Precision respawn time (seconds)",
-      "default": 0.0,
-      "min": 0.0,
-      "max": 3600.0
+      "default": 0,
+      "min": 0,
+      "max": 3600
     },
     "precision-nerve": {
       "type": "float",
       "name": "Precision nerve coefficient",
       "default": 0.0016520833717346,
-      "min": 0.0,
-      "max": 1.0
+      "min": 0,
+      "max": 1
     },
     "precision-fatigue": {
       "type": "float",
       "name": "Precision fatigue coefficient",
       "default": 0.0002727763242154,
-      "min": 0.0,
-      "max": 1.0
+      "min": 0,
+      "max": 1
     },
     "precision-cps": {
       "type": "float",
       "name": "Precision CPS coefficient",
       "default": 0.2784421686721826,
-      "min": 0.0,
-      "max": 1.0
+      "min": 0,
+      "max": 1
     },
     "precision-x": {
       "type": "float",
       "name": "Precision horizontal position (%)",
-      "default": 2.0,
-      "min": 0.0,
-      "max": 100.0
+      "default": 2,
+      "min": 0,
+      "max": 100
     },
     "precision-y": {
       "type": "float",
       "name": "Precision vertical position (%)",
-      "default": 8.0,
-      "min": 0.0,
-      "max": 100.0
+      "default": 8,
+      "min": 0,
+      "max": 100
     },
     "section-experimental": {
       "type": "title",
