@@ -36,6 +36,8 @@ struct Attempt {
     std::string backend;
     float endPercent = 0, deathX = 0, deathY = 0;
     bool platformer = false, twoPlayer = false, completed = false, samplesTruncated = false;
+    struct QueuedInput { int tick, button; bool down, p2; double timestamp; };
+    std::vector<QueuedInput> queuedInputs;
     std::vector<InputEvent> inputs;
     std::vector<Frame> frames;
 };
