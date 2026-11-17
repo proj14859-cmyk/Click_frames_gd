@@ -31,6 +31,9 @@ struct Attempt {
     int64_t startedUnixMs = 0, endedUnixMs = 0;
     int levelID = 0, stars = 0, demon = 0, demonDifficulty = 0, length = 0, gameVersion = 0;
     int attemptNumber = 0, endTick = 0, deathObjectID = 0, deathObjectType = 0;
+    bool fromStartPos = false;
+    float startPercent = 0;
+    std::string backend;
     float endPercent = 0, deathX = 0, deathY = 0;
     bool platformer = false, twoPlayer = false, completed = false, samplesTruncated = false;
     std::vector<InputEvent> inputs;
@@ -77,6 +80,8 @@ inline std::string metadata(Attempt const& a) {
         << "  \"two_player\": " << a.twoPlayer << ",\n  \"attempt_number\": " << a.attemptNumber << ",\n"
         << "  \"started_unix_ms\": " << a.startedUnixMs << ",\n  \"ended_unix_ms\": " << a.endedUnixMs << ",\n"
         << "  \"result\": \"" << jsonEscape(a.result) << "\",\n  \"completed\": " << a.completed << ",\n"
+        << "  \"from_start_pos\": " << a.fromStartPos << ",\n  \"start_percent\": " << a.startPercent << ",\n"
+        << "  \"input_backend\": \"" << jsonEscape(a.backend) << "\",\n"
         << "  \"end_tick\": " << a.endTick << ",\n  \"end_percent\": " << a.endPercent << ",\n"
         << "  \"death_object_id\": " << a.deathObjectID << ",\n  \"death_object_type\": " << a.deathObjectType << ",\n"
         << "  \"death_x\": " << a.deathX << ",\n  \"death_y\": " << a.deathY << ",\n"
