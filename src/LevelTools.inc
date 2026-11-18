@@ -34,7 +34,7 @@ void resetToolSetting(std::string const& key){
     for(auto const& item:floats){
         if(key==item.key){Mod::get()->setSettingValue<double>(key,item.value);return;}
     }
-    Mod::get()->setSettingValue<bool>(key,key=="tool-time-decimals");
+    Mod::get()->setSettingValue<bool>(key,key=="tool-time-decimals" || key=="tool-time-total");
 }
 bool isToolRowEnabled(std::string const& key){
     if(key=="tool-path-boxes")return tool("tool-path");
