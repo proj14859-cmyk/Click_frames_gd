@@ -32,7 +32,11 @@ std::filesystem::path saveRoot() {
 bool normalMode(PlayLayer* layer) {
     return layer && Mod::get()->getSavedValue<bool>("normal-runs-consent-v1",false) &&
         Mod::get()->getSettingValue<bool>("enabled") && !layer->m_isPracticeMode &&
-        !layer->m_isTestMode && !layer->getChildByID("cf-automated-run") && layer->m_level;
+        (!layer->m_isTestMode || layer->m_startPosObject) &&
+        !layer->m_ignoreDamage && !layer->m_isIgnoreDamageEnabled &&
+        !layer->getChildByID("cf-assisted-attempt") &&
+        !(Loader::get()->getLoadedMod("juan.click_frames_gd") && Loader::get()->getLoadedMod("juan.click_frames_gd")->getSettingValue<bool>("tool-noclip")) &&
+        !layer->getChildByID("cf-automated-run") && layer->m_level;
 }
 int mode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
@@ -66,7 +70,10 @@ bool writeCategory(std::string const& category,cfc::Attempt const& a) {
     auto categoryRoot=root/category;
     auto levelFolder=cfc::safeFolder(a.levelName)+"-"+std::to_string(a.levelID);
     auto directory=categoryRoot/levelFolder/a.id;
-    return writeFile(directory/"metadata.json",cfc::metadata(a)) &&
+    std::ostringstream queue;
+    queue<<"tick\tbutton\tdown\tplayer\tnative_timestamp\n"<<std::setprecision(17);
+    for(auto const& e:a.queuedInputs)queue<<e.tick<<'\t'<<e.button<<'\t'<<e.down<<'\t'<<(e.p2?2:1)<<'\t'<<e.timestamp<<'\n';
+    return writeFile(directory/"queued-inputs.tsv",queue.str()) && writeFile(directory/"metadata.json",cfc::metadata(a)) &&
         writeFile(directory/"inputs.tsv",cfc::inputsTsv(a)) &&
         writeFile(directory/"trajectory.tsv",cfc::trajectoryTsv(a)) && appendIndex(categoryRoot,a);
 }
@@ -74,6 +81,10 @@ void startAttempt(PlayLayer* layer) {
     if(!normalMode(layer) || s.finalizing)return;
     s.owner=layer;s.attempt={};s.active=true;s.lastTick=-1;s.sampleCounter=0;s.held.fill(false);
     auto level=layer->m_level;auto stamp=unixMs();
+    s.attempt.fromStartPos = layer->m_startPosObject != nullptr;
+    s.attempt.minSpeed=s.attempt.maxSpeed=CCDirector::get()->getScheduler()->getTimeScale();
+    s.attempt.startPercent = layer->getCurrentPercent();
+    s.attempt.backend = layer->m_clickBetweenSteps ? "between-steps" : layer->m_clickOnSteps ? "on-steps" : "standard";
     s.attempt.startedUnixMs=stamp;s.attempt.levelID=level->m_levelID.value();s.attempt.levelName=level->m_levelName;
     s.attempt.levelHash=std::to_string(cfc::fnv1a(level->m_levelString));
     s.attempt.stars=level->m_stars.value();s.attempt.demon=level->m_demon.value();s.attempt.demonDifficulty=level->m_demonDifficulty;
@@ -83,16 +94,22 @@ void startAttempt(PlayLayer* layer) {
 }
 void finishAttempt(std::string result,float percent,int deathID=0,int deathType=0,float deathX=0,float deathY=0) {
     if(!s.active || s.finalizing)return;
+    if (!normalMode(s.owner)) { s.active=false; return; }
+    if (result=="completed" && (s.attempt.fromStartPos || s.attempt.startPercent>0.f)) result="segment-end";
     s.finalizing=true;s.active=false;
     s.attempt.endedUnixMs=unixMs();s.attempt.result=std::move(result);s.attempt.endPercent=std::clamp(percent,0.f,100.f);
     s.attempt.completed=s.attempt.result=="completed";s.attempt.endTick=s.owner?int(s.owner->m_gameState.m_currentProgress):s.lastTick;
     s.attempt.deathObjectID=deathID;s.attempt.deathObjectType=deathType;s.attempt.deathX=deathX;s.attempt.deathY=deathY;
     if(!writeCategory("normal-attempts",s.attempt))log::error("[Collector] Could not save normal attempt {}",s.attempt.id);
+    if(s.attempt.fromStartPos && !writeCategory("startpos-segments",s.attempt)) log::error("[Collector] Could not save segment {}",s.attempt.id);
     if(s.attempt.completed && !writeCategory("completed-runs",s.attempt))log::error("[Collector] Could not save completed run {}",s.attempt.id);
     s.finalizing=false;
 }
 void sample(PlayLayer* layer) {
     if(!s.active || s.owner!=layer || !normalMode(layer) || !layer->m_player1 || !layer->m_player2)return;
+    float speed=CCDirector::get()->getScheduler()->getTimeScale();
+    s.attempt.minSpeed=std::min(s.attempt.minSpeed,speed);
+    s.attempt.maxSpeed=std::max(s.attempt.maxSpeed,speed);
     int tick=int(layer->m_gameState.m_currentProgress);if(tick==s.lastTick)return;s.lastTick=tick;
     auto stride=std::max<int64_t>(1,Mod::get()->getSettingValue<int64_t>("sample-stride"));
     if(s.sampleCounter++%uint64_t(stride))return;
@@ -117,20 +134,30 @@ void input(GJBaseGameLayer* layer,bool down,int button,bool p1) {
 }
 
 class $modify(CFCInput,GJBaseGameLayer) {
+    void processQueuedButtons(float dt,bool clearInputQueue) {
+        if(clearInputQueue && s.active && static_cast<GJBaseGameLayer*>(s.owner)==this && normalMode(s.owner)) {
+            for(auto const& event:m_queuedButtons)
+                s.attempt.queuedInputs.push_back({int(m_gameState.m_currentProgress),int(event.m_button),event.m_isPush,event.m_isPlayer2,event.m_timestamp});
+        }
+        GJBaseGameLayer::processQueuedButtons(dt,clearInputQueue);
+    }
     void handleButton(bool down,int button,bool p1) {
         input(this,down,button,p1);GJBaseGameLayer::handleButton(down,button,p1);
     }
 };
 
 class $modify(CFCPlay,PlayLayer) {
+    static void onModify(auto& self){
+        // Observe a valid manual finish before Safe mode suppresses the account award.
+        (void)self.setHookPriorityPre("PlayLayer::levelComplete",-100);
+    }
     bool init(GJGameLevel* level,bool dontCreateObjects) {
         if(!PlayLayer::init(level,dontCreateObjects))return false;
         startAttempt(this);return true;
     }
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-        if(s.owner==this && s.active && !normalMode(this))finishAttempt("mode-change",getCurrentPercent());
-        else if(s.owner==this && !s.active && normalMode(this) && !m_isPaused && !m_hasCompletedLevel && !m_player1->m_isDead)startAttempt(this);
+        if(s.owner==this && s.active && !normalMode(this))s.active=false;
         sample(this);
     }
     void resetLevel() {

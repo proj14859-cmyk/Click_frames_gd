@@ -3,10 +3,10 @@
   "gd": { "win": "2.2091", "android": "2.2091" },
   "id": "juan.click_frames_collector",
   "name": "Click Frames Collector",
-  "version": "v0.1.1",
+  "version": "v0.1.2",
   "developer": "Juan",
   "description": "Local normal-mode attempt and completed-run dataset collector for Click Frames GD.",
-  "dependencies": { "juan.click_frames_gd": ">=v1.0.15" },
+  "dependencies": { "juan.click_frames_gd": ">=v1.0.18" },
   "settings": {
     "enabled": { "type": "bool", "name": "Collect normal-mode attempts", "description": "Stores data locally only. Practice and editor test mode are excluded.", "default": false },
     "sample-stride": { "type": "int", "name": "Trajectory sample stride", "description": "1 records every observed physics tick; higher values reduce file size.", "default": 1, "min": 1, "max": 8 },
