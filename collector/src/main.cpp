@@ -35,7 +35,8 @@ bool normalMode(PlayLayer* layer) {
         (!layer->m_isTestMode || layer->m_startPosObject) &&
         !layer->m_ignoreDamage && !layer->m_isIgnoreDamageEnabled &&
         !layer->getChildByID("cf-assisted-attempt") &&
-        std::abs(CCDirector::get()->getScheduler()->getTimeScale()-1.f)<.00001f && !layer->getChildByID("cf-automated-run") && layer->m_level;
+        !(Loader::get()->getLoadedMod("juan.click_frames_gd") && Loader::get()->getLoadedMod("juan.click_frames_gd")->getSettingValue<bool>("tool-noclip")) &&
+        !layer->getChildByID("cf-automated-run") && layer->m_level;
 }
 int mode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :

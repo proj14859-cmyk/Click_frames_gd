@@ -176,7 +176,8 @@ struct StatsSnapshot {
     double layerTimePlayed=0,layerAttemptTime=0,layerBestAttemptTime=0;
 };
 struct Session {
-    bool toolSafe=false;
+    bool toolSafe=false, noclipUsed=false, speedOwned=false;
+    unsigned toolAttempt=0;
     float priorToolScale=1;
     PlayLayer* owner = nullptr;
     cf::Recording recording;
@@ -1364,8 +1365,24 @@ void marker(size_t index) {
         if(!clickAudio.play(w.width())) diagnostic("AUDIO_PLAY","No se pudo reproducir el sonido de ventana");
     }
 }
+bool toolsNoclip(){return Mod::get()->getSettingValue<bool>("tool-noclip");}
+void syncToolProtection(){
+    if(!hasLiveOwner())return;
+    if(toolsNoclip()){
+        s.noclipUsed=true;
+        if(!s.owner->getChildByID("cf-assisted-attempt")){
+            auto mark=CCNode::create();mark->setID("cf-assisted-attempt");s.owner->addChild(mark);
+        }
+    }
+    bool assist=s.noclipUsed || Mod::get()->getSettingValue<double>("tool-speed")!=1. ||
+        Mod::get()->getSettingValue<bool>("tool-boxes") || Mod::get()->getSettingValue<bool>("tool-path") ||
+        Mod::get()->getSettingValue<bool>("tool-path-boxes");
+    if(assist || Mod::get()->getSettingValue<bool>("tool-safe")){
+        captureLevelStats();s.toolSafe=true;
+    }
+}
 bool dirtyCapture(PlayLayer* layer) {
-    return layer->m_ignoreDamage || layer->m_isIgnoreDamageEnabled || layer->m_startPosObject || s.toolSafe;
+    return layer->m_ignoreDamage || layer->m_isIgnoreDamageEnabled || layer->m_startPosObject || s.noclipUsed || toolsNoclip();
 }
 std::string inputBackend() {
     if (hasLiveOwner() && s.owner->m_clickBetweenSteps) return "native-between-steps";
@@ -1414,7 +1431,6 @@ void predictionPreview() {
 bool supported() {
     if (!hasLiveOwner()) { s.message = "No active level. Reopen Frames from pause."; return false; }
     if (s.owner->m_isPlatformer) { s.message = "Platformer is not supported"; return false; }
-    if (std::abs(CCDirector::get()->getScheduler()->getTimeScale()-1.f)>.00001f) {s.message="Disable external speed changes before recording or analysis";return false;}
     if (dirtyCapture(s.owner)) { s.message = "Use an unassisted run from the original start with Ignore Damage disabled"; return false; }
     auto backend = inputBackend();
     if (backend != "vanilla240" && backend != "cos240") {
@@ -2340,8 +2356,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     bool rejectCapture() {
         if(s.owner!=this || (s.state!=State::Record && !running()))return false;
-        bool validSpeed = s.state!=State::Record || std::abs(CCDirector::get()->getScheduler()->getTimeScale()-1.f)<.00001f;
-        if(validSpeed && !dirtyCapture(this) && (s.state!=State::Record || inputBackend()==s.recording.backend))return false;
+        if( !dirtyCapture(this) && (s.state!=State::Record || inputBackend()==s.recording.backend))return false;
         if(s.state==State::Record){s.captureDirty=true;s.recording.complete=false;}
         s.alert="Invalid attempt: assisted play, Start Pos or changed input mode.";
         stop(s.alert);queueReturnToPause();return true;
@@ -2462,7 +2477,15 @@ class $modify(CFPlay, PlayLayer) {
         s.lastTick = s.recording.trace.empty() ? -1 : s.recording.trace.back().tick;
     }
     void resetLevel() {
-        if (s.owner == this) s.showcaseComplete = false;
+        if (s.owner == this){
+            ++s.toolAttempt;s.showcaseComplete=false;
+            if(!s.resetting){
+                if(auto m=getChildByID("cf-assisted-attempt"))m->removeFromParent();
+                s.noclipUsed=false;
+                if(s.toolSafe && !running() && s.state!=State::Record){restoreLevelStats();s.toolSafe=false;}
+            }
+            syncToolProtection();
+        }
         bool cancelled=running()&&!s.resetting;
         if(cancelled){stop("Automated run cancelled by manual restart");captureLevelStats();s.resetting=true;}
         s.restored = false; PlayLayer::resetLevel();
@@ -2478,7 +2501,7 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if(s.owner==this && s.toolSafe && Mod::get()->getSettingValue<bool>("tool-noclip"))return;
+        if(s.owner==this && toolsNoclip()){syncToolProtection();return;}
         // A collision request may be ignored by GD (invulnerability, inactive
         // player, reset). Let the engine decide before classifying a trial.
         bool active = s.owner == this && running() && !s.resetting &&
@@ -2510,7 +2533,8 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void levelComplete() {
-        if(s.owner==this && s.toolSafe){resetLevel();enforceLevelStats();return;}
+        if(s.owner==this)syncToolProtection();
+        if(s.owner==this && s.toolSafe && !running() && s.state!=State::Record){resetLevel();enforceLevelStats();return;}
         if(rejectCapture())return;
         if(s.owner==this && running())s.endedBy="level_end";
         if (s.owner == this && s.state == State::Playback) {
@@ -2566,7 +2590,7 @@ class $modify(CFPlay, PlayLayer) {
             if (!s.recording.key.empty()) save(true);
             enforceLevelStats();
         }
-        if(s.owner==this && s.toolSafe)CCDirector::get()->getScheduler()->setTimeScale(s.priorToolScale);
+        if(s.owner==this && s.speedOwned)CCDirector::get()->getScheduler()->setTimeScale(s.priorToolScale);
         PlayLayer::onExit();
         if(s.owner==this)s.levelStatsCaptured=false;
     }
@@ -2895,8 +2919,9 @@ class $modify(CFPause, PauseLayer) {
         auto sprite = ButtonSprite::create("Frames"); sprite->setScale(.7f);
         auto button = CCMenuItemExt::createSpriteExtra(sprite, [](auto) { if (auto popup = CFPopup::create()) popup->show(); });
         button->m_scaleMultiplier = 1.f; button->setPosition({0, 0}); menu->addChild(button);
-        auto toolButton=CCMenuItemExt::createSpriteExtra(ButtonSprite::create("Tools"),[](auto){showLevelTools();});
-        toolButton->setScale(.52f);toolButton->setPosition({-90,0});menu->addChild(toolButton);
+        auto toolSprite=ButtonSprite::create("Tools");toolSprite->setScale(.52f);
+        auto toolButton=CCMenuItemExt::createSpriteExtra(toolSprite,[](auto){showLevelTools();});
+        toolButton->m_scaleMultiplier=1.f;toolButton->setPosition({-90,0});menu->addChild(toolButton);
         auto diagSprite=ButtonSprite::create("Logs"); diagSprite->setScale(.5f);
         auto diag=CCMenuItemExt::createSpriteExtra(diagSprite,[](auto){showDiagnostics();}); diag->m_scaleMultiplier=1.f;diag->setPosition({90,0});menu->addChild(diag);
     }
