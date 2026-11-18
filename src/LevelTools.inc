@@ -90,12 +90,13 @@ class ToolsPopup : public ClassicPopup {
         rows.clear();list->removeAllChildren();dynamic->removeAllChildren();
         auto const& current=tabs[tab];
         note->setString(current.note);
-        float rowStep=tab==3?28.f:33.f;
-        float startY=tab==3?205.f:201.f;
+        float rowStep=tab==3?26.f:33.f;
+        float startY=tab==3?212.f:201.f;
         for(size_t i=0;i<current.keys.size();++i){
             auto setting=Mod::get()->getSetting(current.keys[i]);
             auto row=setting?setting->createNode(320):nullptr;
             if(!row)continue;
+            if(tab==3)row->setScale(.88f);
             row->setAnchorPoint({0,0});row->setPosition({100,startY-rowStep*i});
             list->addChild(row);rows.push_back(row);
         }
@@ -117,7 +118,7 @@ class ToolsPopup : public ClassicPopup {
                 mod->setSettingValue<bool>("tool-dot",false);
                 showTab();
             });
-            fpsItem->setPosition({190,44});dynamic->addChild(fpsItem);
+            fpsItem->setPosition({190,42});dynamic->addChild(fpsItem);
             auto fullSprite=ButtonSprite::create("Completo");fullSprite->setScale(.45f);
             auto fullItem=CCMenuItemExt::createSpriteExtra(fullSprite,[this](auto){
                 auto mod=Mod::get();
@@ -125,7 +126,7 @@ class ToolsPopup : public ClassicPopup {
                     mod->setSettingValue<bool>(k,true);
                 showTab();
             });
-            fullItem->setPosition({330,44});dynamic->addChild(fullItem);
+            fullItem->setPosition({330,42});dynamic->addChild(fullItem);
         }
         if(tab==4){ // Position tab: one-tap HUD placements
             struct Spot{char const* name;double x,y;float px;};

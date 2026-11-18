@@ -2754,7 +2754,13 @@ class ClassicPopup : public Popup {
 protected:
     bool init(float width,float height){
         if(!Popup::init(width,height,"GJ_square01.png"))return false;
-        setCloseButtonSpr(CCSprite::createWithSpriteFrameName("GJ_closeBtn_001.png"),.8f);
+        // Keep the native close button above the recessed content panel.
+        auto inset=CCScale9Sprite::create("square02_001.png");
+        inset->setColor({0,0,0});
+        inset->setOpacity(68);
+        inset->setContentSize({width-26,height-50});
+        inset->setPosition({width*.5f,height*.5f-7});
+        m_mainLayer->addChild(inset);
         return true;
     }
 };
@@ -2800,6 +2806,60 @@ public:
 };
 void showDiagnostics(){if(auto p=CFDiagnostics::create()) p->show();}
 
+class CFSettings : public ClassicPopup {
+    std::vector<std::string> keys;
+    std::vector<SettingNodeV3*> rows;
+    CCNode* list=nullptr;
+    CCLabelBMFont* pageLabel=nullptr;
+    int page=0;
+    static constexpr int perPage=5;
+
+    void commit(){
+        for(auto row:rows)if(row->hasUncommittedChanges())row->commit();
+    }
+    void draw(){
+        commit();
+        rows.clear();
+        list->removeAllChildren();
+        int pages=(int(keys.size())+perPage-1)/perPage;
+        pageLabel->setString(fmt::format("{} / {}",page+1,pages).c_str());
+        for(int i=0;i<perPage && page*perPage+i<int(keys.size());++i){
+            auto setting=Mod::get()->getSetting(keys[page*perPage+i]);
+            if(!setting)continue;
+            auto row=setting->createNode(360);
+            if(!row)continue;
+            row->setAnchorPoint({0,0});
+            row->setPosition({20,190.f-33*i});
+            list->addChild(row);
+            rows.push_back(row);
+        }
+    }
+    void onClose(CCObject* sender) override {commit();Popup::onClose(sender);}
+    bool init(){
+        if(!ClassicPopup::init(400,260))return false;
+        setTitle("Analyzer settings");
+        for(auto key:Mod::get()->getSettingKeys()){
+            if(!key.starts_with("section-") && !key.starts_with("tool-"))keys.push_back(key);
+        }
+        list=CCNode::create();m_mainLayer->addChild(list);
+        pageLabel=CCLabelBMFont::create("","goldFont.fnt");
+        pageLabel->setScale(.55f);pageLabel->setPosition({200,33});m_mainLayer->addChild(pageLabel);
+        auto menu=CCMenu::create();menu->setPosition({0,0});m_mainLayer->addChild(menu);
+        for(int step:{-1,1}){
+            auto arrow=CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
+            arrow->setScale(.6f);arrow->setFlipX(step>0);
+            auto button=CCMenuItemExt::createSpriteExtra(arrow,[this,step](auto){
+                int pages=(int(keys.size())+perPage-1)/perPage;
+                page=(page+pages+step)%pages;draw();
+            });
+            button->setPosition({200.f+55*step,33});menu->addChild(button);
+        }
+        draw();return true;
+    }
+public:
+    static void open(){auto p=new CFSettings;if(p->init()){p->autorelease();p->show();}else delete p;}
+};
+
 class CFOptions : public ClassicPopup {
     bool extra=false;
     CCMenu* options=nullptr;
@@ -2811,7 +2871,13 @@ class CFOptions : public ClassicPopup {
             item->setPosition({190,y});options->addChild(item);
         };
         auto toggle=[&](char const* key,char const* name,float y){
-            add(fmt::format("{}: {}",name,Mod::get()->getSettingValue<bool>(key)?"ON":"OFF"),y,[this,key]{Mod::get()->setSettingValue<bool>(key,!Mod::get()->getSettingValue<bool>(key));draw();});
+            auto box=CCMenuItemExt::createTogglerWithStandardSprites(.65f,[key](auto){
+                auto mod=Mod::get();mod->setSettingValue<bool>(key,!mod->getSettingValue<bool>(key));
+            });
+            box->toggle(Mod::get()->getSettingValue<bool>(key));
+            box->setPosition({100,y});options->addChild(box);
+            auto label=CCLabelBMFont::create(name,"bigFont.fnt");
+            label->setAnchorPoint({0,.5f});label->setPosition({122,y});label->setScale(.48f);options->addChild(label);
         };
         if(!extra){
             toggle("sounds","Sounds",210);toggle("markers","Circles",175);
@@ -2836,7 +2902,7 @@ class CFOptions : public ClassicPopup {
                     });
                 });
             });
-            add("All settings",100,[]{openSettingsPopup(Mod::get());});
+            add("All settings",100,[]{CFSettings::open();});
         }
         add("Close",55,[this]{onClose(nullptr);});
     }
