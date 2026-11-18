@@ -2123,6 +2123,7 @@ class $modify(CFBase, GJBaseGameLayer) {
             return GJBaseGameLayer::checkCollisions(player,dt,ignoreDamage);
         // Use GD's ignore-damage collision path. Solids and slopes must still
         // go through its contact resolution, including jump-off velocity.
+        if(!s.noclipUsed || !s.toolSafe)syncToolProtection();
         bool previous=player->m_maybeCanRunIntoBlocks;
         player->m_maybeCanRunIntoBlocks=true;
         int result=GJBaseGameLayer::checkCollisions(player,dt,true);
