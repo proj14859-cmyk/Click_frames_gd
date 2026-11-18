@@ -1,12 +1,20 @@
-# Click Frames GD
+# Click Frames GD 1.0.21
 
-## v1.0.20
+Mod para medir ventanas de clic a 240 TPS en niveles clásicos de Geometry Dash 2.2091, con Geode 6.0.0-alpha.1 en Android y Windows. Click Frames Collector 0.1.4 recoge los intentos manuales en modo normal. [Configuración para entrenamiento](CONFIGURACION_ENTRENAMIENTO.md) · [Guía del colector](collector/README.md)
 
-- **HUD:** FPS / ms / time now defaults to top centre under the progress bar (`tool-x` 50, `tool-y` 93). Saved positions are kept. "Show level time" can add the level total: `7.62 s / 38.40 s`. The total is exact once the level has been finished cleanly (normal run, Record or Play; completion ticks do not depend on the route) and is saved per level text. Before that it is a progress extrapolation marked `~` (only after 5%, never from a Start Pos, test mode or platformer; it drifts across speed portals). Unknown shows `--`. New setting `tool-time-total`.
-- **Tools menu redesigned:** tabs (Visual, Guides, Assist, HUD, Position) replace the paged list; a status chip shows CLEAN / ASSISTED with the same logic as the HUD dot; rows apply as soon as they change; "Reset tab"; HUD placement buttons. The last tab is remembered.
-- **Settings order:** all `tool-*` settings are now one TOOLS section after Experimental (the HUD settings used to appear under EXPERIMENTAL). No keys were renamed or removed.
-- **Speedhack and the collector:** a speed other than 1.0 now marks the attempt as assisted, and Click Frames Collector 0.1.3 ignores it, so slowed-down runs no longer enter the human-timing dataset. Record/Analyze acceptance rules are unchanged.
-- Test: `tests/level_time.cpp`.
+## Cambios en 1.0.21
+
+- **Tiempo del nivel.** Antes de la primera finalización válida, el HUD estima la duración por tramos entre portales de velocidad. Aprende la velocidad con muestras de juego y marca la estimación con `~`. Si faltan datos utiliza la extrapolación disponible o muestra `--`. Una finalización válida permite guardar la duración observada.
+- **Tools.** En instalaciones nuevas, los interruptores empiezan apagados. La pestaña HUD incorpora los presets «Solo FPS» y «Completo». El panel atenúa las opciones que dependen de otra y permite restaurar los valores de cada pestaña. Las guías reutilizan la lista de objetos cercanos entre actualizaciones.
+- **Verificación.** `verify-summary.txt` guarda el resultado, los reinicios de la referencia, el desplazamiento de inputs, las divergencias y el tick final. `LEVEL_TIME_CAL` permite comparar el tiempo estimado con el observado.
+- **Collector 0.1.4.** Record permite grabar con speedhack para el análisis de ventanas. El colector de partidas humanas requiere velocidad 1.0×, avisa una vez por sesión y descarta un intento si se activa speedhack o noclip durante la partida.
+- **Entrenamiento.** `python3 tools/dataset_check.py dataset_entrenamiento.csv` revisa cobertura y duplicados y propone una partición por nivel para entrenamiento y validación.
+
+## Cambios en 1.0.20
+
+- **HUD.** FPS, milisegundos y tiempo aparecen por defecto arriba, centrados bajo la barra de progreso. Las posiciones guardadas se conservan. «Show level time» puede mostrar tiempo transcurrido y total, por ejemplo `7.62 s / 38.40 s`.
+- **Menú de pausa.** Tools organiza las opciones en Visual, Guides, Assist, HUD y Position. Recuerda la última pestaña, aplica los cambios al editar, muestra el estado CLEAN o ASSISTED y ofrece botones para colocar el HUD.
+- **Ajustes y datos.** Los ajustes de Tools están agrupados en su propia sección y conservan sus claves. Collector 0.1.3 empezó a excluir las partidas jugadas a velocidad alterada del dataset de reacción humana.
 
 ## v1.0.17
 

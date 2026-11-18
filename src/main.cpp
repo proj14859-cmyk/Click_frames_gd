@@ -1386,6 +1386,80 @@ bool dirtyCapture(PlayLayer* layer) {
 }
 // Exact level length: completion ticks do not depend on the route, so any clean finish of the same level text gives the total.
 PlayLayer* levelTicksOwner=nullptr;
+struct LevelTimeScan {
+    PlayLayer* owner=nullptr;
+    unsigned objectCount=0;
+    double startX=0., endX=0.;
+    int startSpeed=-1;
+    bool unsupported=false;
+    std::vector<cf::leveltime::PortalPoint> portals;
+} levelTimeScan;
+cf::leveltime::SpeedLearner speedLearner;
+std::array<double,cf::leveltime::speedCount> cachedSpeedUnits{};
+bool speedUnitsLoaded=false;
+std::string speedUnitsKey(int speedIndex){return fmt::format("speed-units-v1-{}",speedIndex);}
+std::array<double,cf::leveltime::speedCount> const& learnedSpeedUnits(){
+    if(!speedUnitsLoaded){
+        for(size_t i=0;i<cf::leveltime::speedCount;++i)
+            cachedSpeedUnits[i]=Mod::get()->getSavedValue<double>(speedUnitsKey(int(i)),0.);
+        speedUnitsLoaded=true;
+    }
+    return cachedSpeedUnits;
+}
+void ensureLevelTimeScan(){
+    auto layer=s.owner;
+    if(!layer || !layer->m_objects || !layer->m_player1)return;
+    unsigned count=layer->m_objects->count();
+    if(levelTimeScan.owner!=layer || levelTimeScan.objectCount!=count){
+        levelTimeScan={};levelTimeScan.owner=layer;levelTimeScan.objectCount=count;
+        levelTimeScan.unsupported=layer->m_isPlatformer || layer->m_isTestMode || layer->m_startPosObject!=nullptr;
+        double maxX=570.;
+        for(unsigned i=0;i<count;++i){
+            auto obj=static_cast<GameObject*>(layer->m_objects->objectAtIndex(i));
+            if(!obj || obj->m_isDisabled || obj->m_isDisabled2)continue;
+            double ox=obj->getPositionX();
+            if(std::isfinite(ox) && ox>maxX)maxX=ox;
+            if(obj->m_objectID==3600 || obj->m_objectID==1935)levelTimeScan.unsupported=true;
+            int pSpeed=cf::leveltime::speedIndexFromPortalId(obj->m_objectID);
+            if(pSpeed>=0 && std::isfinite(ox))levelTimeScan.portals.push_back({ox,pSpeed});
+        }
+        levelTimeScan.endX=maxX+340.;
+        std::stable_sort(levelTimeScan.portals.begin(),levelTimeScan.portals.end(),[](auto const& a,auto const& b){return a.x<b.x;});
+    }
+    if(tick()<=1 && !layer->m_startPosObject && !layer->m_isTestMode){
+        int sIdx=cf::leveltime::speedIndexFromFactor(layer->m_player1->m_playerSpeed);
+        if(sIdx>=0){levelTimeScan.startSpeed=sIdx;levelTimeScan.startX=layer->m_player1->getPositionX();}
+    }
+    double pct=layer->getCurrentPercent(), px=layer->m_player1->getPositionX();
+    if(!layer->m_startPosObject && !layer->m_isTestMode && pct>=2. && pct<=98. && px>levelTimeScan.startX+50.){
+        double derivedEndX=px*100./pct;
+        if(std::isfinite(derivedEndX) && derivedEndX>levelTimeScan.startX+100.)levelTimeScan.endX=derivedEndX;
+    }
+}
+std::optional<int> portalEstimateTicks(){
+    auto layer=s.owner;
+    if(!layer || layer->m_isPlatformer || layer->m_isTestMode || layer->m_startPosObject ||
+        layer->m_gameState.m_timeWarp!=1.f)return std::nullopt;
+    ensureLevelTimeScan();
+    if(levelTimeScan.unsupported || levelTimeScan.startSpeed<0)return std::nullopt;
+    return cf::leveltime::estimateTicks(levelTimeScan.startX,levelTimeScan.endX,levelTimeScan.startSpeed,
+        levelTimeScan.portals,learnedSpeedUnits());
+}
+void observeLevelSpeed(){
+    auto layer=s.owner;
+    if(!layer || running() || layer->m_isPaused || layer->m_inResetDelay || layer->m_hasCompletedLevel ||
+        layer->m_isPlatformer || layer->m_gameState.m_timeWarp!=1.f || !layer->m_player1)return;
+    ensureLevelTimeScan();
+    bool alive=!layer->m_player1->m_isDead && !layer->m_player1->m_isGoingLeft && !layer->m_player1->m_isSideways;
+    if(auto learned=speedLearner.observe(tick(),layer->m_player1->getPositionX(),layer->m_player1->m_playerSpeed,alive)){
+        auto [idx,med]=*learned;
+        learnedSpeedUnits();
+        if(std::abs(cachedSpeedUnits[idx]-med)>1e-4){
+            cachedSpeedUnits[idx]=med;
+            try{Mod::get()->setSavedValue<double>(speedUnitsKey(idx),med);}catch(...){}
+        }
+    }
+}
 std::string levelTicksKey(){
     auto level=s.owner->m_level;
     return "level-ticks-"+cf::fingerprint(fmt::format("{}:{}:{}",level->m_levelID.value(),std::string(level->m_levelName),std::string(level->m_levelString)));
@@ -1399,7 +1473,13 @@ void rememberLevelTicks(){
     auto layer=s.owner;
     if(!layer || s.state==State::Verify || s.state==State::Analyze || layer->m_isPlatformer || layer->m_isTestMode || dirtyCapture(layer))return;
     auto ticks=static_cast<long long>(tick());
-    if(!cf::leveltime::validTicks(ticks) || ticks==savedLevelTicks())return;
+    if(!cf::leveltime::validTicks(ticks))return;
+    if(auto est=portalEstimateTicks()){
+        double errPct=100.*(double(*est)-double(ticks))/double(ticks);
+        diagnostic("LEVEL_TIME_CAL",fmt::format("exact={} portal_est={} diff={:+} err={:+.2f}% portals={}",
+            ticks,*est,*est-int(ticks),errPct,levelTimeScan.portals.size()));
+    }
+    if(ticks==savedLevelTicks())return;
     Mod::get()->setSavedValue<int64_t>(levelTicksKey(),ticks);levelTicksOwner=nullptr;
 }
 std::string inputBackend() {
@@ -1667,7 +1747,24 @@ void consume() {
         resetTrial();return;
     }
     if (result == Pending::Invalid && s.state == State::Analyze && s.auditing) result = Pending::Fail;
+    auto writeVerifySummary = [](bool verified, int shiftUsed, int finalTick) {
+        auto summary = fmt::format(
+            "CF_VERIFY_SUMMARY 1\nverified: {}\nstatus: {}\nbaseline_passes: {}\nbaseline_restarts: {}\n"
+            "shift_ticks: {:+}\nbatch_disabled: {}\ntolerated_event_ticks: {}\nposition_drifts: {}\n"
+            "end_tick: {}\ninputs: {}\ncausal_events: {}\n",
+            verified ? 1 : 0, verified ? "verified" : s.message, s.baselinePass, s.baselineRestarts,
+            shiftUsed, s.batchDisabled ? 1 : 0, s.toleratedEventTicks, s.divergences,
+            finalTick, s.recording.inputs.size(), s.causalTrace.size());
+        try {
+            if (!cf::replaceChanged(path().parent_path() / "verify-summary.txt", summary))
+                diagnostic("VERIFY_SUMMARY_WRITE", "verify-summary.txt: no se pudo guardar");
+        } catch (std::exception const& e) {
+            diagnostic("VERIFY_SUMMARY_WRITE", e.what());
+        }
+    };
     if (result == Pending::Invalid) {
+        if (s.state == State::Verify)
+            writeVerifySummary(false, VERIFY_SHIFTS[std::clamp(s.shiftIndex, 0, VERIFY_SHIFT_COUNT - 1)], tick());
         diagnostic("ANALYSIS_INVALID",s.message);
         s.alert = s.message; stop(s.message); queueReturnToPause(); return;
     }
@@ -1700,6 +1797,7 @@ void consume() {
                 s.message = "Retrying verification at normal frame cadence";
                 resetTrial(); return;
             }
+            writeVerifySummary(false, by, tick());
             s.alert = s.noRetry ? s.message : fmt::format("Verification failed: {}\n\nFirst failure: {}\nShifts tried (ticks):{}", s.message, s.firstFail, s.shiftLog);
             diagnostic("VERIFY_FAILED",s.alert);
             stop(s.message); queueReturnToPause(); return;
@@ -1739,7 +1837,8 @@ void consume() {
         s.recording.endTick = tick();
         s.segmentExits = cf::segmentExits(s.recording, s.referencePhysics);
         log::info("[CF] verified (shift {:+}, {} position drifts)", by, s.divergences);
-        s.recording.verified = true; s.state = State::Analyze; s.target = 0;
+        s.recording.verified = true; writeVerifySummary(true, by, s.recording.endTick);
+        s.state = State::Analyze; s.target = 0;
         nextEvent(); startCandidate();
     } else if (s.state == State::Analyze) {
         if (s.validatingSnapshot) {
@@ -2384,6 +2483,7 @@ class $modify(CFPlay, PlayLayer) {
         if(rejectCapture())return;
         if (statsIsolationActive()) enforceLevelStats();
         if (s.owner != this || s.resetting || s.pending != Pending::None || !m_player1 || !m_player2) return;
+        observeLevelSpeed();
         int now = tick();
         if ((s.state==State::Verify || s.state==State::Analyze) && now>=s.recording.endTick &&
             !s.recording.trace.empty() && s.next==s.trial.size()) {
@@ -2496,7 +2596,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     void resetLevel() {
         if (s.owner == this){
-            ++s.toolAttempt;s.showcaseComplete=false;
+            ++s.toolAttempt;s.showcaseComplete=false;speedLearner.resetAttempt();
             if(!s.resetting){
                 if(auto m=getChildByID("cf-assisted-attempt"))m->removeFromParent();
                 s.noclipUsed=false;
@@ -2610,7 +2710,7 @@ class $modify(CFPlay, PlayLayer) {
             enforceLevelStats();
         }
         if(s.owner==this && s.speedOwned)CCDirector::get()->getScheduler()->setTimeScale(s.priorToolScale);
-        levelTicksOwner=nullptr;
+        levelTicksOwner=nullptr;levelTimeScan.owner=nullptr;speedLearner.resetAttempt();
         PlayLayer::onExit();
         if(s.owner==this)s.levelStatsCaptured=false;
     }
@@ -2824,6 +2924,7 @@ class CFPopup : public Popup {
         add("DIAGNOSTICO", "Logs / crash", {351,235}, true, []{showDiagnostics();},118,22);
         add("1. RECORD", "New practice run", {79, 171}, !active, [this] {
             if (!ensureSession()) return;
+            if (!toolsNoclip()) s.noclipUsed = false;
             if (!supported()) { FLAlertLayer::create("Unavailable", s.message, "OK")->show(); return; }
             auto key = s.recording.key; s.recording = {}; s.recording.key = key;
             s.features.clear(); s.featuresDirty=true;
@@ -2922,7 +3023,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.20", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.21", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

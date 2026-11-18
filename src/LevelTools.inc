@@ -12,7 +12,7 @@ std::vector<ToolTab> toolTabs(){
     std::vector<ToolTab> tabs{
         {"Visual","Cosmetic. Never affects statistics or analysis.",{"tool-no-particles","tool-no-trail","tool-no-death","tool-no-wave","tool-solid-wave","tool-width"}},
         {"Guides","Rough estimates. Account stats stay protected.",{"tool-boxes","tool-path","tool-path-boxes","tool-force"}},
-        {"Assist","Marks the attempt: not collected, no Record/Analyze.",{"tool-noclip","tool-speed","tool-safe"}},
+        {"Assist","Noclip blocks Record/Analyze; collector ignores both.",{"tool-noclip","tool-speed","tool-safe"}},
         {"HUD","Elapsed / total level time and FPS.",{"tool-fps","tool-ms","tool-decimals","tool-time","tool-time-total","tool-dot"}},
         {"Position","Where the HUD sits and how it looks.",{"tool-x","tool-y","tool-scale","tool-opacity","tool-refresh"}},
     };
@@ -25,6 +25,32 @@ std::vector<ToolTab> toolTabs(){
     if(!other.keys.empty())tabs.push_back(std::move(other));
     return tabs;
 }
+void resetToolSetting(std::string const& key){
+    struct FloatDefault{char const* key;double value;};
+    static constexpr FloatDefault floats[]={
+        {"tool-width",1.0},{"tool-speed",1.0},{"tool-x",50.0},{"tool-y",93.0},
+        {"tool-scale",1.0},{"tool-opacity",100.0},{"tool-refresh",250.0}
+    };
+    for(auto const& item:floats){
+        if(key==item.key){Mod::get()->setSettingValue<double>(key,item.value);return;}
+    }
+    Mod::get()->setSettingValue<bool>(key,false);
+}
+bool isToolRowEnabled(std::string const& key){
+    if(key=="tool-path-boxes")return tool("tool-path");
+    if(key=="tool-ms" || key=="tool-decimals")return tool("tool-fps");
+    if(key=="tool-time-total")return tool("tool-time");
+    return true;
+}
+void dimToolNode(CCNode* node,bool enabled){
+    if(!node)return;
+    if(auto rgba=typeinfo_cast<CCRGBAProtocol*>(node))rgba->setOpacity(enabled?255:110);
+    if(auto children=node->getChildren()){
+        for(unsigned i=0;i<children->count();++i){
+            if(auto child=typeinfo_cast<CCNode*>(children->objectAtIndex(i)))dimToolNode(child,enabled);
+        }
+    }
+}
 class ToolsPopup : public Popup {
     std::vector<ToolTab> tabs;
     std::vector<SettingNodeV3*> rows;
@@ -33,10 +59,15 @@ class ToolsPopup : public Popup {
     CCLabelBMFont* chip=nullptr;
     CCLabelBMFont* note=nullptr;
     int tab=0;
+    void refreshDependencies(){
+        if(tab<0 || size_t(tab)>=tabs.size())return;
+        auto const& keys=tabs[tab].keys;
+        for(size_t i=0;i<rows.size() && i<keys.size();++i)dimToolNode(rows[i],isToolRowEnabled(keys[i]));
+    }
     void commit(){
         bool changed=false;
         for(auto row:rows)if(row->hasUncommittedChanges()){row->commit();changed=true;}
-        if(changed)syncToolProtection();
+        if(changed){syncToolProtection();refreshDependencies();}
     }
     // Same state the HUD dot shows: red for assists that change play, amber for guides that only protect stats.
     void refreshChip(){
@@ -59,11 +90,13 @@ class ToolsPopup : public Popup {
         rows.clear();list->removeAllChildren();dynamic->removeAllChildren();
         auto const& current=tabs[tab];
         note->setString(current.note);
+        float rowStep=tab==3?28.f:33.f;
+        float startY=tab==3?205.f:201.f;
         for(size_t i=0;i<current.keys.size();++i){
             auto setting=Mod::get()->getSetting(current.keys[i]);
             auto row=setting?setting->createNode(320):nullptr;
             if(!row)continue;
-            row->setAnchorPoint({0,0});row->setPosition({100,201.f-33*i});
+            row->setAnchorPoint({0,0});row->setPosition({100,startY-rowStep*i});
             list->addChild(row);rows.push_back(row);
         }
         for(int i=0;i<int(tabs.size());++i){
@@ -71,6 +104,28 @@ class ToolsPopup : public Popup {
             auto item=CCMenuItemExt::createSpriteExtra(sprite,[this,i](auto){tab=i;showTab();});
             item->setPosition({52,232.f-34*i});dynamic->addChild(item);
             if(i==tab){auto mark=CCLabelBMFont::create(">","bigFont.fnt");mark->setScale(.4f);mark->setPosition({14,232.f-34*i});dynamic->addChild(mark);}
+        }
+        if(tab==3){ // HUD tab: quick presets
+            auto fpsSprite=ButtonSprite::create("Solo FPS");fpsSprite->setScale(.45f);
+            auto fpsItem=CCMenuItemExt::createSpriteExtra(fpsSprite,[this](auto){
+                auto mod=Mod::get();
+                mod->setSettingValue<bool>("tool-fps",true);
+                mod->setSettingValue<bool>("tool-ms",false);
+                mod->setSettingValue<bool>("tool-decimals",false);
+                mod->setSettingValue<bool>("tool-time",false);
+                mod->setSettingValue<bool>("tool-time-total",false);
+                mod->setSettingValue<bool>("tool-dot",false);
+                showTab();
+            });
+            fpsItem->setPosition({190,44});dynamic->addChild(fpsItem);
+            auto fullSprite=ButtonSprite::create("Completo");fullSprite->setScale(.45f);
+            auto fullItem=CCMenuItemExt::createSpriteExtra(fullSprite,[this](auto){
+                auto mod=Mod::get();
+                for(char const* k:{"tool-fps","tool-ms","tool-decimals","tool-time","tool-time-total","tool-dot"})
+                    mod->setSettingValue<bool>(k,true);
+                showTab();
+            });
+            fullItem->setPosition({330,44});dynamic->addChild(fullItem);
         }
         if(tab==4){ // Position tab: one-tap HUD placements
             struct Spot{char const* name;double x,y;float px;};
@@ -81,6 +136,7 @@ class ToolsPopup : public Popup {
                 item->setPosition({spot.px,52});dynamic->addChild(item);
             }
         }
+        refreshDependencies();
         refreshChip();
     }
     void onClose(CCObject* sender) override {commit();Popup::onClose(sender);}
@@ -96,7 +152,7 @@ class ToolsPopup : public Popup {
         auto footer=CCMenu::create();footer->setPosition({0,0});m_mainLayer->addChild(footer,2);
         auto resetSprite=ButtonSprite::create("Reset tab");resetSprite->setScale(.5f);
         auto reset=CCMenuItemExt::createSpriteExtra(resetSprite,[this](auto){
-            for(auto const& key:tabs[tab].keys)if(auto setting=Mod::get()->getSetting(key))setting->reset();
+            for(auto const& key:tabs[tab].keys)resetToolSetting(key);
             syncToolProtection();showTab();});
         reset->setPosition({150,18});footer->addChild(reset);
         auto closeSprite=ButtonSprite::create("Close");closeSprite->setScale(.5f);
@@ -128,16 +184,46 @@ void drawGuides(){
     node->clear();
     constexpr ccColor4F blue{.2f,.6f,1,1},red{1,.16f,.18f,1};
     std::vector<CCRect> hazards;
+    struct GuideCache {
+        PlayLayer* layer=nullptr;
+        unsigned attempt=0;
+        unsigned objectCount=0;
+        int lastTick=-1000;
+        CCPoint p1Pos{};
+        std::vector<GameObject*> nearby;
+    };
+    static GuideCache cache;
     if((boxes || path || pathBoxes) && layer->m_objects){
-        for(unsigned i=0;i<layer->m_objects->count();++i){
-            auto obj=static_cast<GameObject*>(layer->m_objects->objectAtIndex(i));
+        int now=tick();
+        unsigned count=layer->m_objects->count();
+        auto p1Pos=layer->m_player1->getPosition();
+        bool refresh=cache.layer!=layer || cache.attempt!=s.toolAttempt || cache.objectCount!=count ||
+            std::abs(now-cache.lastTick)>=6 || p1Pos.getDistance(cache.p1Pos)>120.f;
+        if(refresh){
+            cache.layer=layer;cache.attempt=s.toolAttempt;cache.objectCount=count;
+            cache.lastTick=now;cache.p1Pos=p1Pos;cache.nearby.clear();
+            auto nearWindow=[&](PlayerObject* p,GameObject* obj){
+                return p && std::abs(p->getPositionX()-obj->getPositionX())<850.f &&
+                    std::abs(p->getPositionY()-obj->getPositionY())<560.f;
+            };
+            for(unsigned i=0;i<count;++i){
+                auto obj=static_cast<GameObject*>(layer->m_objects->objectAtIndex(i));
+                if(!obj)continue;
+                bool hazard=obj->m_objectType==GameObjectType::Hazard || obj->m_objectType==GameObjectType::AnimatedHazard;
+                if(!hazard && obj->m_objectType!=GameObjectType::Solid && obj->m_objectType!=GameObjectType::Slope &&
+                    obj->m_objectType!=GameObjectType::Breakable)continue;
+                if(!nearWindow(layer->m_player1,obj) && !(layer->m_gameState.m_isDualMode && nearWindow(layer->m_player2,obj)))continue;
+                cache.nearby.push_back(obj);
+            }
+        }
+        auto closeToPlayer=[&](PlayerObject* p,GameObject* obj){
+            return p && std::abs(p->getPositionX()-obj->getPositionX())<700 &&
+                std::abs(p->getPositionY()-obj->getPositionY())<450;
+        };
+        for(auto obj:cache.nearby){
             if(!obj || obj->m_isDisabled || obj->m_isDisabled2)continue;
-            auto closeToPlayer=[&](PlayerObject* p){return p && std::abs(p->getPositionX()-obj->getPositionX())<700 &&
-                std::abs(p->getPositionY()-obj->getPositionY())<450;};
-            if(!closeToPlayer(layer->m_player1) && !(layer->m_gameState.m_isDualMode && closeToPlayer(layer->m_player2)))continue;
+            if(!closeToPlayer(layer->m_player1,obj) && !(layer->m_gameState.m_isDualMode && closeToPlayer(layer->m_player2,obj)))continue;
             bool hazard=obj->m_objectType==GameObjectType::Hazard || obj->m_objectType==GameObjectType::AnimatedHazard;
-            if(!hazard && obj->m_objectType!=GameObjectType::Solid && obj->m_objectType!=GameObjectType::Slope &&
-                obj->m_objectType!=GameObjectType::Breakable)continue;
             auto rect=obj->getObjectRect();
             if(hazard)hazards.push_back(rect);
             if(boxes){
@@ -264,8 +350,9 @@ class $modify(CFToolDisplay,CCDirector){
                 if(fps){value+=tool("tool-decimals")?fmt::format("{:.1f} FPS  ",rate):fmt::format("{:.0f} FPS  ",rate);
                     if(tool("tool-ms") && rate>0)value+=fmt::format("{:.2f} ms  ",1000/rate);}
                 if(time){
-                    auto partial=s.owner->m_startPosObject || s.owner->m_isTestMode || s.owner->m_isPlatformer;
-                    value+=tool("tool-time-total")?cf::leveltime::format(tick(),cf::leveltime::total(savedLevelTicks(),tick(),s.owner->getCurrentPercent(),partial)):
+                    auto partial=s.owner->m_startPosObject || s.owner->m_isTestMode || s.owner->m_isPlatformer ||
+                        s.owner->m_gameState.m_timeWarp!=1.f;
+                    value+=tool("tool-time-total")?cf::leveltime::format(tick(),cf::leveltime::total(savedLevelTicks(),tick(),s.owner->getCurrentPercent(),partial,portalEstimateTicks())):
                         fmt::format("{:.2f} s",tick()/240.);
                 }
                 label->setString(value.c_str());

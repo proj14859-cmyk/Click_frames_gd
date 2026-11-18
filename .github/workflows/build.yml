@@ -37,6 +37,9 @@ jobs:
           /tmp/v106-tests
           g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined tests/level_time.cpp -o /tmp/level-time-tests
           /tmp/level-time-tests
+          g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined collector/tests/collector.cpp -o /tmp/collector-tests
+          /tmp/collector-tests
+          python3 tools/dataset_check.py --help > /dev/null
       - name: Release algorithm benchmarks (not GD runtime)
         run: |
           g++ -O2 -std=c++20 -Wall -Wextra -Werror -pthread tests/benchmark.cpp -o /tmp/scan-benchmark

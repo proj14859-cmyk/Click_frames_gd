@@ -6,7 +6,7 @@
   },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.20",
+  "version": "v1.0.21",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": {
@@ -284,7 +284,7 @@
     "section-tools": {
       "type": "title",
       "name": "TOOLS - level utilities (also in the pause menu)",
-      "description": "Cosmetics, guides, HUD and assists. Noclip and Speedhack mark the attempt as assisted: the collector ignores it and Record/Analyze reject it."
+      "description": "Cosmetics, guides, HUD and assists. Noclip and Speedhack mark the attempt as assisted: the collector blocks both, and Noclip rejects Record/Analyze."
     },
     "tool-no-particles": {
       "type": "bool",
@@ -353,7 +353,7 @@
       "default": 1,
       "min": 0.1,
       "max": 3,
-      "description": "Game speed outside analysis. Anything other than 1.0 marks the attempt as assisted."
+      "description": "Game speed outside analysis (allowed in practice Record). Anything other than 1.0 marks the attempt as assisted and blocks the normal-mode collector."
     },
     "tool-safe": {
       "type": "bool",
@@ -369,12 +369,12 @@
     "tool-ms": {
       "type": "bool",
       "name": "Frame time (ms)",
-      "default": true
+      "default": false
     },
     "tool-decimals": {
       "type": "bool",
       "name": "Decimal FPS",
-      "default": true
+      "default": false
     },
     "tool-time": {
       "type": "bool",
@@ -385,13 +385,13 @@
     "tool-time-total": {
       "type": "bool",
       "name": "Show total level time",
-      "default": true,
-      "description": "Adds the level total: exact after you finish the level once, otherwise an estimate marked ~ from progress."
+      "default": false,
+      "description": "Adds the level total: exact after you finish the level once, otherwise a speed-portal or progress estimate marked ~."
     },
     "tool-dot": {
       "type": "bool",
       "name": "Tool status dot",
-      "default": true
+      "default": false
     },
     "tool-x": {
       "type": "float",
