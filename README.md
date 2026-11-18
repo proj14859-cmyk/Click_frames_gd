@@ -1,5 +1,13 @@
 # Click Frames GD
 
+## v1.0.20
+
+- **HUD:** FPS / ms / time now defaults to top centre under the progress bar (`tool-x` 50, `tool-y` 93). Saved positions are kept. "Show level time" can add the level total: `7.62 s / 38.40 s`. The total is exact once the level has been finished cleanly (normal run, Record or Play; completion ticks do not depend on the route) and is saved per level text. Before that it is a progress extrapolation marked `~` (only after 5%, never from a Start Pos, test mode or platformer; it drifts across speed portals). Unknown shows `--`. New setting `tool-time-total`.
+- **Tools menu redesigned:** tabs (Visual, Guides, Assist, HUD, Position) replace the paged list; a status chip shows CLEAN / ASSISTED with the same logic as the HUD dot; rows apply as soon as they change; "Reset tab"; HUD placement buttons. The last tab is remembered.
+- **Settings order:** all `tool-*` settings are now one TOOLS section after Experimental (the HUD settings used to appear under EXPERIMENTAL). No keys were renamed or removed.
+- **Speedhack and the collector:** a speed other than 1.0 now marks the attempt as assisted, and Click Frames Collector 0.1.3 ignores it, so slowed-down runs no longer enter the human-timing dataset. Record/Analyze acceptance rules are unchanged.
+- Test: `tests/level_time.cpp`.
+
 ## v1.0.17
 
 Reference scheduler timing is now recorded/replayed even with Batched analysis

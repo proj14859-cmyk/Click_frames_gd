@@ -28,6 +28,7 @@
 #include "Diagnostics.hpp"
 #include "Training.hpp"
 #include "Interop.hpp"
+#include "LevelTime.hpp"
 #include "Audio.hpp"
 #include <chrono>
 #include <array>
@@ -1368,11 +1369,10 @@ void marker(size_t index) {
 bool toolsNoclip(){return Mod::get()->getSettingValue<bool>("tool-noclip");}
 void syncToolProtection(){
     if(!hasLiveOwner())return;
-    if(toolsNoclip()){
-        s.noclipUsed=true;
-        if(!s.owner->getChildByID("cf-assisted-attempt")){
-            auto mark=CCNode::create();mark->setID("cf-assisted-attempt");s.owner->addChild(mark);
-        }
+    if(toolsNoclip())s.noclipUsed=true;
+    // Speedhack also marks the attempt (the collector ignores marked attempts) without making Record/Analyze reject it.
+    if((toolsNoclip() || Mod::get()->getSettingValue<double>("tool-speed")!=1.) && !s.owner->getChildByID("cf-assisted-attempt")){
+        auto mark=CCNode::create();mark->setID("cf-assisted-attempt");s.owner->addChild(mark);
     }
     bool assist=s.noclipUsed || Mod::get()->getSettingValue<double>("tool-speed")!=1. ||
         Mod::get()->getSettingValue<bool>("tool-boxes") || Mod::get()->getSettingValue<bool>("tool-path") ||
@@ -1383,6 +1383,24 @@ void syncToolProtection(){
 }
 bool dirtyCapture(PlayLayer* layer) {
     return layer->m_ignoreDamage || layer->m_isIgnoreDamageEnabled || layer->m_startPosObject || s.noclipUsed || toolsNoclip();
+}
+// Exact level length: completion ticks do not depend on the route, so any clean finish of the same level text gives the total.
+PlayLayer* levelTicksOwner=nullptr;
+std::string levelTicksKey(){
+    auto level=s.owner->m_level;
+    return "level-ticks-"+cf::fingerprint(fmt::format("{}:{}:{}",level->m_levelID.value(),std::string(level->m_levelName),std::string(level->m_levelString)));
+}
+long long savedLevelTicks(){
+    static long long cached=0;
+    if(levelTicksOwner!=s.owner){levelTicksOwner=s.owner;cached=Mod::get()->getSavedValue<int64_t>(levelTicksKey(),0);}
+    return cached;
+}
+void rememberLevelTicks(){
+    auto layer=s.owner;
+    if(!layer || s.state==State::Verify || s.state==State::Analyze || layer->m_isPlatformer || layer->m_isTestMode || dirtyCapture(layer))return;
+    auto ticks=static_cast<long long>(tick());
+    if(!cf::leveltime::validTicks(ticks) || ticks==savedLevelTicks())return;
+    Mod::get()->setSavedValue<int64_t>(levelTicksKey(),ticks);levelTicksOwner=nullptr;
 }
 std::string inputBackend() {
     if (hasLiveOwner() && s.owner->m_clickBetweenSteps) return "native-between-steps";
@@ -2536,6 +2554,7 @@ class $modify(CFPlay, PlayLayer) {
         if(s.owner==this)syncToolProtection();
         if(s.owner==this && s.toolSafe && !running() && s.state!=State::Record){resetLevel();enforceLevelStats();return;}
         if(rejectCapture())return;
+        if(s.owner==this)rememberLevelTicks();
         if(s.owner==this && running())s.endedBy="level_end";
         if (s.owner == this && s.state == State::Playback) {
             if (s.pending == Pending::Fail) return;
@@ -2591,6 +2610,7 @@ class $modify(CFPlay, PlayLayer) {
             enforceLevelStats();
         }
         if(s.owner==this && s.speedOwned)CCDirector::get()->getScheduler()->setTimeScale(s.priorToolScale);
+        levelTicksOwner=nullptr;
         PlayLayer::onExit();
         if(s.owner==this)s.levelStatsCaptured=false;
     }
@@ -2902,7 +2922,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.19", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.20", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

@@ -36,6 +36,7 @@ bool normalMode(PlayLayer* layer) {
         !layer->m_ignoreDamage && !layer->m_isIgnoreDamageEnabled &&
         !layer->getChildByID("cf-assisted-attempt") &&
         !(Loader::get()->getLoadedMod("juan.click_frames_gd") && Loader::get()->getLoadedMod("juan.click_frames_gd")->getSettingValue<bool>("tool-noclip")) &&
+        !(Loader::get()->getLoadedMod("juan.click_frames_gd") && Loader::get()->getLoadedMod("juan.click_frames_gd")->getSettingValue<double>("tool-speed")!=1.) &&
         !layer->getChildByID("cf-automated-run") && layer->m_level;
 }
 int mode(PlayerObject* p) {

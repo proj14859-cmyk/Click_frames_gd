@@ -1,7 +1,7 @@
-# Configuración de entrenamiento: 1.0.16
+# Configuración de entrenamiento: 1.0.20
 
-Instala Click Frames GD 1.0.16 y Click Frames Collector 0.1.1, en GD 2.2091
-con Geode 6. Desactiva CBF, ignore damage/noclip y modificaciones de física.
+Instala Click Frames GD 1.0.20 y Click Frames Collector 0.1.3, en GD 2.2091
+con Geode 6. Desactiva CBF, ignore damage y modificaciones de física. En Tools deja Noclip apagado y Speedhack en 1.0; el chip de Tools debe decir CLEAN.
 Mantén el mismo modo de entrada al grabar y analizar. Las unidades son 240 TPS,
 independientes de los FPS de pantalla.
 

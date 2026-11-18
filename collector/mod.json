@@ -3,7 +3,7 @@
   "gd": { "win": "2.2091", "android": "2.2091" },
   "id": "juan.click_frames_collector",
   "name": "Click Frames Collector",
-  "version": "v0.1.2",
+  "version": "v0.1.3",
   "developer": "Juan",
   "description": "Local normal-mode attempt and completed-run dataset collector for Click Frames GD.",
   "dependencies": { "juan.click_frames_gd": ">=v1.0.18" },
