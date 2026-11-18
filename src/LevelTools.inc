@@ -71,14 +71,17 @@ void drawGuides(){
             auto near=[&](PlayerObject* p){return p && std::abs(p->getPositionX()-obj->getPositionX())<700 &&
                 std::abs(p->getPositionY()-obj->getPositionY())<450;};
             if(!near(layer->m_player1) && !(layer->m_gameState.m_isDualMode && near(layer->m_player2)))continue;
-            bool hazard=obj->m_objectType==GameObjectType::Hazard;
+            bool hazard=obj->m_objectType==GameObjectType::Hazard || obj->m_objectType==GameObjectType::AnimatedHazard;
             if(!hazard && obj->m_objectType!=GameObjectType::Solid && obj->m_objectType!=GameObjectType::Slope &&
                 obj->m_objectType!=GameObjectType::Breakable)continue;
             auto rect=obj->getObjectRect();
             if(hazard)hazards.push_back(rect);
             if(boxes){
                 if(hazard && obj->m_objectRadius>0)node->drawCircle(obj->getPosition(),obj->m_objectRadius,{0,0,0,0},1,red,32);
-                else outline(node,rect,hazard?red:blue);
+                else if(obj->m_orientedBox){
+                    auto corners=obj->m_orientedBox->m_corners;
+                    node->drawPolygon(corners.data(),4,{0,0,0,0},.7f,hazard?red:blue);
+                }else outline(node,rect,hazard?red:blue);
             }
         }
     }
@@ -126,7 +129,7 @@ class $modify(CFToolBatchParticles,CCParticleBatchNode){
 class $modify(CFToolTrail,CCMotionStreak){
     void draw(){if(hasLiveOwner() && tool("tool-no-trail") && !tool("tool-force")){
             for(auto p:{s.owner->m_player1,s.owner->m_player2})
-                if(p && !p->m_isDart && (p->m_regularTrail==static_cast<CCMotionStreak*>(this) || p->m_shipStreak==static_cast<CCMotionStreak*>(this)))return;
+                if(p && (p->m_regularTrail==static_cast<CCMotionStreak*>(this) || p->m_shipStreak==static_cast<CCMotionStreak*>(this)))return;
         }
         CCMotionStreak::draw();}
 };
