@@ -82,6 +82,7 @@ void startAttempt(PlayLayer* layer) {
     s.owner=layer;s.attempt={};s.active=true;s.lastTick=-1;s.sampleCounter=0;s.held.fill(false);
     auto level=layer->m_level;auto stamp=unixMs();
     s.attempt.fromStartPos = layer->m_startPosObject != nullptr;
+    s.attempt.minSpeed=s.attempt.maxSpeed=CCDirector::get()->getScheduler()->getTimeScale();
     s.attempt.startPercent = layer->getCurrentPercent();
     s.attempt.backend = layer->m_clickBetweenSteps ? "between-steps" : layer->m_clickOnSteps ? "on-steps" : "standard";
     s.attempt.startedUnixMs=stamp;s.attempt.levelID=level->m_levelID.value();s.attempt.levelName=level->m_levelName;
@@ -106,6 +107,9 @@ void finishAttempt(std::string result,float percent,int deathID=0,int deathType=
 }
 void sample(PlayLayer* layer) {
     if(!s.active || s.owner!=layer || !normalMode(layer) || !layer->m_player1 || !layer->m_player2)return;
+    float speed=CCDirector::get()->getScheduler()->getTimeScale();
+    s.attempt.minSpeed=std::min(s.attempt.minSpeed,speed);
+    s.attempt.maxSpeed=std::max(s.attempt.maxSpeed,speed);
     int tick=int(layer->m_gameState.m_currentProgress);if(tick==s.lastTick)return;s.lastTick=tick;
     auto stride=std::max<int64_t>(1,Mod::get()->getSettingValue<int64_t>("sample-stride"));
     if(s.sampleCounter++%uint64_t(stride))return;
@@ -143,6 +147,10 @@ class $modify(CFCInput,GJBaseGameLayer) {
 };
 
 class $modify(CFCPlay,PlayLayer) {
+    static void onModify(auto& self){
+        // Observe a valid manual finish before Safe mode suppresses the account award.
+        (void)self.setHookPriorityPre("PlayLayer::levelComplete",-100);
+    }
     bool init(GJGameLevel* level,bool dontCreateObjects) {
         if(!PlayLayer::init(level,dontCreateObjects))return false;
         startAttempt(this);return true;
