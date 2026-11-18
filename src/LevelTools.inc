@@ -68,9 +68,9 @@ void drawGuides(){
         for(unsigned i=0;i<layer->m_objects->count();++i){
             auto obj=static_cast<GameObject*>(layer->m_objects->objectAtIndex(i));
             if(!obj || obj->m_isDisabled || obj->m_isDisabled2)continue;
-            auto near=[&](PlayerObject* p){return p && std::abs(p->getPositionX()-obj->getPositionX())<700 &&
+            auto closeToPlayer=[&](PlayerObject* p){return p && std::abs(p->getPositionX()-obj->getPositionX())<700 &&
                 std::abs(p->getPositionY()-obj->getPositionY())<450;};
-            if(!near(layer->m_player1) && !(layer->m_gameState.m_isDualMode && near(layer->m_player2)))continue;
+            if(!closeToPlayer(layer->m_player1) && !(layer->m_gameState.m_isDualMode && closeToPlayer(layer->m_player2)))continue;
             bool hazard=obj->m_objectType==GameObjectType::Hazard || obj->m_objectType==GameObjectType::AnimatedHazard;
             if(!hazard && obj->m_objectType!=GameObjectType::Solid && obj->m_objectType!=GameObjectType::Slope &&
                 obj->m_objectType!=GameObjectType::Breakable)continue;
