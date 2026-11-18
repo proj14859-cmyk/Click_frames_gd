@@ -4,6 +4,11 @@
 
 int main() {
     using namespace cf::leveltime;
+    Total fiveHundred{120000,true};
+    assert(progressClock(fiveHundred,20.,350,false,true,true)=="100.00 / 500.00 s");
+    assert(progressClock(fiveHundred,50.,1,true,true,false)=="250 / 500 s");
+    assert(progressClock(fiveHundred,100.,100,false,true,true)=="500.00 / 500.00 s");
+    assert(progressClock(std::nullopt,75.,5,true,true,true)=="-- / -- s");
     // Saved completion wins and is exact, whatever the live progress or portal estimate says.
     auto t = total(9216, 1830, 20., false, 9000);
     assert(t && t->exact && t->ticks == 9216);

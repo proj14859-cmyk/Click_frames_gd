@@ -6,7 +6,7 @@
   },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.21",
+  "version": "v1.0.22",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": {
@@ -429,6 +429,11 @@
       "default": 250.0,
       "min": 16.0,
       "max": 2000.0
+    },
+    "tool-time-decimals": {
+      "type": "bool",
+      "name": "Level time decimals",
+      "default": true
     }
   }
 }
