@@ -5,6 +5,7 @@
 #include "CollectorData.hpp"
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -15,7 +16,7 @@ namespace {
 struct CollectorSession {
     PlayLayer* owner = nullptr;
     cfc::Attempt attempt;
-    bool active = false, finalizing = false;
+    bool active = false, finalizing = false, speedhackWarned = false;
     int lastTick = -1;
     uint64_t sequence = 0, sampleCounter = 0;
     std::array<bool, 6> held{};
@@ -29,14 +30,55 @@ std::filesystem::path saveRoot() {
     auto converted=Mod::get()->getSaveDir().toStdPath();
     return converted ? converted.unwrap() : std::filesystem::path{};
 }
-bool normalMode(PlayLayer* layer) {
+bool collectorActiveContext(PlayLayer* layer) {
     return layer && Mod::get()->getSavedValue<bool>("normal-runs-consent-v1",false) &&
         Mod::get()->getSettingValue<bool>("enabled") && !layer->m_isPracticeMode &&
         (!layer->m_isTestMode || layer->m_startPosObject) &&
-        !layer->m_ignoreDamage && !layer->m_isIgnoreDamageEnabled &&
-        !layer->getChildByID("cf-assisted-attempt") &&
-        !(Loader::get()->getLoadedMod("juan.click_frames_gd") && Loader::get()->getLoadedMod("juan.click_frames_gd")->getSettingValue<bool>("tool-noclip")) &&
         !layer->getChildByID("cf-automated-run") && layer->m_level;
+}
+bool speedhackEnabled() {
+    if (auto cf = Loader::get()->getLoadedMod("juan.click_frames_gd")) {
+        if (std::abs(cf->getSettingValue<double>("tool-speed") - 1.) > 1e-6) return true;
+    }
+    if (auto dir = CCDirector::get()) {
+        if (auto sched = dir->getScheduler()) {
+            if (std::abs(sched->getTimeScale() - 1.f) > 1e-4f) return true;
+        }
+    }
+    return false;
+}
+void notifySpeedhackBlocked(PlayLayer* layer) {
+    if (s.speedhackWarned || !collectorActiveContext(layer) || !speedhackEnabled()) return;
+    s.speedhackWarned = true;
+    Loader::get()->queueInMainThread([] {
+        FLAlertLayer::create(
+            "Click Frames Collector",
+            "Speedhack activado (<cy>Speed != 1.0x</c>).\n\n"
+            "El colector no grabara runs normales ni intentos mientras Speedhack este activo, "
+            "porque alterar la velocidad del juego cambia el tiempo real de reaccion humana y "
+            "contaminaria los datos de entrenamiento.\n\n"
+            "Pon Speedhack en <cg>1.0x</c> (Tools > Assist) para recolectar intentos.",
+            "OK"
+        )->show();
+    });
+}
+bool normalMode(PlayLayer* layer) {
+    if (!collectorActiveContext(layer)) return false;
+    if (speedhackEnabled()) {
+        notifySpeedhackBlocked(layer);
+        return false;
+    }
+    return !layer->m_ignoreDamage && !layer->m_isIgnoreDamageEnabled &&
+        !layer->getChildByID("cf-assisted-attempt") &&
+        !(Loader::get()->getLoadedMod("juan.click_frames_gd") &&
+          Loader::get()->getLoadedMod("juan.click_frames_gd")->getSettingValue<bool>("tool-noclip"));
+}
+void discardAttempt() {
+    s.active = false;
+    s.attempt = {};
+    s.lastTick = -1;
+    s.sampleCounter = 0;
+    s.held.fill(false);
 }
 int mode(PlayerObject* p) {
     return !p ? -1 : p->m_isShip ? 1 : p->m_isBall ? 2 : p->m_isBird ? 3 : p->m_isDart ? 4 :
@@ -94,7 +136,7 @@ void startAttempt(PlayLayer* layer) {
 }
 void finishAttempt(std::string result,float percent,int deathID=0,int deathType=0,float deathX=0,float deathY=0) {
     if(!s.active || s.finalizing)return;
-    if (!normalMode(s.owner)) { s.active=false; return; }
+    if (!normalMode(s.owner)) { discardAttempt(); return; }
     if (result=="completed" && (s.attempt.fromStartPos || s.attempt.startPercent>0.f)) result="segment-end";
     s.finalizing=true;s.active=false;
     s.attempt.endedUnixMs=unixMs();s.attempt.result=std::move(result);s.attempt.endPercent=std::clamp(percent,0.f,100.f);
@@ -157,7 +199,10 @@ class $modify(CFCPlay,PlayLayer) {
     }
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-        if(s.owner==this && s.active && !normalMode(this))s.active=false;
+        if(s.owner==this && !normalMode(this)){
+            if(s.active)discardAttempt();
+            return;
+        }
         sample(this);
     }
     void resetLevel() {

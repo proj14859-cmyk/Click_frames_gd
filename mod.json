@@ -6,7 +6,7 @@
   },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.19",
+  "version": "v1.0.21",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": {
@@ -16,79 +16,6 @@
     ]
   },
   "settings": {
-    "tool-section": {
-      "type": "title",
-      "name": "Level tools"
-    },
-    "tool-no-particles": {
-      "type": "bool",
-      "name": "No particles",
-      "default": false
-    },
-    "tool-no-trail": {
-      "type": "bool",
-      "name": "No trail",
-      "default": false
-    },
-    "tool-no-death": {
-      "type": "bool",
-      "name": "No death effect",
-      "default": false
-    },
-    "tool-boxes": {
-      "type": "bool",
-      "name": "Show solid hitboxes",
-      "default": false
-    },
-    "tool-path": {
-      "type": "bool",
-      "name": "Live trajectory estimate",
-      "default": false
-    },
-    "tool-path-boxes": {
-      "type": "bool",
-      "name": "Show trajectory boxes (approx.)",
-      "default": false
-    },
-    "tool-noclip": {
-      "type": "bool",
-      "name": "Noclip",
-      "default": false
-    },
-    "tool-fps": {
-      "type": "bool",
-      "name": "Show FPS",
-      "default": false
-    },
-    "tool-time": {
-      "type": "bool",
-      "name": "Show level time",
-      "default": false
-    },
-    "tool-solid-wave": {
-      "type": "bool",
-      "name": "Solid wave trail",
-      "default": false
-    },
-    "tool-no-wave": {
-      "type": "bool",
-      "name": "No wave trail",
-      "default": false
-    },
-    "tool-speed": {
-      "type": "float",
-      "name": "Speedhack",
-      "default": 1,
-      "min": 0.1,
-      "max": 3
-    },
-    "tool-width": {
-      "type": "float",
-      "name": "Wave trail thickness",
-      "default": 1,
-      "min": 0,
-      "max": 5
-    },
     "section-normal": {
       "type": "title",
       "name": "NORMAL - display, sound and HUD",
@@ -354,44 +281,133 @@
       "default": false,
       "description": "Forces exact search and at least a +/-12 tick radius. Only full-run, verified, collision-bounded rows enter dataset_entrenamiento.csv; open windows remain diagnostic."
     },
-    "tool-dot": {
+    "section-tools": {
+      "type": "title",
+      "name": "TOOLS - level utilities (also in the pause menu)",
+      "description": "Cosmetics, guides, HUD and assists. Noclip and Speedhack mark the attempt as assisted: the collector blocks both, and Noclip rejects Record/Analyze."
+    },
+    "tool-no-particles": {
       "type": "bool",
-      "name": "Tool status dot",
-      "default": true
+      "name": "No particles",
+      "default": false
+    },
+    "tool-no-trail": {
+      "type": "bool",
+      "name": "No trail",
+      "default": false
+    },
+    "tool-no-death": {
+      "type": "bool",
+      "name": "No death effect",
+      "default": false
+    },
+    "tool-no-wave": {
+      "type": "bool",
+      "name": "No wave trail",
+      "default": false
+    },
+    "tool-solid-wave": {
+      "type": "bool",
+      "name": "Solid wave trail",
+      "default": false
+    },
+    "tool-width": {
+      "type": "float",
+      "name": "Wave trail thickness",
+      "default": 1,
+      "min": 0,
+      "max": 5
+    },
+    "tool-boxes": {
+      "type": "bool",
+      "name": "Show solid hitboxes",
+      "default": false,
+      "description": "Draws solid (blue) and hazard (red) hitboxes near the player."
+    },
+    "tool-path": {
+      "type": "bool",
+      "name": "Live trajectory estimate",
+      "default": false,
+      "description": "Rough estimate from recent movement; not a prediction of the game."
+    },
+    "tool-path-boxes": {
+      "type": "bool",
+      "name": "Show trajectory boxes (approx.)",
+      "default": false
     },
     "tool-force": {
       "type": "bool",
       "name": "Force show trail",
-      "default": false
+      "default": false,
+      "description": "Keeps trails visible and draws the recent path even when No trail / No wave is on."
+    },
+    "tool-noclip": {
+      "type": "bool",
+      "name": "Noclip",
+      "default": false,
+      "description": "Marks the attempt as assisted. Not collected; Record and Analyze are rejected."
+    },
+    "tool-speed": {
+      "type": "float",
+      "name": "Speedhack",
+      "default": 1,
+      "min": 0.1,
+      "max": 3,
+      "description": "Game speed outside analysis (allowed in practice Record). Anything other than 1.0 marks the attempt as assisted and blocks the normal-mode collector."
     },
     "tool-safe": {
       "type": "bool",
       "name": "Safe mode",
+      "default": false,
+      "description": "Protects account statistics for this level even without assists."
+    },
+    "tool-fps": {
+      "type": "bool",
+      "name": "Show FPS",
       "default": false
     },
     "tool-ms": {
       "type": "bool",
       "name": "Frame time (ms)",
-      "default": true
+      "default": false
     },
     "tool-decimals": {
       "type": "bool",
       "name": "Decimal FPS",
-      "default": true
+      "default": false
+    },
+    "tool-time": {
+      "type": "bool",
+      "name": "Show level time",
+      "default": false,
+      "description": "Elapsed physics time since 0% (240 ticks per second, independent of FPS)."
+    },
+    "tool-time-total": {
+      "type": "bool",
+      "name": "Show total level time",
+      "default": false,
+      "description": "Adds the level total: exact after you finish the level once, otherwise a speed-portal or progress estimate marked ~."
+    },
+    "tool-dot": {
+      "type": "bool",
+      "name": "Tool status dot",
+      "default": false
     },
     "tool-x": {
       "type": "float",
       "name": "HUD horizontal position (%)",
-      "default": 2.0,
+      "default": 50.0,
       "min": 0.0,
-      "max": 100.0
+      "max": 100.0,
+      "description": "0 = left edge, 50 = centre."
     },
     "tool-y": {
       "type": "float",
       "name": "HUD vertical position (%)",
-      "default": 96.0,
+      "default": 93.0,
       "min": 0.0,
-      "max": 100.0
+      "max": 100.0,
+      "description": "0 = bottom, 100 = top."
     },
     "tool-scale": {
       "type": "float",
