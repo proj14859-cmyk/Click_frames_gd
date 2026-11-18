@@ -2902,7 +2902,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.18", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.19", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

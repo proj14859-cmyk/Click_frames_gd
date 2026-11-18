@@ -144,6 +144,32 @@ class $modify(CFToolWave,HardStreak){
         HardStreak::updateStroke(dt);m_waveSize=width;m_pulseSize=pulse;m_isSolid=solid;
     }
 };
+namespace {
+class ToolsHud : public CCNode {
+public:
+    CCLabelBMFont* label = nullptr;
+    CCDrawNode* indicator = nullptr;
+
+    static ToolsHud* create() {
+        auto hud = new ToolsHud;
+        if (!hud->init()) { delete hud; return nullptr; }
+        hud->autorelease();
+        return hud;
+    }
+
+    bool init() override {
+        if (!CCNode::init()) return false;
+        label = CCLabelBMFont::create("", "bigFont.fnt");
+        indicator = CCDrawNode::create();
+        if (!label || !indicator) return false;
+        // Bitmap fonts batch glyph sprites. Keep vector drawing on a sibling.
+        label->setAnchorPoint({0, 0});
+        addChild(label);
+        addChild(indicator);
+        return true;
+    }
+};
+}
 class $modify(CFToolDisplay,CCDirector){
     void drawScene(){
         if(hasLiveOwner()){
@@ -154,28 +180,36 @@ class $modify(CFToolDisplay,CCDirector){
                 s.speedOwned=true;getScheduler()->setTimeScale(speed);
             }else if(s.speedOwned){getScheduler()->setTimeScale(s.priorToolScale);s.speedOwned=false;}
             drawGuides();
-            auto label=static_cast<CCLabelBMFont*>(s.owner->getChildByID("cf-tool-hud"));
+            auto hud=static_cast<ToolsHud*>(s.owner->getChildByID("cf-tool-hud"));
             bool fps=tool("tool-fps"),time=tool("tool-time"),dot=tool("tool-dot");
             if(fps || time || dot){
                 using Clock=std::chrono::steady_clock;static auto last=Clock::now();static int count=0;static double rate=0;
                 auto now=Clock::now();double elapsed=std::chrono::duration<double>(now-last).count();
                 ++count;if(elapsed*1000>=mod->getSettingValue<double>("tool-refresh")){rate=count/elapsed;count=0;last=now;}
-                if(!label){label=CCLabelBMFont::create("","bigFont.fnt");label->setID("cf-tool-hud");s.owner->addChild(label,1001);}
+                if(!hud){
+                    hud=ToolsHud::create();
+                    if(!hud){CCDirector::drawScene();return;}
+                    hud->setID("cf-tool-hud");s.owner->addChild(hud,1001);
+                }
+                auto label=hud->label;
                 float x=mod->getSettingValue<double>("tool-x")/100., y=mod->getSettingValue<double>("tool-y")/100.;
-                label->setScale(.32f*mod->getSettingValue<double>("tool-scale"));
+                hud->setScale(.32f*mod->getSettingValue<double>("tool-scale"));
                 auto opacity=static_cast<GLubyte>(2.55*mod->getSettingValue<double>("tool-opacity"));
-                label->setOpacity(opacity);label->setAnchorPoint({x,y});label->setPosition({x*getWinSize().width,y*getWinSize().height});
-                std::string value=dot?"    ":"";
+                label->setOpacity(opacity);hud->setAnchorPoint({x,y});hud->setPosition({x*getWinSize().width,y*getWinSize().height});
+                std::string value;
                 if(fps){value+=tool("tool-decimals")?fmt::format("{:.1f} FPS  ",rate):fmt::format("{:.0f} FPS  ",rate);
                     if(tool("tool-ms") && rate>0)value+=fmt::format("{:.2f} ms  ",1000/rate);}
                 if(time)value+=fmt::format("{:.2f} s",tick()/240.);
                 label->setString(value.c_str());
-                auto indicator=static_cast<CCDrawNode*>(label->getChildByID("status-dot"));
-                if(!indicator){indicator=CCDrawNode::create();indicator->setID("status-dot");label->addChild(indicator);}
+                float inset = dot ? 20.f : 0.f;
+                float height = std::max(dot ? 14.f : 0.f, label->getContentSize().height);
+                hud->setContentSize({inset + label->getContentSize().width, height});
+                label->setPosition({inset, 0});
+                auto indicator=hud->indicator;
                 indicator->clear();
                 if(dot){bool red=toolsNoclip() || speed!=1;
-                    indicator->drawDot({7,14},6,red?ccColor4F{1,.2f,.2f,opacity/255.f}:ccColor4F{.2f,1,.4f,opacity/255.f});}
-            }else if(label)label->removeFromParent();
+                    indicator->drawDot({7,height*.5f},6,red?ccColor4F{1,.2f,.2f,opacity/255.f}:ccColor4F{.2f,1,.4f,opacity/255.f});}
+            }else if(hud)hud->removeFromParent();
         }
         CCDirector::drawScene();
     }
