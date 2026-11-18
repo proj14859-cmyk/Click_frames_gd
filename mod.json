@@ -6,7 +6,7 @@
   },
   "id": "juan.click_frames_gd",
   "name": "Click Frames GD",
-  "version": "v1.0.21",
+  "version": "v1.0.22",
   "developer": "Juan",
   "description": "Practice recording, verified timing windows and replay showcases at 240 TPS.",
   "resources": {
@@ -380,12 +380,12 @@
       "type": "bool",
       "name": "Show level time",
       "default": false,
-      "description": "Elapsed physics time since 0% (240 ticks per second, independent of FPS)."
+      "description": "Position in seconds from 0%, based on the current percentage and fixed level duration."
     },
     "tool-time-total": {
       "type": "bool",
       "name": "Show total level time",
-      "default": false,
+      "default": true,
       "description": "Adds the level total: exact after you finish the level once, otherwise a speed-portal or progress estimate marked ~."
     },
     "tool-dot": {
@@ -429,6 +429,11 @@
       "default": 250.0,
       "min": 16.0,
       "max": 2000.0
+    },
+    "tool-time-decimals": {
+      "type": "bool",
+      "name": "Level time decimals",
+      "default": true
     }
   }
 }

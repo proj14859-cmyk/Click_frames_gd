@@ -1,6 +1,13 @@
-# Click Frames GD 1.0.21
+# Click Frames GD 1.0.22
 
 Mod para medir ventanas de clic a 240 TPS en niveles clásicos de Geometry Dash 2.2091, con Geode 6.0.0-alpha.1 en Android y Windows. Click Frames Collector 0.1.4 recoge los intentos manuales en modo normal. [Configuración para entrenamiento](CONFIGURACION_ENTRENAMIENTO.md) · [Guía del colector](collector/README.md)
+
+## Cambios en 1.0.22
+
+- Una llegada manual protegida abre el panel de finalización de GD con la etiqueta «Safe Mode». Se omite la ruta que concede progreso y recompensas.
+- Noclip usa la ruta de colisión con daño desactivado de GD para conservar el contacto del vehículo con rampas y sólidos.
+- El HUD fija el primer total disponible durante la sesión del nivel. Multiplica ese total por el porcentaje actual para situar al jugador en la escala de tiempo desde 0%. En un nivel de 500 s, 20% corresponde a 100 s. El total estimado lleva `~`; antes de conocerlo se muestra `--`. La precisión del reloj se configura por separado de los FPS.
+- Los paneles y controles del mod usan los fondos, botones y tipografía de GD.
 
 ## Cambios en 1.0.21
 

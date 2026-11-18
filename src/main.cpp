@@ -2,6 +2,7 @@
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/EndLevelLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/GJGameLevel.hpp>
 #include <Geode/modify/GameLevelManager.hpp>
@@ -177,6 +178,8 @@ struct StatsSnapshot {
     double layerTimePlayed=0,layerAttemptTime=0,layerBestAttemptTime=0;
 };
 struct Session {
+    std::optional<cf::leveltime::Total> hudDuration;
+    bool showingSafeFinish=false;
     bool toolSafe=false, noclipUsed=false, speedOwned=false;
     unsigned toolAttempt=0;
     float priorToolScale=1;
@@ -2115,6 +2118,18 @@ class $modify(CFPlayer, PlayerObject) {
 };
 
 class $modify(CFBase, GJBaseGameLayer) {
+    int checkCollisions(PlayerObject* player,float dt,bool ignoreDamage){
+        if(static_cast<GJBaseGameLayer*>(s.owner)!=this || !player || !toolsNoclip())
+            return GJBaseGameLayer::checkCollisions(player,dt,ignoreDamage);
+        // Use GD's ignore-damage collision path. Solids and slopes must still
+        // go through its contact resolution, including jump-off velocity.
+        if(!s.noclipUsed || !s.toolSafe)syncToolProtection();
+        bool previous=player->m_maybeCanRunIntoBlocks;
+        player->m_maybeCanRunIntoBlocks=true;
+        int result=GJBaseGameLayer::checkCollisions(player,dt,true);
+        player->m_maybeCanRunIntoBlocks=previous;
+        return result;
+    }
     void gameEventTriggered(GJGameEvent event, int material, int playerID) {
         GJBaseGameLayer::gameEventTriggered(event, material, playerID);
         // Keep raw broadcasts for diagnosis; only the actual event-trigger
@@ -2596,7 +2611,7 @@ class $modify(CFPlay, PlayLayer) {
     }
     void resetLevel() {
         if (s.owner == this){
-            ++s.toolAttempt;s.showcaseComplete=false;speedLearner.resetAttempt();
+            ++s.toolAttempt;s.showingSafeFinish=false;s.showcaseComplete=false;speedLearner.resetAttempt();
             if(!s.resetting){
                 if(auto m=getChildByID("cf-assisted-attempt"))m->removeFromParent();
                 s.noclipUsed=false;
@@ -2619,7 +2634,7 @@ class $modify(CFPlay, PlayLayer) {
         }
     }
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if(s.owner==this && toolsNoclip()){syncToolProtection();return;}
+        if(s.owner==this && toolsNoclip() && (!object || object!=m_anticheatSpike)){syncToolProtection();return;}
         // A collision request may be ignored by GD (invulnerability, inactive
         // player, reset). Let the engine decide before classifying a trial.
         bool active = s.owner == this && running() && !s.resetting &&
@@ -2652,7 +2667,14 @@ class $modify(CFPlay, PlayLayer) {
     }
     void levelComplete() {
         if(s.owner==this)syncToolProtection();
-        if(s.owner==this && s.toolSafe && !running() && s.state!=State::Record){resetLevel();enforceLevelStats();return;}
+        if(s.owner==this && s.toolSafe && !running() && s.state!=State::Record){
+            if(s.showingSafeFinish)return;
+            s.showingSafeFinish=true;
+            m_hasCompletedLevel=true;
+            enforceLevelStats();
+            showEndLayer();
+            return;
+        }
         if(rejectCapture())return;
         if(s.owner==this)rememberLevelTicks();
         if(s.owner==this && running())s.endedBy="level_end";
@@ -2717,7 +2739,34 @@ class $modify(CFPlay, PlayLayer) {
 };
 
 
-class CFDiagnostics : public Popup {
+class $modify(CFSafeFinish, EndLevelLayer) {
+    void customSetup(){
+        EndLevelLayer::customSetup();
+        if(m_playLayer!=s.owner || !s.showingSafeFinish || !m_mainLayer)return;
+        auto size=CCDirector::get()->getWinSize();
+        auto label=CCLabelBMFont::create("Safe Mode","goldFont.fnt");
+        label->setID("cf-safe-mode");label->setScale(.55f);
+        label->setPosition({size.width*.5f,size.height*.5f-94.f});
+        m_mainLayer->addChild(label,20);
+    }
+};
+
+class ClassicPopup : public Popup {
+protected:
+    bool init(float width,float height){
+        if(!Popup::init(width,height,"GJ_square01.png"))return false;
+        // Keep the native close button above the recessed content panel.
+        auto inset=NineSlice::create("square02b_001.png");
+        inset->setColor({0,0,0});
+        inset->setOpacity(68);
+        inset->setContentSize({width-26,height-50});
+        inset->setPosition({width*.5f,height*.5f-7});
+        m_mainLayer->addChild(inset);
+        return true;
+    }
+};
+
+class CFDiagnostics : public ClassicPopup {
     std::string m_text;
     CCLabelBMFont* m_label=nullptr;
     ScrollLayer* m_scroll=nullptr;
@@ -2736,7 +2785,7 @@ class CFDiagnostics : public Popup {
         m_scroll->m_contentLayer->addChild(m_label); m_scroll->scrollToTop();
     }
     bool init() {
-        if(!Popup::init(400,260)) return false;
+        if(!ClassicPopup::init(400,260)) return false;
         setTitle("Diagnostico Click Frames");
         m_scroll=ScrollLayer::create(CCSize{360,160}); m_scroll->setPosition({20,57}); m_mainLayer->addChild(m_scroll);
         auto button=[this](char const* title, CCPoint pos, std::function<void()> action) {
@@ -2758,7 +2807,61 @@ public:
 };
 void showDiagnostics(){if(auto p=CFDiagnostics::create()) p->show();}
 
-class CFOptions : public Popup {
+class CFSettings : public ClassicPopup {
+    std::vector<std::string> keys;
+    std::vector<SettingNodeV3*> rows;
+    CCNode* list=nullptr;
+    CCLabelBMFont* pageLabel=nullptr;
+    int page=0;
+    static constexpr int perPage=5;
+
+    void commit(){
+        for(auto row:rows)if(row->hasUncommittedChanges())row->commit();
+    }
+    void draw(){
+        commit();
+        rows.clear();
+        list->removeAllChildren();
+        int pages=(int(keys.size())+perPage-1)/perPage;
+        pageLabel->setString(fmt::format("{} / {}",page+1,pages).c_str());
+        for(int i=0;i<perPage && page*perPage+i<int(keys.size());++i){
+            auto setting=Mod::get()->getSetting(keys[page*perPage+i]);
+            if(!setting)continue;
+            auto row=setting->createNode(360);
+            if(!row)continue;
+            row->setAnchorPoint({0,0});
+            row->setPosition({20,190.f-33*i});
+            list->addChild(row);
+            rows.push_back(row);
+        }
+    }
+    void onClose(CCObject* sender) override {commit();Popup::onClose(sender);}
+    bool init(){
+        if(!ClassicPopup::init(400,260))return false;
+        setTitle("Analyzer settings");
+        for(auto key:Mod::get()->getSettingKeys()){
+            if(!key.starts_with("section-") && !key.starts_with("tool-"))keys.push_back(key);
+        }
+        list=CCNode::create();m_mainLayer->addChild(list);
+        pageLabel=CCLabelBMFont::create("","goldFont.fnt");
+        pageLabel->setScale(.55f);pageLabel->setPosition({200,33});m_mainLayer->addChild(pageLabel);
+        auto menu=CCMenu::create();menu->setPosition({0,0});m_mainLayer->addChild(menu);
+        for(int step:{-1,1}){
+            auto arrow=CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
+            arrow->setScale(.6f);arrow->setFlipX(step>0);
+            auto button=CCMenuItemExt::createSpriteExtra(arrow,[this,step](auto){
+                int pages=(int(keys.size())+perPage-1)/perPage;
+                page=(page+pages+step)%pages;draw();
+            });
+            button->setPosition({200.f+55*step,33});menu->addChild(button);
+        }
+        draw();return true;
+    }
+public:
+    static void open(){auto p=new CFSettings;if(p->init()){p->autorelease();p->show();}else delete p;}
+};
+
+class CFOptions : public ClassicPopup {
     bool extra=false;
     CCMenu* options=nullptr;
     void draw(){
@@ -2769,7 +2872,13 @@ class CFOptions : public Popup {
             item->setPosition({190,y});options->addChild(item);
         };
         auto toggle=[&](char const* key,char const* name,float y){
-            add(fmt::format("{}: {}",name,Mod::get()->getSettingValue<bool>(key)?"ON":"OFF"),y,[this,key]{Mod::get()->setSettingValue<bool>(key,!Mod::get()->getSettingValue<bool>(key));draw();});
+            auto box=CCMenuItemExt::createTogglerWithStandardSprites(.65f,[key](auto){
+                auto mod=Mod::get();mod->setSettingValue<bool>(key,!mod->getSettingValue<bool>(key));
+            });
+            box->toggle(Mod::get()->getSettingValue<bool>(key));
+            box->setPosition({100,y});options->addChild(box);
+            auto label=CCLabelBMFont::create(name,"bigFont.fnt");
+            label->setAnchorPoint({0,.5f});label->setPosition({122,y});label->setScale(.48f);options->addChild(label);
         };
         if(!extra){
             toggle("sounds","Sounds",210);toggle("markers","Circles",175);
@@ -2794,17 +2903,17 @@ class CFOptions : public Popup {
                     });
                 });
             });
-            add("All settings",100,[]{openSettingsPopup(Mod::get());});
+            add("All settings",100,[]{CFSettings::open();});
         }
         add("Close",55,[this]{onClose(nullptr);});
     }
-    bool init(){if(!Popup::init(380,270))return false;setTitle("Click Frames options");
+    bool init(){if(!ClassicPopup::init(380,270))return false;setTitle("Click Frames options");
         options=CCMenu::create();options->setPosition({0,0});m_mainLayer->addChild(options);draw();return true;}
 public:
     static CFOptions* create(){auto p=new CFOptions;if(p->init()){p->autorelease();return p;}delete p;return nullptr;}
 };
 
-class CFClickEditor : public Popup {
+class CFClickEditor : public ClassicPopup {
     cf::VisualEdits edits;
     std::vector<size_t> indices;
     size_t page=0;
@@ -2845,7 +2954,7 @@ class CFClickEditor : public Popup {
         });
     }
     bool init() {
-        if(!Popup::init(430,280))return false;
+        if(!ClassicPopup::init(430,280))return false;
         setTitle("Clicks: measured -> edited (240 Hz)");
         owner=s.owner;key=s.recording.key;
         for(size_t i=0;i<s.recording.inputs.size() && i<s.recording.windows.size();++i){
@@ -2862,7 +2971,7 @@ public:
     static CFClickEditor* create(){auto p=new CFClickEditor;if(p->init()){p->autorelease();return p;}delete p;return nullptr;}
 };
 
-class CFPopup : public Popup {
+class CFPopup : public ClassicPopup {
     static bool ensureSession() {
         auto layer = PlayLayer::get();
         if (!layer || !layer->m_level || !layer->m_player1 || !layer->m_player2) {
@@ -2885,30 +2994,30 @@ class CFPopup : public Popup {
     }
     bool init() {
         if (!ensureSession()) return false;
-        if (!Popup::init(430, 270)) return false;
+        if (!ClassicPopup::init(430, 270)) return false;
         setTitle("CLICK FRAMES");
         auto label = [this](std::string const& text, CCPoint pos, float scale, ccColor3B color) {
             auto node = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
             node->setScale(scale); node->setColor(color); node->setPosition(pos);
             m_mainLayer->addChild(node); return node;
         };
-        label("PRACTICE  >  ANALYZE  >  SHOWCASE", {148, 229}, .5f, {111, 219, 235});
+        label("PRACTICE  >  ANALYZE  >  SHOWCASE", {148, 229}, .5f, {255, 220, 100});
         auto status = label((s.visual.enabled ? "EDITADO | " : "") + s.message, {148, 211}, .5f, {220, 229, 244});
         status->limitLabelWidth(264, .5f, .25f);
         bool active = s.state == State::Record || running();
         auto add = [this](char const* title, char const* hint, CCPoint pos, bool enabled,
                           std::function<void()> action, float width = 128, float height = 48) {
-            auto card = CCScale9Sprite::create("square02b_001.png");
+            auto card = CCScale9Sprite::create(enabled ? "GJ_button_01.png" : "GJ_button_04.png");
             card->setContentSize({width, height});
-            card->setColor(enabled ? ccColor3B{34, 57, 83} : ccColor3B{35, 39, 49});
-            card->setOpacity(245);
+            card->setColor(enabled ? ccColor3B{255,255,255} : ccColor3B{170,170,170});
+            card->setOpacity(255);
             auto heading = CCLabelBMFont::create(title, "bigFont.fnt");
             heading->limitLabelWidth(width - 12, .34f, .2f); heading->setPosition({width / 2, height * .67f});
             heading->setColor(enabled ? ccColor3B{235, 246, 255} : ccColor3B{115, 124, 139});
             card->addChild(heading);
             auto subtitle = CCLabelBMFont::create(hint, "chatFont.fnt");
             subtitle->limitLabelWidth(width - 10, .43f, .2f); subtitle->setPosition({width / 2, height * .27f});
-            subtitle->setColor({150, 175, 195}); card->addChild(subtitle);
+            subtitle->setColor({255, 244, 210}); card->addChild(subtitle);
             auto item = CCMenuItemExt::createSpriteExtra(card, [action](auto) {
                 // Closing a popup may destroy the callback's owning menu.
                 auto invoke = action; invoke();
@@ -2990,9 +3099,9 @@ class CFPopup : public Popup {
             FLAlertLayer::create("Import", message, "OK")->show();
         }, 62);
         auto panel = CCScale9Sprite::create("square02b_001.png");
-        panel->setContentSize({118, 160}); panel->setColor({20, 30, 47});
+        panel->setContentSize({118, 160}); panel->setColor({90, 53, 29});
         panel->setOpacity(240); panel->setPosition({351, 115}); m_mainLayer->addChild(panel);
-        label(s.visual.enabled ? "VISUAL WINDOWS" :cf::hasEstimated(s.recording)?"ESTIMATED WINDOWS": s.recording.analysisPolicy == 2 ? "LOCAL WINDOWS" : "FULL RUN WINDOWS", {351, 181}, .48f, {111, 219, 235});
+        label(s.visual.enabled ? "VISUAL WINDOWS" :cf::hasEstimated(s.recording)?"ESTIMATED WINDOWS": s.recording.analysisPolicy == 2 ? "LOCAL WINDOWS" : "FULL RUN WINDOWS", {351, 181}, .48f, {255, 220, 100});
         cf::Recording visual;
         if (s.visual.enabled) visual = cf::visualCounter(s.visual);
         auto const& panelRecording = s.visual.enabled ? visual : s.recording;
@@ -3023,7 +3132,7 @@ class CFPopup : public Popup {
                 FLAlertLayer::create("Exportacion",fmt::format("{}\n{} ventanas cerradas. Las ventanas abiertas se omiten.\nScope: {}\nexports/{}/",ok?"FWC y NaNDL guardados":"Error al exportar",count,s.recording.analysisPolicy==2?"local":"Full run",s.folder),"OK")->show();
             } catch(std::exception const& e){diagnostic("EXPORT_WRITE",e.what());showDiagnostics();}
         },118,22);
-        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.21", {215, 18}, .43f, {165, 183, 204});
+        label("240 TPS | GD 2.2091 | Geode 6 | v1.0.22", {215, 18}, .43f, {165, 183, 204});
         return true;
     }
 public:

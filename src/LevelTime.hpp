@@ -170,4 +170,19 @@ inline std::string format(int elapsed, std::optional<Total> total) {
     if (!total) return text + " / --";
     return text + " / " + (total->exact ? "" : "~") + seconds(total->ticks / tps);
 }
+inline std::string progressClock(std::optional<Total> duration,double percent,int tick,bool partial,bool showTotal,bool decimals){
+    auto number=[decimals](double seconds){
+        char buffer[48];std::snprintf(buffer,sizeof buffer,decimals?"%.2f":"%.0f",seconds);
+        return std::string(buffer);
+    };
+    if(!duration){
+        auto elapsed=partial?std::string("--"):number(std::max(tick,0)/tps);
+        return elapsed+(showTotal?" / -- s":" s");
+    }
+    double end=duration->ticks/tps;
+    auto elapsed=std::isfinite(percent)?number(end*std::clamp(percent,0.,100.)/100.):std::string("--");
+    if(showTotal)elapsed+=(duration->exact?" / ":" / ~")+number(end);
+    return elapsed+" s";
+}
+
 }

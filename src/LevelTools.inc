@@ -13,7 +13,7 @@ std::vector<ToolTab> toolTabs(){
         {"Visual","Cosmetic. Never affects statistics or analysis.",{"tool-no-particles","tool-no-trail","tool-no-death","tool-no-wave","tool-solid-wave","tool-width"}},
         {"Guides","Rough estimates. Account stats stay protected.",{"tool-boxes","tool-path","tool-path-boxes","tool-force"}},
         {"Assist","Noclip blocks Record/Analyze; collector ignores both.",{"tool-noclip","tool-speed","tool-safe"}},
-        {"HUD","Elapsed / total level time and FPS.",{"tool-fps","tool-ms","tool-decimals","tool-time","tool-time-total","tool-dot"}},
+        {"HUD","Elapsed / total level time and FPS.",{"tool-fps","tool-ms","tool-decimals","tool-time","tool-time-total","tool-time-decimals","tool-dot"}},
         {"Position","Where the HUD sits and how it looks.",{"tool-x","tool-y","tool-scale","tool-opacity","tool-refresh"}},
     };
     ToolTab other{"Other","Other tool settings.",{}};
@@ -34,12 +34,12 @@ void resetToolSetting(std::string const& key){
     for(auto const& item:floats){
         if(key==item.key){Mod::get()->setSettingValue<double>(key,item.value);return;}
     }
-    Mod::get()->setSettingValue<bool>(key,false);
+    Mod::get()->setSettingValue<bool>(key,key=="tool-time-decimals" || key=="tool-time-total");
 }
 bool isToolRowEnabled(std::string const& key){
     if(key=="tool-path-boxes")return tool("tool-path");
     if(key=="tool-ms" || key=="tool-decimals")return tool("tool-fps");
-    if(key=="tool-time-total")return tool("tool-time");
+    if(key=="tool-time-total" || key=="tool-time-decimals")return tool("tool-time");
     return true;
 }
 void dimToolNode(CCNode* node,bool enabled){
@@ -51,7 +51,7 @@ void dimToolNode(CCNode* node,bool enabled){
         }
     }
 }
-class ToolsPopup : public Popup {
+class ToolsPopup : public ClassicPopup {
     std::vector<ToolTab> tabs;
     std::vector<SettingNodeV3*> rows;
     CCNode* list=nullptr;
@@ -90,12 +90,13 @@ class ToolsPopup : public Popup {
         rows.clear();list->removeAllChildren();dynamic->removeAllChildren();
         auto const& current=tabs[tab];
         note->setString(current.note);
-        float rowStep=tab==3?28.f:33.f;
-        float startY=tab==3?205.f:201.f;
+        float rowStep=tab==3?26.f:33.f;
+        float startY=tab==3?212.f:201.f;
         for(size_t i=0;i<current.keys.size();++i){
             auto setting=Mod::get()->getSetting(current.keys[i]);
             auto row=setting?setting->createNode(320):nullptr;
             if(!row)continue;
+            if(tab==3)row->setScale(.88f);
             row->setAnchorPoint({0,0});row->setPosition({100,startY-rowStep*i});
             list->addChild(row);rows.push_back(row);
         }
@@ -117,15 +118,15 @@ class ToolsPopup : public Popup {
                 mod->setSettingValue<bool>("tool-dot",false);
                 showTab();
             });
-            fpsItem->setPosition({190,44});dynamic->addChild(fpsItem);
+            fpsItem->setPosition({190,42});dynamic->addChild(fpsItem);
             auto fullSprite=ButtonSprite::create("Completo");fullSprite->setScale(.45f);
             auto fullItem=CCMenuItemExt::createSpriteExtra(fullSprite,[this](auto){
                 auto mod=Mod::get();
-                for(char const* k:{"tool-fps","tool-ms","tool-decimals","tool-time","tool-time-total","tool-dot"})
+                for(char const* k:{"tool-fps","tool-ms","tool-decimals","tool-time","tool-time-total","tool-time-decimals","tool-dot"})
                     mod->setSettingValue<bool>(k,true);
                 showTab();
             });
-            fullItem->setPosition({330,44});dynamic->addChild(fullItem);
+            fullItem->setPosition({330,42});dynamic->addChild(fullItem);
         }
         if(tab==4){ // Position tab: one-tap HUD placements
             struct Spot{char const* name;double x,y;float px;};
@@ -141,7 +142,7 @@ class ToolsPopup : public Popup {
     }
     void onClose(CCObject* sender) override {commit();Popup::onClose(sender);}
     bool init(){
-        if(!Popup::init(440,300))return false;
+        if(!ClassicPopup::init(440,300))return false;
         setTitle("Level tools");
         tabs=toolTabs();
         tab=std::clamp(int(Mod::get()->getSavedValue<int>("tools-tab",0)),0,int(tabs.size())-1);
@@ -352,8 +353,11 @@ class $modify(CFToolDisplay,CCDirector){
                 if(time){
                     auto partial=s.owner->m_startPosObject || s.owner->m_isTestMode || s.owner->m_isPlatformer ||
                         s.owner->m_gameState.m_timeWarp!=1.f;
-                    value+=tool("tool-time-total")?cf::leveltime::format(tick(),cf::leveltime::total(savedLevelTicks(),tick(),s.owner->getCurrentPercent(),partial,portalEstimateTicks())):
-                        fmt::format("{:.2f} s",tick()/240.);
+                    if(!s.hudDuration)
+                        s.hudDuration=cf::leveltime::total(savedLevelTicks(),tick(),s.owner->getCurrentPercent(),partial,portalEstimateTicks());
+                    value+=cf::leveltime::progressClock(s.hudDuration,s.owner->m_hasCompletedLevel?100.:s.owner->getCurrentPercent(),
+                        tick(),partial,tool("tool-time-total"),tool("tool-time-decimals"));
+
                 }
                 label->setString(value.c_str());
                 float inset = dot ? 20.f : 0.f;
