@@ -2755,7 +2755,7 @@ protected:
     bool init(float width,float height){
         if(!Popup::init(width,height,"GJ_square01.png"))return false;
         // Keep the native close button above the recessed content panel.
-        auto inset=CCScale9Sprite::create("square02_001.png");
+        auto inset=NineSlice::create("square02b_001.png");
         inset->setColor({0,0,0});
         inset->setOpacity(68);
         inset->setContentSize({width-26,height-50});
